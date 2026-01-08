@@ -84,6 +84,16 @@ namespace patch
         bool init();
         const char *get_init_error() const { return init_error_; }
 
+        /* DEBUG: Accessors for debug overlay */
+        bool DEBUG_is_gbuffer_initialized() const { return gbuffer_initialized_; }
+        bool DEBUG_is_gbuffer_pipeline_valid() const { return gbuffer_pipeline_ != VK_NULL_HANDLE; }
+        bool DEBUG_is_gbuffer_descriptors_valid() const { return gbuffer_descriptor_sets_[0] != VK_NULL_HANDLE; }
+        bool DEBUG_is_voxel_resources_initialized() const { return voxel_resources_initialized_; }
+        bool DEBUG_is_vobj_resources_initialized() const { return vobj_resources_initialized_; }
+        void DEBUG_set_terrain_debug_mode(int mode) { terrain_debug_mode_ = mode; }
+        int DEBUG_get_terrain_debug_mode() const { return terrain_debug_mode_; }
+        int DEBUG_get_terrain_draw_count() const { return terrain_draw_count_; }
+
         void set_material_palette(const Vec3 *colors, int32_t count);
         void set_material_palette_full(const MaterialEntry *materials, int32_t count);
 
@@ -302,6 +312,8 @@ namespace patch
 
         bool rt_supported_ = false;
         int rt_quality_ = 0; /* 0=Off, 1=Fair, 2=Good, 3=High */
+        int terrain_debug_mode_ = 0; /* DEBUG: 0=normal, 1=AABB visualization */
+        mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
 
         /* Compute shader infrastructure for temporal resolve */
         VkPipeline temporal_compute_pipeline_;

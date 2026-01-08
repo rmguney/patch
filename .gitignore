@@ -9,6 +9,7 @@ build/
 *.lib
 *.obj
 *.o
+nul
 
 # IDE/Editor directories
 .github/*

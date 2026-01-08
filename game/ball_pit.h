@@ -2,6 +2,9 @@
 #define PATCH_SCENES_BALL_PIT_H
 
 #include "engine/sim/scene.h"
+#include "engine/voxel/volume.h"
+#include "engine/sim/voxel_object.h"
+#include "engine/physics/particles.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -32,6 +35,11 @@ extern "C"
 
         BallPitParams params;
         BallPitStats stats;
+
+        /* Scene systems */
+        VoxelVolume *terrain;
+        VoxelObjectWorld *objects;
+        ParticleSystem *particles;
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);
@@ -39,6 +47,11 @@ extern "C"
     void ball_pit_scene_destroy(Scene *scene);
 
     void ball_pit_set_ray(Scene *scene, Vec3 origin, Vec3 dir);
+
+    /* Accessors for renderer */
+    VoxelVolume *ball_pit_get_terrain(Scene *scene);
+    VoxelObjectWorld *ball_pit_get_objects(Scene *scene);
+    ParticleSystem *ball_pit_get_particles(Scene *scene);
 
 #ifdef __cplusplus
 }

@@ -423,6 +423,15 @@ else()
     target_include_directories(engine_render PRIVATE ${CMAKE_BINARY_DIR}/generated)
 endif()
 
+# Make engine_render rebuild when embedded shaders change
+set_source_files_properties(
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_gbuffer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_particles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_voxel_objects.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_vulkan.cpp
+    PROPERTIES OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/generated/shaders_embedded.h
+)
+
 # -----------------------------------------------------------------------------
 # IDE helpers
 # -----------------------------------------------------------------------------

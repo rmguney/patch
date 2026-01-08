@@ -35,8 +35,10 @@ namespace patch
         bool space;
         bool shift;
         bool escape;
-        bool f3;
-        bool f4;
+        bool f3; /* DEBUG currently inactive */
+        bool f4; /* DEBUG currently inactive */
+        bool f5; /* DEBUG: Export debug info */
+        bool f6; /* DEBUG: Toggle terrain debug mode */
     };
 
     class Window

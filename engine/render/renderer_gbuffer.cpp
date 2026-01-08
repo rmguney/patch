@@ -1306,17 +1306,12 @@ namespace patch
             shadow_vol_info.imageView = shadow_volume_view_ ? shadow_volume_view_ : gbuffer_views_[0];
             shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkDescriptorBufferInfo lighting_ubo_info{};
-            lighting_ubo_info.buffer = lighting_ubo_[i].buffer;
-            lighting_ubo_info.offset = 0;
-            lighting_ubo_info.range = sizeof(ShadowUniforms);
-
             VkDescriptorImageInfo blue_noise_info{};
             blue_noise_info.sampler = blue_noise_sampler_ ? blue_noise_sampler_ : gbuffer_sampler_;
             blue_noise_info.imageView = blue_noise_view_ ? blue_noise_view_ : gbuffer_views_[0];
             blue_noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet writes[7]{};
+            VkWriteDescriptorSet writes[6]{};
 
             for (uint32_t g = 0; g < GBUFFER_COUNT; g++)
             {
@@ -1337,19 +1332,12 @@ namespace patch
 
             writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[5].dstSet = deferred_lighting_descriptor_sets_[i];
-            writes[5].dstBinding = 5;
-            writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[5].dstBinding = 6;
+            writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[5].descriptorCount = 1;
-            writes[5].pBufferInfo = &lighting_ubo_info;
+            writes[5].pImageInfo = &blue_noise_info;
 
-            writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[6].dstSet = deferred_lighting_descriptor_sets_[i];
-            writes[6].dstBinding = 6;
-            writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[6].descriptorCount = 1;
-            writes[6].pImageInfo = &blue_noise_info;
-
-            vkUpdateDescriptorSets(device_, 7, writes, 0, nullptr);
+            vkUpdateDescriptorSets(device_, 6, writes, 0, nullptr);
         }
 
         return true;
@@ -1401,6 +1389,8 @@ namespace patch
     {
         if (!gbuffer_initialized_ || !gbuffer_pipeline_ || !vol || !voxel_resources_initialized_)
             return;
+
+        terrain_draw_count_++;
 
         deferred_bounds_min_[0] = vol->bounds.min_x;
         deferred_bounds_min_[1] = vol->bounds.min_y;
@@ -1466,7 +1456,7 @@ namespace patch
         pc.chunks_dim[2] = vol->chunks_z;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
         pc.rt_quality = rt_quality_;
-        pc.debug_mode = 0;
+        pc.debug_mode = terrain_debug_mode_;
         memset(pc.reserved, 0, sizeof(pc.reserved));
 
         vkCmdPushConstants(command_buffers_[current_frame_], gbuffer_pipeline_layout_,
@@ -1556,7 +1546,7 @@ namespace patch
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
         pc.rt_quality = rt_quality_;
-        pc.debug_mode = 0;
+        pc.debug_mode = terrain_debug_mode_;
         memset(pc.reserved, 0, sizeof(pc.reserved));
 
         vkCmdPushConstants(command_buffers_[current_frame_], deferred_lighting_layout_,

@@ -261,6 +261,41 @@ void main() {
     vec3 ray_world = normalize((pc.inv_view * ray_view).xyz);
     vec3 ray_origin = pc.camera_pos;
 
+    /* Debug mode 2: solid magenta test pattern - shader is executing */
+    if (pc.debug_mode == 2) {
+        out_albedo = vec4(1.0, 0.0, 1.0, 1.0);  /* Magenta */
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
+    /* Debug mode 1: visualize AABB intersection */
+    if (pc.debug_mode == 1) {
+        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
+            /* Ray misses AABB - red */
+            out_albedo = vec4(1.0, 0.0, 0.0, 1.0);
+        } else {
+            /* Ray hits AABB - green (check if any chunks have data) */
+            bool any_active = false;
+            for (int i = 0; i < pc.total_chunks && !any_active; i++) {
+                if (chunk_has_any(i)) any_active = true;
+            }
+            if (any_active) {
+                out_albedo = vec4(0.0, 1.0, 0.0, 1.0);  /* Green: AABB hit, chunks have data */
+            } else {
+                out_albedo = vec4(1.0, 1.0, 0.0, 1.0);  /* Yellow: AABB hit but no chunk data */
+            }
+        }
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
     HitInfo hit = raymarch_voxels(ray_origin, ray_world);
 
     if (!hit.hit) {

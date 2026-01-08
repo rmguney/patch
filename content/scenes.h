@@ -48,6 +48,23 @@ extern "C"
         return &g_scenes[type];
     }
 
+    /* Compute bounds from chunks (single source of truth for terrain dimensions) */
+    static inline Bounds3D scene_compute_terrain_bounds(const SceneDescriptor *desc)
+    {
+        float chunk_world_size = 32.0f * desc->voxel_size; /* CHUNK_SIZE = 32 */
+        float half_x = desc->chunks_x * chunk_world_size * 0.5f;
+        float half_z = desc->chunks_z * chunk_world_size * 0.5f;
+        float height = desc->chunks_y * chunk_world_size;
+        Bounds3D b;
+        b.min_x = -half_x;
+        b.max_x = half_x;
+        b.min_y = 0.0f;
+        b.max_y = height;
+        b.min_z = -half_z;
+        b.max_z = half_z;
+        return b;
+    }
+
 /*
  * Predefined scene IDs matching registration order in scenes.c.
  */
