@@ -3,6 +3,7 @@
 #include "voxel_push_constants.h"
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -301,10 +302,21 @@ namespace patch
 
         uint8_t *voxel_mapped = nullptr;
         vkMapMemory(device_, staging_voxels.memory, 0, voxel_data_size, 0, reinterpret_cast<void **>(&voxel_mapped));
+        int32_t total_solid = 0;
         for (int32_t ci = 0; ci < vol->total_chunks; ci++)
         {
             gpu_chunk_copy_voxels(&vol->chunks[ci], voxel_mapped + ci * GPU_CHUNK_DATA_SIZE);
         }
+        /* DEBUG: Check chunk 0 data */
+        for (int32_t i = 0; i < 160; i++) /* First 5 Y layers: 32*5 = 160 voxels */
+        {
+            if (voxel_mapped[i] != 0)
+                total_solid++;
+        }
+        printf("  DEBUG: Chunk 0 first 160 voxels have %d solid\n", total_solid);
+        printf("  DEBUG: First 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+               voxel_mapped[0], voxel_mapped[1], voxel_mapped[2], voxel_mapped[3],
+               voxel_mapped[4], voxel_mapped[5], voxel_mapped[6], voxel_mapped[7]);
         vkUnmapMemory(device_, staging_voxels.memory);
 
         GPUChunkHeader *headers_mapped = nullptr;
@@ -313,6 +325,11 @@ namespace patch
         {
             headers_mapped[ci] = gpu_chunk_header_from_chunk(&vol->chunks[ci]);
         }
+        /* DEBUG: Show chunk 0 header */
+        printf("  DEBUG: Chunk 0 header: level0_lo=%08x level0_hi=%08x packed=%08x\n",
+               headers_mapped[0].level0_lo, headers_mapped[0].level0_hi, headers_mapped[0].packed);
+        printf("  DEBUG: Chunk 0 has_any=%d solid_count=%d\n",
+               (headers_mapped[0].packed & 0xFF), (headers_mapped[0].packed >> 16));
         vkUnmapMemory(device_, staging_headers.memory);
 
         VkCommandBufferAllocateInfo alloc_info{};

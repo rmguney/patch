@@ -29,7 +29,9 @@ layout(push_constant) uniform Constants {
     vec3 camera_pos;
     float pad1;
     int particle_count;
-    int pad2[3];
+    float near_plane;
+    float far_plane;
+    int pad2;
 } pc;
 
 // Ray-box intersection for axis-aligned cube
@@ -94,7 +96,5 @@ void main() {
     out_material = vec4(0.8, 0.0, 0.0, 0.0);  // roughness=0.8, metallic=0, emissive=0
     out_linear_depth = linear_depth;
 
-    float near = 0.1;
-    float far = 100.0;
-    gl_FragDepth = (far - near * far / linear_depth) / (far - near);
+    gl_FragDepth = (pc.far_plane - pc.near_plane * pc.far_plane / linear_depth) / (pc.far_plane - pc.near_plane);
 }

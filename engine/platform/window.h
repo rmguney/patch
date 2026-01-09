@@ -39,6 +39,7 @@ namespace patch
         bool f4; /* DEBUG currently inactive */
         bool f5; /* DEBUG: Export debug info */
         bool f6; /* DEBUG: Toggle terrain debug mode */
+        bool f7; /* DEBUG: Toggle free camera mode */
     };
 
     class Window

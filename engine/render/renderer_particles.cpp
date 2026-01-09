@@ -366,7 +366,9 @@ namespace patch
             float camera_pos[3];
             float pad1;
             int32_t particle_count;
-            int32_t pad2[3];
+            float near_plane;
+            float far_plane;
+            int32_t pad2;
         } pc;
 
         Mat4 vp = mat4_multiply(projection_matrix_, view_matrix_);
@@ -376,7 +378,9 @@ namespace patch
         pc.camera_pos[2] = camera_position_.z;
         pc.pad1 = 0.0f;
         pc.particle_count = static_cast<int32_t>(active_count);
-        pc.pad2[0] = pc.pad2[1] = pc.pad2[2] = 0;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
+        pc.pad2 = 0;
 
         vkCmdPushConstants(command_buffers_[current_frame_], particle_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

@@ -1430,7 +1430,11 @@ namespace patch
             int32_t frame_count;
             int32_t rt_quality;
             int32_t debug_mode;
-            int32_t reserved[10];
+            int32_t is_orthographic;
+            int32_t max_steps;
+            float near_plane;
+            float far_plane;
+            int32_t reserved[6];
         } pc;
 
         pc.inv_view = inv_view;
@@ -1457,6 +1461,10 @@ namespace patch
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
         pc.rt_quality = rt_quality_;
         pc.debug_mode = terrain_debug_mode_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.max_steps = 512;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
         memset(pc.reserved, 0, sizeof(pc.reserved));
 
         vkCmdPushConstants(command_buffers_[current_frame_], gbuffer_pipeline_layout_,
@@ -1520,11 +1528,15 @@ namespace patch
             int32_t frame_count;
             int32_t rt_quality;
             int32_t debug_mode;
-            int32_t reserved[10];
+            float near_plane;
+            float far_plane;
+            int32_t reserved[8];
         } pc;
 
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
         pc.bounds_min[0] = deferred_bounds_min_[0];
         pc.bounds_min[1] = deferred_bounds_min_[1];
         pc.bounds_min[2] = deferred_bounds_min_[2];

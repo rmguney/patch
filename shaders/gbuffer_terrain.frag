@@ -30,7 +30,11 @@ PUSH_CONSTANT uniform Constants {
     int frame_count;
     int rt_quality;
     int debug_mode;
-    int reserved[10];
+    int is_orthographic;
+    int max_steps;
+    float near_plane;
+    float far_plane;
+    int reserved[6];
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
@@ -54,7 +58,7 @@ layout(SET_BINDING(0, 4)) uniform sampler2D depth_tex;
 const int REGION_SIZE = 8;
 const int CHUNK_SIZE = 32;
 const int CHUNK_UINT_COUNT = 8192;
-const int MAX_RAYMARCH_STEPS = 256;
+const int DEFAULT_MAX_STEPS = 512;
 
 uint get_material(ivec3 p) {
     if (p.x < 0 || p.x >= pc.grid_size.x ||
@@ -158,10 +162,14 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     vec3 start_pos = ro + rd * t_start;
     vec3 grid_pos = world_to_grid(start_pos);
 
+    /* Clamp to valid grid range */
+    grid_pos = clamp(grid_pos, vec3(0.0), vec3(pc.grid_size) - 0.001);
+
     ivec3 map_pos = ivec3(floor(grid_pos));
     vec3 delta_dist = abs(1.0 / rd);
     ivec3 step_dir = ivec3(sign(rd));
 
+    /* Standard DDA side_dist initialization */
     vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
 
     ivec3 last_chunk = ivec3(-1000);
@@ -170,7 +178,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     bool region_empty = false;
     int current_chunk_idx = -1;
 
-    for (int i = 0; i < MAX_RAYMARCH_STEPS; i++) {
+    for (int i = 0; i < (pc.max_steps > 0 ? pc.max_steps : DEFAULT_MAX_STEPS); i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
@@ -253,13 +261,29 @@ float linear_depth_to_ndc(float linear_depth, float near, float far) {
 void main() {
     vec2 ndc = in_uv * 2.0 - 1.0;
 
-    vec4 ray_clip = vec4(ndc.x, -ndc.y, -1.0, 1.0);
-    vec4 ray_view = pc.inv_projection * ray_clip;
-    ray_view.z = -1.0;
-    ray_view.w = 0.0;
+    vec3 ray_origin;
+    vec3 ray_world;
 
-    vec3 ray_world = normalize((pc.inv_view * ray_view).xyz);
-    vec3 ray_origin = pc.camera_pos;
+    if (pc.is_orthographic != 0) {
+        /* Orthographic: parallel rays from near plane (Vulkan NDC z is [0,1]) */
+        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
+        vec4 near_view = pc.inv_projection * near_clip;
+        vec4 far_view = pc.inv_projection * far_clip;
+        vec3 near_world = (pc.inv_view * vec4(near_view.xyz, 1.0)).xyz;
+        vec3 far_world = (pc.inv_view * vec4(far_view.xyz, 1.0)).xyz;
+        ray_origin = near_world;
+        ray_world = normalize(far_world - near_world);
+    } else {
+        /* Perspective: rays from camera position (fast path, no clipping)
+           Note: Projection matrix already has Y-flip, no -ndc.y needed */
+        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
+        vec4 ray_view = pc.inv_projection * ray_clip;
+        ray_view.z = -1.0;
+        ray_view.w = 0.0;
+        ray_world = normalize((pc.inv_view * ray_view).xyz);
+        ray_origin = pc.camera_pos;
+    }
 
     /* Debug mode 2: solid magenta test pattern - shader is executing */
     if (pc.debug_mode == 2) {
@@ -296,6 +320,131 @@ void main() {
         return;
     }
 
+    /* Debug mode 3: show entry point and grid coords */
+    if (pc.debug_mode == 3) {
+        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
+            out_albedo = vec4(1.0, 0.0, 0.0, 1.0);
+        } else {
+            float t_start = max(box_hit.x, 0.001);
+            vec3 start_pos = ray_origin + ray_world * t_start;
+            vec3 grid_pos = world_to_grid(start_pos);
+            /* Show grid Y coordinate as color - floor should be Y=0-5 */
+            float y_norm = grid_pos.y / float(pc.grid_size.y);
+            out_albedo = vec4(y_norm, 1.0 - y_norm, 0.0, 1.0);
+        }
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
+    /* Debug mode 4: sample a specific voxel and show its material */
+    if (pc.debug_mode == 4) {
+        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
+            out_albedo = vec4(0.5, 0.0, 0.0, 1.0);
+        } else {
+            float t_start = max(box_hit.x, 0.001);
+            vec3 start_pos = ray_origin + ray_world * t_start;
+            vec3 grid_pos = world_to_grid(start_pos);
+            ivec3 voxel = ivec3(floor(grid_pos));
+            uint mat = get_material(voxel);
+            if (mat != 0u) {
+                out_albedo = vec4(0.0, 1.0, 0.0, 1.0);  /* Green: found solid */
+            } else {
+                out_albedo = vec4(0.0, 0.0, 1.0, 1.0);  /* Blue: empty at entry */
+            }
+        }
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
+    /* Debug mode 5: comprehensive buffer diagnostic */
+    if (pc.debug_mode == 5) {
+        /* Test multiple locations:
+           R = corner voxel (0,0,0) solid
+           G = center voxel (64,0,64) solid
+           B = chunk 0 has_any flag
+           All three should be bright for a properly filled floor.
+        */
+        uint mat_corner = get_material(ivec3(0, 0, 0));
+        uint mat_center = get_material(ivec3(pc.grid_size.x / 2, 0, pc.grid_size.z / 2));
+        bool chunk0_has_any = chunk_has_any(0);
+
+        out_albedo = vec4(
+            (mat_corner != 0u) ? 1.0 : 0.0,   /* R: corner voxel solid */
+            (mat_center != 0u) ? 1.0 : 0.0,   /* G: center voxel solid */
+            chunk0_has_any ? 1.0 : 0.0,       /* B: chunk 0 has_any */
+            1.0
+        );
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
+    /* Debug mode 6: brute force raymarch (no hierarchical skip) */
+    if (pc.debug_mode == 6) {
+        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
+            out_albedo = vec4(0.3, 0.0, 0.0, 1.0);
+        } else {
+            float t_start = max(box_hit.x, 0.001);
+            vec3 start_pos = ray_origin + ray_world * t_start;
+            vec3 grid_pos = world_to_grid(start_pos);
+            grid_pos = clamp(grid_pos, vec3(0.0), vec3(pc.grid_size) - 0.001);
+            ivec3 map_pos = ivec3(floor(grid_pos));
+            vec3 delta_dist = abs(1.0 / ray_world);
+            ivec3 step_dir = ivec3(sign(ray_world));
+            vec3 side_dist = (sign(ray_world) * (vec3(map_pos) - grid_pos) + sign(ray_world) * 0.5 + 0.5) * delta_dist;
+
+            bool found = false;
+            for (int i = 0; i < (pc.max_steps > 0 ? pc.max_steps : DEFAULT_MAX_STEPS); i++) {
+                if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
+                    map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
+                    map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
+                    break;
+                }
+                uint mat = get_material(map_pos);
+                if (mat != 0u) {
+                    found = true;
+                    break;
+                }
+                bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+                side_dist += vec3(mask) * delta_dist;
+                map_pos += ivec3(mask) * step_dir;
+            }
+
+            if (found) {
+                out_albedo = vec4(0.0, 1.0, 0.0, 1.0);  /* Green: found voxel */
+            } else {
+                out_albedo = vec4(0.0, 0.0, 1.0, 1.0);  /* Blue: no voxel found */
+            }
+        }
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
+    /* Debug mode 7: show ray direction for debugging */
+    if (pc.debug_mode == 7) {
+        /* Visualize ray direction: R=X, G=Y, B=Z (mapped from -1..1 to 0..1) */
+        out_albedo = vec4(ray_world * 0.5 + 0.5, 1.0);
+        out_normal = vec4(0.5, 0.5, 1.0, 1.0);
+        out_material = vec4(0.5, 0.0, 0.0, 0.0);
+        out_linear_depth = 10.0;
+        gl_FragDepth = 0.5;
+        return;
+    }
+
     HitInfo hit = raymarch_voxels(ray_origin, ray_world);
 
     if (!hit.hit) {
@@ -307,7 +456,5 @@ void main() {
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
     out_linear_depth = hit.t;
 
-    float near = 0.1;
-    float far = 100.0;
-    gl_FragDepth = linear_depth_to_ndc(hit.t, near, far);
+    gl_FragDepth = clamp(linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
 }

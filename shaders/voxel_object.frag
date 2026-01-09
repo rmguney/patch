@@ -43,7 +43,8 @@ layout(push_constant) uniform Constants {
     float pad1;
     int object_count;
     int atlas_dim;
-    int pad2[2];
+    float near_plane;
+    float far_plane;
 } pc;
 
 vec3 get_material_color(uint material_id) {
@@ -163,9 +164,7 @@ void main() {
             out_material = vec4(get_material_roughness(mat), get_material_metallic(mat), get_material_emissive(mat), 0.0);
             out_linear_depth = linear_depth;
 
-            float near = 0.1;
-            float far = 100.0;
-            gl_FragDepth = (far - near * far / linear_depth) / (far - near);
+            gl_FragDepth = (pc.far_plane - pc.near_plane * pc.far_plane / linear_depth) / (pc.far_plane - pc.near_plane);
 
             return;
         }

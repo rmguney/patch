@@ -67,11 +67,17 @@ extern "C"
 
         scene->sim_accumulator += dt;
 
-        while (scene->sim_accumulator >= SIM_TIMESTEP)
+        int ticks_this_frame = 0;
+        const int MAX_TICKS_PER_FRAME = 4;
+        while (scene->sim_accumulator >= SIM_TIMESTEP && ticks_this_frame < MAX_TICKS_PER_FRAME)
         {
             scene->vtable->tick(scene);
             scene->sim_accumulator -= SIM_TIMESTEP;
+            ticks_this_frame++;
         }
+
+        if (scene->sim_accumulator > SIM_TIMESTEP * 2)
+            scene->sim_accumulator = SIM_TIMESTEP * 2;
     }
 
     static inline void scene_handle_input(Scene *scene, float mouse_x, float mouse_y, bool left_down, bool right_down)

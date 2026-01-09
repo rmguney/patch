@@ -770,7 +770,8 @@ namespace patch
             float pad1;
             int32_t object_count;
             int32_t atlas_dim;
-            int32_t pad2[2];
+            float near_plane;
+            float far_plane;
         } pc;
 
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
@@ -781,8 +782,8 @@ namespace patch
         pc.pad1 = 0.0f;
         pc.object_count = world->object_count;
         pc.atlas_dim = static_cast<int32_t>(VOBJ_GRID_DIM);
-        pc.pad2[0] = 0;
-        pc.pad2[1] = 0;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
 
         vkCmdPushConstants(command_buffers_[current_frame_], vobj_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

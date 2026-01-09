@@ -31,7 +31,9 @@ layout(push_constant) uniform Constants {
     int frame_count;
     int rt_quality;
     int debug_mode;
-    int reserved[10];
+    float near_plane;
+    float far_plane;
+    int reserved[8];
 } pc;
 
 vec3 reconstruct_world_pos(vec2 uv, float depth) {
@@ -117,9 +119,7 @@ void main() {
     vec4 albedo_sample = texture(gbuffer_albedo, in_uv);
 
     if (albedo_sample.a < 0.01) {
-        vec3 sky_top = vec3(0.45, 0.65, 0.95);
-        vec3 sky_bottom = vec3(0.78, 0.88, 0.98);
-        out_color = vec4(mix(sky_bottom, sky_top, in_uv.y), 1.0);
+        out_color = vec4(0.2, 0.2, 0.25, 1.0);
         gl_FragDepth = 1.0;
         return;
     }
@@ -128,9 +128,7 @@ void main() {
     vec3 normal = texture(gbuffer_normal, in_uv).rgb * 2.0 - 1.0;
     vec4 material = texture(gbuffer_material, in_uv);
     float linear_depth = texture(gbuffer_depth, in_uv).r;
-    float near = 0.1;
-    float far = 100.0;
-    gl_FragDepth = linear_depth_to_ndc(max(linear_depth, near), near, far);
+    gl_FragDepth = linear_depth_to_ndc(max(linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
 
     float roughness = material.r;
     float metallic = material.g;

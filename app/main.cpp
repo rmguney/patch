@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <cmath>
 
 static BallPitParams params_from_settings(const AppSettings *s)
 {
@@ -464,12 +465,22 @@ int patch_main(int argc, char *argv[])
     bool f4_was_down = false;
     bool f5_was_down = false;  /* DEBUG: F5 export key */
     bool f6_was_down = false;  /* DEBUG: F6 terrain debug mode */
+    bool f7_was_down = false;  /* DEBUG: F7 free camera toggle */
     bool mouse_was_down = false;  /* DEBUG: For button click detection */
     bool show_profiling = false;
     int32_t dbg_total_uploaded = 0;
     DebugSceneInfo dbg_info = {};  /* DEBUG: Unified debug info */
     DebugExportFeedback dbg_feedback = {};  /* DEBUG: Export feedback */
     float fps_smooth = 0.0f;
+
+    /* DEBUG: Free camera state */
+    bool free_camera_active = false;
+    bool free_camera_mouse_captured = false;
+    Vec3 free_camera_pos = vec3_create(20.0f, 20.0f, 20.0f);
+    float free_camera_yaw = -135.0f;   /* degrees, looking toward origin */
+    float free_camera_pitch = -30.0f;  /* degrees */
+    float last_mouse_x = 0.0f;
+    float last_mouse_y = 0.0f;
 
     while (!window.should_close())
     {
@@ -508,14 +519,37 @@ int patch_main(int argc, char *argv[])
         bool f5_pressed = f5_down && !f5_was_down;
         f5_was_down = f5_down;
 
-        /* DEBUG: F6 to cycle terrain debug mode (0=normal, 1=AABB, 2=solid magenta) */
+        /* DEBUG: F6 to cycle terrain debug mode (0-7) */
         bool f6_down = window.keys().f6;
         bool f6_pressed = f6_down && !f6_was_down;
         f6_was_down = f6_down;
         if (f6_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 3);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 8);
+        }
+
+        /* DEBUG: F7 to toggle free camera mode */
+        bool f7_down = window.keys().f7;
+        bool f7_pressed = f7_down && !f7_was_down;
+        f7_was_down = f7_down;
+        if (f7_pressed)
+        {
+            free_camera_active = !free_camera_active;
+            if (free_camera_active)
+            {
+                /* Initialize free camera from current view */
+                free_camera_pos = renderer.get_camera_position();
+                renderer.set_perspective(60.0f, 0.1f, 200.0f);
+            }
+            else
+            {
+                /* Restore orthographic projection */
+                renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+                window.set_mouse_capture(false);
+                window.set_cursor_visible(true);
+                free_camera_mouse_captured = false;
+            }
         }
 
         if (escape_pressed)
@@ -663,7 +697,67 @@ int patch_main(int argc, char *argv[])
             scene_update(active_scene, dt);
         }
 
-        if (active_scene && current_scene == ActiveScene::BallPit)
+        /* DEBUG: Free camera controls */
+        if (free_camera_active)
+        {
+            /* Right click to capture/release mouse for looking */
+            if (window.mouse().right_down && !free_camera_mouse_captured)
+            {
+                free_camera_mouse_captured = true;
+                window.set_mouse_capture(true);
+                window.set_cursor_visible(false);
+                last_mouse_x = window.mouse().x;
+                last_mouse_y = window.mouse().y;
+            }
+            else if (!window.mouse().right_down && free_camera_mouse_captured)
+            {
+                free_camera_mouse_captured = false;
+                window.set_mouse_capture(false);
+                window.set_cursor_visible(true);
+            }
+
+            /* Mouse look when captured */
+            if (free_camera_mouse_captured)
+            {
+                float dx = window.mouse().x - last_mouse_x;
+                float dy = window.mouse().y - last_mouse_y;
+                last_mouse_x = window.mouse().x;
+                last_mouse_y = window.mouse().y;
+
+                const float sensitivity = 0.2f;
+                free_camera_yaw -= dx * sensitivity;
+                free_camera_pitch -= dy * sensitivity;
+
+                /* Clamp pitch to avoid gimbal lock */
+                if (free_camera_pitch > 89.0f) free_camera_pitch = 89.0f;
+                if (free_camera_pitch < -89.0f) free_camera_pitch = -89.0f;
+            }
+
+            /* Calculate camera forward/right vectors */
+            float yaw_rad = free_camera_yaw * 3.14159f / 180.0f;
+            float pitch_rad = free_camera_pitch * 3.14159f / 180.0f;
+
+            Vec3 forward;
+            forward.x = cosf(pitch_rad) * sinf(yaw_rad);
+            forward.y = sinf(pitch_rad);
+            forward.z = cosf(pitch_rad) * cosf(yaw_rad);
+
+            Vec3 right = vec3_cross(forward, vec3_create(0.0f, 1.0f, 0.0f));
+            right = vec3_normalize(right);
+
+            /* WASD movement */
+            const float move_speed = 20.0f * dt;
+            if (window.keys().w) free_camera_pos = vec3_add(free_camera_pos, vec3_scale(forward, move_speed));
+            if (window.keys().s) free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(forward, move_speed));
+            if (window.keys().d) free_camera_pos = vec3_add(free_camera_pos, vec3_scale(right, move_speed));
+            if (window.keys().a) free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(right, move_speed));
+            if (window.keys().space) free_camera_pos.y += move_speed;
+            if (window.keys().shift) free_camera_pos.y -= move_speed;
+
+            Vec3 target = vec3_add(free_camera_pos, forward);
+            renderer.set_look_at(free_camera_pos, target);
+        }
+        else if (active_scene && current_scene == ActiveScene::BallPit)
         {
             Vec3 center = vec3_create(
                 (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,

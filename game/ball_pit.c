@@ -183,6 +183,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     BallPitData *data = (BallPitData *)scene->user_data;
     (void)mouse_x;
     (void)mouse_y;
+    (void)right_down;
 
     /* Left click: destroy voxels and spawn debris particles */
     if (left_down)
@@ -225,13 +226,6 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             }
             #undef MAX_DESTROYED
         }
-    }
-
-    /* Right click: spawn a new random shape */
-    if (right_down && data->stats.spawn_count < data->params.max_spawns)
-    {
-        spawn_random_shape(data->objects, scene->bounds, &scene->rng);
-        data->stats.spawn_count++;
     }
 }
 

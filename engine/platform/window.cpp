@@ -16,7 +16,7 @@ namespace patch
     }
 
     Window::Window(int32_t, int32_t, const char *title)
-        : hwnd_(nullptr), hinstance_(GetModuleHandleA(nullptr)), width_(0), height_(0), resized_(false), should_close_(false), focused_(false), mouse_{0.0f, 0.0f, 0.0f, false, false}, keys_{false, false, false, false, false, false, false, false, false, false, false, false}
+        : hwnd_(nullptr), hinstance_(GetModuleHandleA(nullptr)), width_(0), height_(0), resized_(false), should_close_(false), focused_(false), mouse_{0.0f, 0.0f, 0.0f, false, false}, keys_{false, false, false, false, false, false, false, false, false, false, false, false, false}
     {
 
         POINT origin{0, 0};
@@ -137,7 +137,7 @@ namespace patch
             mouse_.right_down = false;
             mouse_.wheel_delta = 0.0f;
             /* Clear all keyboard state to prevent stuck keys */
-            keys_ = {false, false, false, false, false, false, false, false, false, false, false, false};
+            keys_ = {false, false, false, false, false, false, false, false, false, false, false, false, false};
             ReleaseCapture();
             return 0;
 
@@ -149,7 +149,7 @@ namespace patch
                 mouse_.right_down = false;
                 mouse_.wheel_delta = 0.0f;
                 /* Clear all keyboard state to prevent stuck keys */
-                keys_ = {false, false, false, false, false, false, false, false, false, false, false, false};
+                keys_ = {false, false, false, false, false, false, false, false, false, false, false, false, false};
                 ReleaseCapture();
             }
             return 0;
@@ -242,6 +242,9 @@ namespace patch
             break;
         case VK_F6:
             keys_.f6 = down;
+            break;
+        case VK_F7:
+            keys_.f7 = down;
             break;
         }
     }
