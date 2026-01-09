@@ -4,12 +4,12 @@
 #include <math.h>
 
 /* Physics stability constants (Box2D-inspired) */
-#define VOBJ_SLEEP_VELOCITY_THRESHOLD 0.08f   /* Linear velocity to start sleep timer */
-#define VOBJ_SLEEP_ANGULAR_THRESHOLD 0.15f    /* Angular velocity to start sleep timer */
-#define VOBJ_SLEEP_TIME_REQUIRED 0.3f         /* Time at low velocity before sleeping */
-#define VOBJ_WAKE_VELOCITY_THRESHOLD 0.2f     /* Wake up if velocity exceeds this */
-#define VOBJ_MIN_BOUNCE_VELOCITY 0.3f         /* Below this, drastically reduce bounce */
-#define VOBJ_SETTLING_VELOCITY 0.4f           /* Below this, skip topple forces */
+#define VOBJ_SLEEP_VELOCITY_THRESHOLD 0.12f   /* Linear velocity to start sleep timer */
+#define VOBJ_SLEEP_ANGULAR_THRESHOLD 0.25f    /* Angular velocity to start sleep timer */
+#define VOBJ_SLEEP_TIME_REQUIRED 0.4f         /* Time at low velocity before sleeping */
+#define VOBJ_WAKE_VELOCITY_THRESHOLD 0.3f     /* Wake up if velocity exceeds this */
+#define VOBJ_MIN_BOUNCE_VELOCITY 0.2f         /* Below this, drastically reduce bounce */
+#define VOBJ_SETTLING_VELOCITY 0.3f           /* Below this, skip topple forces */
 #define COLLISION_GROUND_ITERATIONS 3         /* Post-collision ground enforcement passes */
 
 static void update_cached_bounds(VoxelObject *obj)
@@ -70,6 +70,97 @@ static void ensure_cached_bounds(VoxelObject *obj)
     if (!obj->bounds_dirty)
         return;
     update_cached_bounds(obj);
+}
+
+/* Check if a world-space point hits a solid voxel in the object */
+static bool vobj_point_in_solid(const VoxelObject *obj, Vec3 world_point)
+{
+    float half_size = obj->voxel_size * (float)VOBJ_GRID_SIZE * 0.5f;
+    Vec3 pivot = vec3_add(obj->position, obj->center_of_mass_offset);
+
+    /* Transform to local space */
+    float rot_mat[9];
+    quat_to_mat3(obj->orientation, rot_mat);
+    float inv_rot[9];
+    mat3_transpose(rot_mat, inv_rot);
+
+    Vec3 rel = vec3_sub(world_point, pivot);
+    Vec3 local = mat3_transform_vec3(inv_rot, rel);
+
+    /* Convert to voxel grid coordinates */
+    int32_t vx = (int32_t)floorf((local.x + half_size) / obj->voxel_size);
+    int32_t vy = (int32_t)floorf((local.y + half_size) / obj->voxel_size);
+    int32_t vz = (int32_t)floorf((local.z + half_size) / obj->voxel_size);
+
+    if (vx < 0 || vx >= VOBJ_GRID_SIZE ||
+        vy < 0 || vy >= VOBJ_GRID_SIZE ||
+        vz < 0 || vz >= VOBJ_GRID_SIZE)
+        return false;
+
+    int32_t idx = vobj_index(vx, vy, vz);
+    return obj->voxels[idx].material != 0;
+}
+
+/* Sample voxels in overlap region to verify collision */
+static bool vobj_voxel_overlap_test(const VoxelObject *a, const VoxelObject *b,
+                                     Vec3 *out_contact, Vec3 *out_normal)
+{
+    float half_a = a->voxel_size * (float)VOBJ_GRID_SIZE * 0.5f;
+    Vec3 pivot_a = vec3_add(a->position, a->center_of_mass_offset);
+
+    float rot_a[9];
+    quat_to_mat3(a->orientation, rot_a);
+
+    int32_t contacts = 0;
+    Vec3 avg_contact = vec3_zero();
+    Vec3 avg_normal = vec3_zero();
+
+    /* Sample solid voxels from object A and check against object B */
+    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    {
+        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+        {
+            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                if (a->voxels[idx].material == 0)
+                    continue;
+
+                /* Compute world position of voxel center */
+                Vec3 local;
+                local.x = ((float)x + 0.5f) * a->voxel_size - half_a;
+                local.y = ((float)y + 0.5f) * a->voxel_size - half_a;
+                local.z = ((float)z + 0.5f) * a->voxel_size - half_a;
+
+                Vec3 rotated = mat3_transform_vec3(rot_a, local);
+                Vec3 world_pos = vec3_add(pivot_a, rotated);
+
+                /* Check if this voxel overlaps with B */
+                if (vobj_point_in_solid(b, world_pos))
+                {
+                    contacts++;
+                    avg_contact = vec3_add(avg_contact, world_pos);
+
+                    Vec3 to_b = vec3_sub(vec3_add(b->position, b->center_of_mass_offset), world_pos);
+                    float len = vec3_length(to_b);
+                    if (len > 0.001f)
+                        avg_normal = vec3_add(avg_normal, vec3_scale(to_b, 1.0f / len));
+                }
+            }
+        }
+    }
+
+    if (contacts == 0)
+        return false;
+
+    *out_contact = vec3_scale(avg_contact, 1.0f / (float)contacts);
+    float norm_len = vec3_length(avg_normal);
+    if (norm_len > 0.001f)
+        *out_normal = vec3_scale(avg_normal, 1.0f / norm_len);
+    else
+        *out_normal = vec3_create(0.0f, 1.0f, 0.0f);
+
+    return true;
 }
 
 static void apply_topple_torque(VoxelObject *obj, const Bounds3D *bounds, float dt)
@@ -139,19 +230,6 @@ static void resolve_rotated_ground_collision(VoxelObject *obj, const Bounds3D *b
         obj->velocity.x *= friction;
         obj->velocity.z *= friction;
 
-        /* Aggressive angular damping when on floor */
-        float ang_friction = (speed < VOBJ_SETTLING_VELOCITY) ? friction * 0.5f : friction * 0.8f;
-        obj->angular_velocity = vec3_scale(obj->angular_velocity, ang_friction);
-
-        /* Kill small angular velocities when settling */
-        if (speed < VOBJ_SETTLING_VELOCITY)
-        {
-            float ang_speed = vec3_length(obj->angular_velocity);
-            if (ang_speed < 0.3f)
-            {
-                obj->angular_velocity = vec3_zero();
-            }
-        }
         obj->bounds_dirty = true;
     }
     else if (lowest_y < bounds->min_y + ground_tolerance && obj->velocity.y < 0.5f)
@@ -202,9 +280,14 @@ static void resolve_object_collision(VoxelObject *a, VoxelObject *b, float resti
     if (overlap_x <= 0.0f || overlap_y <= 0.0f || overlap_z <= 0.0f)
         return;
 
-    /* Use sphere-based normal and overlap for proper 3D separation */
-    Vec3 normal = vec3_scale(delta, 1.0f / dist);
-    float overlap = min_dist - dist;
+    /* Voxel-accurate collision test - verify actual voxels overlap */
+    Vec3 voxel_contact, voxel_normal;
+    if (!vobj_voxel_overlap_test(a, b, &voxel_contact, &voxel_normal))
+        return; /* AABBs overlap but no actual voxel collision */
+
+    /* Use voxel-derived normal for more accurate response */
+    Vec3 normal = voxel_normal;
+    float overlap = fminf(fminf(overlap_x, overlap_y), overlap_z);
 
     float total_mass = a->mass + b->mass;
     if (total_mass < 0.001f) total_mass = 1.0f;
@@ -216,8 +299,17 @@ static void resolve_object_collision(VoxelObject *a, VoxelObject *b, float resti
     a->position = vec3_sub(a->position, vec3_scale(normal, separation * a_ratio));
     b->position = vec3_add(b->position, vec3_scale(normal, separation * b_ratio));
 
-    /* Impulse response */
-    Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);
+    /* Lever arms from center of mass to contact point */
+    Vec3 a_com = vec3_add(a->position, a->center_of_mass_offset);
+    Vec3 b_com = vec3_add(b->position, b->center_of_mass_offset);
+    Vec3 ra = vec3_sub(voxel_contact, a_com);
+    Vec3 rb = vec3_sub(voxel_contact, b_com);
+
+    /* Relative velocity at contact point (includes rotation) */
+    Vec3 va = vec3_add(a->velocity, vec3_cross(a->angular_velocity, ra));
+    Vec3 vb = vec3_add(b->velocity, vec3_cross(b->angular_velocity, rb));
+    Vec3 rel_vel = vec3_sub(va, vb);
+
     float vel_along_normal = vec3_dot(rel_vel, normal);
 
     /* Objects separating - no impulse needed */
@@ -229,7 +321,6 @@ static void resolve_object_collision(VoxelObject *a, VoxelObject *b, float resti
     /* Low relative velocity: just dampen normal velocity component (prevents jitter) */
     if (impact_speed < VOBJ_CONTACT_VELOCITY_THRESHOLD)
     {
-        /* Remove velocity component pushing objects together */
         a->velocity = vec3_sub(a->velocity, vec3_scale(normal, vel_along_normal * a_ratio));
         b->velocity = vec3_add(b->velocity, vec3_scale(normal, vel_along_normal * b_ratio));
         return;
@@ -245,27 +336,54 @@ static void resolve_object_collision(VoxelObject *a, VoxelObject *b, float resti
     float effective_restitution = (impact_speed > VOBJ_MIN_BOUNCE_VELOCITY)
         ? restitution : restitution * 0.3f;
 
-    float j = -(1.0f + effective_restitution) * vel_along_normal;
-    j /= (1.0f / a->mass + 1.0f / b->mass);
+    /* Compute effective mass including rotational inertia */
+    Vec3 ra_cross_n = vec3_cross(ra, normal);
+    Vec3 rb_cross_n = vec3_cross(rb, normal);
+
+    float eff_mass_inv = a->inv_mass + b->inv_mass
+        + vec3_dot(ra_cross_n, mat3_transform_vec3(a->inv_inertia_world, ra_cross_n))
+        + vec3_dot(rb_cross_n, mat3_transform_vec3(b->inv_inertia_world, rb_cross_n));
+
+    /* Normal impulse */
+    float j = -(1.0f + effective_restitution) * vel_along_normal / eff_mass_inv;
     Vec3 impulse = vec3_scale(normal, j);
 
-    a->velocity = vec3_add(a->velocity, vec3_scale(impulse, 1.0f / a->mass));
-    b->velocity = vec3_sub(b->velocity, vec3_scale(impulse, 1.0f / b->mass));
+    /* Apply linear impulse */
+    a->velocity = vec3_add(a->velocity, vec3_scale(impulse, a->inv_mass));
+    b->velocity = vec3_sub(b->velocity, vec3_scale(impulse, b->inv_mass));
 
-    /* Angular response from tangent with friction */
+    /* Apply angular impulse: Δω = I⁻¹ × (r × impulse) */
+    a->angular_velocity = vec3_add(a->angular_velocity,
+        mat3_transform_vec3(a->inv_inertia_world, vec3_cross(ra, impulse)));
+    b->angular_velocity = vec3_sub(b->angular_velocity,
+        mat3_transform_vec3(b->inv_inertia_world, vec3_cross(rb, impulse)));
+
+    /* Friction impulse */
     Vec3 tangent_vel = vec3_sub(rel_vel, vec3_scale(normal, vel_along_normal));
     float tangent_speed = vec3_length(tangent_vel);
     if (tangent_speed > 0.01f)
     {
-        Vec3 tangent = vec3_scale(tangent_vel, 1.0f / tangent_speed);
+        Vec3 tangent = vec3_scale(tangent_vel, -1.0f / tangent_speed);
+
+        Vec3 ra_cross_t = vec3_cross(ra, tangent);
+        Vec3 rb_cross_t = vec3_cross(rb, tangent);
+        float friction_eff_mass_inv = a->inv_mass + b->inv_mass
+            + vec3_dot(ra_cross_t, mat3_transform_vec3(a->inv_inertia_world, ra_cross_t))
+            + vec3_dot(rb_cross_t, mat3_transform_vec3(b->inv_inertia_world, rb_cross_t));
+
         float friction_coeff = 0.4f;
-        float friction_j = fminf(tangent_speed * friction_coeff, fabsf(j) * friction_coeff);
-        friction_j /= (1.0f / a->mass + 1.0f / b->mass);
+        float jt = tangent_speed / friction_eff_mass_inv;
+        jt = fminf(jt, fabsf(j) * friction_coeff);
+
+        Vec3 friction_impulse = vec3_scale(tangent, jt);
+
+        a->velocity = vec3_add(a->velocity, vec3_scale(friction_impulse, a->inv_mass));
+        b->velocity = vec3_sub(b->velocity, vec3_scale(friction_impulse, b->inv_mass));
 
         a->angular_velocity = vec3_add(a->angular_velocity,
-                                        vec3_scale(vec3_cross(normal, tangent), friction_j / a->mass));
+            mat3_transform_vec3(a->inv_inertia_world, vec3_cross(ra, friction_impulse)));
         b->angular_velocity = vec3_sub(b->angular_velocity,
-                                        vec3_scale(vec3_cross(normal, tangent), friction_j / b->mass));
+            mat3_transform_vec3(b->inv_inertia_world, vec3_cross(rb, friction_impulse)));
     }
 }
 
@@ -365,8 +483,6 @@ static void resolve_terrain_collision(VoxelObject *obj, VoxelVolume *terrain, fl
             Vec3 tangent_vel = vec3_sub(obj->velocity, vec3_scale(push_normal, vec3_dot(obj->velocity, push_normal)));
             obj->velocity = vec3_add(vec3_scale(push_normal, vec3_dot(obj->velocity, push_normal)),
                                       vec3_scale(tangent_vel, friction));
-
-            obj->angular_velocity = vec3_scale(obj->angular_velocity, friction * 0.8f);
         }
 
         if (push_normal.y > 0.5f)
@@ -447,25 +563,6 @@ void voxel_body_world_update(VoxelObjectWorld *world, float dt)
         float angular_factor = 1.0f / (1.0f + dt * angular_damp);
         obj->velocity = vec3_scale(obj->velocity, linear_factor);
         obj->angular_velocity = vec3_scale(obj->angular_velocity, angular_factor);
-
-        /* Additional settling behavior on ground */
-        if (obj->on_ground)
-        {
-            float speed = vec3_length(obj->velocity);
-            if (speed < VOBJ_SETTLING_VELOCITY)
-            {
-                if (speed < 0.08f)
-                {
-                    obj->velocity.x = 0.0f;
-                    obj->velocity.z = 0.0f;
-                }
-                float local_ang_speed = vec3_length(obj->angular_velocity);
-                if (local_ang_speed < 0.2f)
-                {
-                    obj->angular_velocity = vec3_zero();
-                }
-            }
-        }
 
         /* Pre-integration floor sweep check (CCD) - use half-extents for accuracy */
         float floor_y = world->bounds.min_y;

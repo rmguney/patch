@@ -32,25 +32,33 @@ layout(push_constant) uniform Constants {
     int pad2[3];
 } pc;
 
-// Ray-sphere intersection
-// Returns t (distance along ray) or -1 if no hit
-float intersect_sphere(vec3 ray_origin, vec3 ray_dir, vec3 center, float radius) {
-    vec3 oc = ray_origin - center;
-    float a = dot(ray_dir, ray_dir);
-    float b = 2.0 * dot(oc, ray_dir);
-    float c = dot(oc, oc) - radius * radius;
-    float discriminant = b * b - 4.0 * a * c;
-
-    if (discriminant < 0.0) {
-        return -1.0;
+// Ray-box intersection for axis-aligned cube
+// Returns vec2(t_near, t_far) or vec2(-1) if no hit
+vec2 intersect_box(vec3 ray_origin, vec3 ray_dir, vec3 box_min, vec3 box_max) {
+    vec3 inv_dir = 1.0 / ray_dir;
+    vec3 t0 = (box_min - ray_origin) * inv_dir;
+    vec3 t1 = (box_max - ray_origin) * inv_dir;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float t_near = max(max(tmin.x, tmin.y), tmin.z);
+    float t_far = min(min(tmax.x, tmax.y), tmax.z);
+    if (t_near > t_far || t_far < 0.0) {
+        return vec2(-1.0);
     }
+    return vec2(t_near, t_far);
+}
 
-    float t = (-b - sqrt(discriminant)) / (2.0 * a);
-    if (t < 0.0) {
-        t = (-b + sqrt(discriminant)) / (2.0 * a);
-    }
+// Get box face normal from hit point
+vec3 box_normal(vec3 hit_point, vec3 box_min, vec3 box_max) {
+    vec3 center = (box_min + box_max) * 0.5;
+    vec3 half_size = (box_max - box_min) * 0.5;
+    vec3 rel = hit_point - center;
+    vec3 abs_rel = abs(rel) / half_size;
+    float max_comp = max(max(abs_rel.x, abs_rel.y), abs_rel.z);
 
-    return t;
+    if (abs_rel.x >= max_comp - 0.001) return vec3(sign(rel.x), 0.0, 0.0);
+    if (abs_rel.y >= max_comp - 0.001) return vec3(0.0, sign(rel.y), 0.0);
+    return vec3(0.0, 0.0, sign(rel.z));
 }
 
 void main() {
@@ -61,19 +69,23 @@ void main() {
     ParticleGPU p = particles[in_particle_index];
 
     vec3 center = p.position_radius.xyz;
-    float radius = p.position_radius.w;
+    float half_size = p.position_radius.w;
     vec3 color = p.color_flags.rgb;
+
+    vec3 box_min = center - vec3(half_size);
+    vec3 box_max = center + vec3(half_size);
 
     vec3 ray_dir = normalize(in_world_pos - in_ray_origin);
 
-    float t = intersect_sphere(in_ray_origin, ray_dir, center, radius);
+    vec2 t_hit = intersect_box(in_ray_origin, ray_dir, box_min, box_max);
 
-    if (t < 0.0) {
+    if (t_hit.x < 0.0) {
         discard;
     }
 
+    float t = max(t_hit.x, 0.001);
     vec3 hit_point = in_ray_origin + ray_dir * t;
-    vec3 normal = normalize(hit_point - center);
+    vec3 normal = box_normal(hit_point, box_min, box_max);
 
     float linear_depth = t;
 

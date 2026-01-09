@@ -437,16 +437,14 @@ extern "C"
 
     static inline void quat_integrate(Quat *q, Vec3 w, float dt)
     {
-        Quat dq;
-        dq.x = w.x * dt;
-        dq.y = w.y * dt;
-        dq.z = w.z * dt;
-        dq.w = 0.0f;
-        dq = quat_multiply(dq, *q);
-        q->x += dq.x * 0.5f;
-        q->y += dq.y * 0.5f;
-        q->z += dq.z * 0.5f;
-        q->w += dq.w * 0.5f;
+        float omega = vec3_length(w);
+        float angle = omega * dt;
+        if (angle < 0.0001f)
+            return;
+
+        Vec3 axis = vec3_scale(w, 1.0f / omega);
+        Quat delta = quat_from_axis_angle(axis, angle);
+        *q = quat_multiply(delta, *q);
         *q = quat_normalize(*q);
     }
 

@@ -53,7 +53,7 @@ Build-time OBJ mesh to C voxel shape converter. Generates `VoxelShape` descripto
 ```
 
 - Uses triangle-AABB overlap (Separating Axis Theorem) for conservative voxelization
-- Self-contained OBJ parser (planning third party format supports separate from core engine)
+- Self-contained OBJ parser
 - Output is a C source file ready for inclusion in `content/voxel_shapes.c`
 
 ## Build

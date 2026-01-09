@@ -329,8 +329,8 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     world->bounds = bounds;
     world->voxel_size = voxel_size;
     world->gravity = vec3_create(0.0f, -10.0f, 0.0f);
-    world->damping = 0.99f;
-    world->angular_damping = 0.92f;
+    world->damping = 0.95f;         /* 5% linear damping coefficient */
+    world->angular_damping = 0.70f; /* 30% angular damping coefficient */
     world->restitution = 0.25f;      /* Lower bounce for faster settling */
     world->floor_friction = 0.7f;    /* More friction = faster stop */
     world->object_count = 0;

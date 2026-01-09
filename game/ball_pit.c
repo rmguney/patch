@@ -184,17 +184,46 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     (void)mouse_x;
     (void)mouse_y;
 
-    /* Left click: spawn explosion particles at clicked location */
+    /* Left click: destroy voxels and spawn debris particles */
     if (left_down)
     {
         VoxelObjectHit hit = voxel_object_world_raycast(data->objects,
                                                          data->ray_origin, data->ray_dir);
         if (hit.hit)
         {
-            VoxelObject *obj = &data->objects->objects[hit.object_index];
-            Vec3 color = material_get_color(obj->voxels[0].material);
-            particle_system_spawn_explosion(data->particles, &scene->rng,
-                                            hit.impact_point, 0.3f, color, 8, 3.0f);
+            /* Destroy voxels and collect their positions/materials */
+            #define MAX_DESTROYED 64
+            Vec3 destroyed_positions[MAX_DESTROYED];
+            uint8_t destroyed_materials[MAX_DESTROYED];
+
+            /* Destroy radius ~1.5 voxels */
+            float destroy_radius = data->objects->voxel_size * 1.5f;
+            int32_t destroyed = voxel_object_destroy_at_point(
+                data->objects, hit.object_index, hit.impact_point, destroy_radius,
+                destroyed_positions, destroyed_materials, MAX_DESTROYED);
+
+            /* Spawn one particle per destroyed voxel */
+            float voxel_size = data->objects->voxel_size;
+            for (int32_t i = 0; i < destroyed; i++)
+            {
+                Vec3 color = material_get_color(destroyed_materials[i]);
+                Vec3 dir = vec3_sub(destroyed_positions[i], hit.impact_point);
+                float dist = vec3_length(dir);
+                if (dist > 0.001f)
+                    dir = vec3_scale(dir, 1.0f / dist);
+                else
+                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                /* Outward velocity with some randomness */
+                float speed = 2.0f + rng_float(&scene->rng) * 2.0f;
+                Vec3 velocity = vec3_scale(dir, speed);
+                velocity.y += 1.0f;
+
+                particle_system_add(data->particles, &scene->rng,
+                                    destroyed_positions[i], velocity, color,
+                                    voxel_size * 0.4f);
+            }
+            #undef MAX_DESTROYED
         }
     }
 
