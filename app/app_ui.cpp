@@ -40,6 +40,8 @@ static void init_settings_menu(UIMenu *menu, const AppSettings *s)
                        s->max_spawns, 50, 1024, 50);
     ui_menu_add_slider(menu, "VOXEL SIZE (MM)", APP_ACTION_SETTING_VOXEL_SIZE,
                        s->voxel_size_mm, 50, 200, 10);
+    ui_menu_add_slider(menu, "RT QUALITY", APP_ACTION_SETTING_RT_QUALITY,
+                       s->rt_quality, 0, 3, 1); /* 0=Off, 1=Fair, 2=Good, 3=High */
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "RUN STRESS TEST", APP_ACTION_RUN_STRESS_TEST);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
@@ -58,6 +60,7 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
+    ui->settings.rt_quality = 1; /* Fair by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -112,6 +115,9 @@ static void sync_settings_from_menu(AppUI *ui)
             break;
         case APP_ACTION_SETTING_VOXEL_SIZE:
             ui->settings.voxel_size_mm = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_RT_QUALITY:
+            ui->settings.rt_quality = item->slider_value;
             break;
         }
     }

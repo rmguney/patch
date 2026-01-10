@@ -583,7 +583,7 @@ int patch_main(int argc, char *argv[])
         if (f4_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 9);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 13);
         }
 
         /* F5: Terrain debug mode previous */
@@ -593,7 +593,7 @@ int patch_main(int argc, char *argv[])
         if (f5_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 8) % 9);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 12) % 13);
         }
 
         /* Mouse click detection (released this frame) */
@@ -785,6 +785,9 @@ int patch_main(int argc, char *argv[])
         uint32_t image_index;
         renderer.begin_frame(&image_index);
 
+        /* Apply RT quality from settings */
+        renderer.set_rt_quality(app_ui_get_settings(&ui)->rt_quality);
+
         PROFILE_BEGIN(PROFILE_RENDER_TOTAL);
 
         PROFILE_BEGIN(PROFILE_RENDER_MAIN);
@@ -812,6 +815,7 @@ int patch_main(int argc, char *argv[])
                 {
                     dbg_total_uploaded += uploaded;
                     volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
+                    renderer.update_shadow_volume(terrain);
                 }
             }
 

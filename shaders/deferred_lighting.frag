@@ -31,20 +31,35 @@ layout(push_constant) uniform Constants {
     int frame_count;
     int rt_quality;
     int debug_mode;
+    int is_orthographic;
+    int max_steps;
     float near_plane;
     float far_plane;
-    int reserved[8];
+    int reserved[6];
 } pc;
 
 vec3 reconstruct_world_pos(vec2 uv, float depth) {
     vec2 ndc = uv * 2.0 - 1.0;
-    ndc.y = -ndc.y;
-    vec4 clip = vec4(ndc, 0.0, 1.0);
-    vec4 view = pc.inv_projection * clip;
-    view.xyz /= view.w;
-    vec3 view_dir = normalize(view.xyz);
-    vec3 world_dir = (pc.inv_view * vec4(view_dir, 0.0)).xyz;
-    return pc.cam_pos + world_dir * depth;
+
+    if (pc.is_orthographic != 0) {
+        /* Orthographic: ray origin varies per pixel, direction is constant */
+        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
+        vec4 near_view = pc.inv_projection * near_clip;
+        vec4 far_view = pc.inv_projection * far_clip;
+        vec3 near_world = (pc.inv_view * vec4(near_view.xyz, 1.0)).xyz;
+        vec3 far_world = (pc.inv_view * vec4(far_view.xyz, 1.0)).xyz;
+        vec3 ray_dir = normalize(far_world - near_world);
+        return near_world + ray_dir * depth;
+    } else {
+        /* Perspective: match terrain shader's ray computation exactly */
+        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
+        vec4 ray_view = pc.inv_projection * ray_clip;
+        ray_view.z = -1.0;
+        ray_view.w = 0.0;
+        vec3 ray_world = normalize((pc.inv_view * ray_view).xyz);
+        return pc.cam_pos + ray_world * depth;
+    }
 }
 
 vec3 aces_tonemap(vec3 x) {
@@ -60,59 +75,47 @@ float linear_depth_to_ndc(float linear_depth, float near, float far) {
     return (far - near * far / linear_depth) / (far - near);
 }
 
-float traceShadowRayLOD(vec3 origin, vec3 dir, float max_dist) {
-    ivec3 shadow_vol_size_0 = textureSize(shadow_volume_tex, 0);
-    if (shadow_vol_size_0.x < 1) {
+float traceShadowRayLOD(vec3 origin, vec3 dir, float max_dist, float t_jitter) {
+    ivec3 vol_size = textureSize(shadow_volume_tex, 0);
+    if (vol_size.x < 1) {
         return 1.0;
     }
 
     vec3 bounds_size = pc.bounds_max - pc.bounds_min;
     vec3 inv_bounds = 1.0 / bounds_size;
 
-    float base_step = pc.voxel_size * 2.0;
-    vec3 pos = origin + dir * pc.voxel_size;
-    float t = pc.voxel_size;
+    /* Simple single-LOD trace at mip 0 for accuracy */
+    float step_size = pc.voxel_size * 2.0;
+    int max_steps = int(max_dist / step_size) + 1;
+    max_steps = min(max_steps, 64);
 
-    for (int lod = 2; lod >= 0; lod--)
+    /* Jitter starting t to break up banding patterns */
+    float t = pc.voxel_size + t_jitter * step_size;
+    for (int i = 0; i < max_steps; i++)
     {
-        ivec3 vol_size = textureSize(shadow_volume_tex, lod);
-        float step_size = base_step * float(1 << lod);
-        int max_steps = int(max_dist / step_size) + 1;
-        max_steps = min(max_steps, 24);
+        vec3 pos = origin + dir * t;
+        vec3 uvw = (pos - pc.bounds_min) * inv_bounds;
 
-        for (int i = 0; i < max_steps; i++)
-        {
-            vec3 uvw = (pos - pc.bounds_min) * inv_bounds;
-
-            if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) {
-                return 1.0;
-            }
-
-            ivec3 texel = ivec3(uvw * vec3(vol_size));
-            texel = clamp(texel, ivec3(0), vol_size - 1);
-
-            uint occ = texelFetch(shadow_volume_tex, texel, lod).r;
-            if (occ != 0u) {
-                if (lod == 0) {
-                    return 0.0;
-                }
-                break;
-            }
-
-            t += step_size;
-            pos = origin + dir * t;
-
-            if (t > max_dist) {
-                return 1.0;
-            }
+        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) {
+            return 1.0;
         }
+
+        ivec3 texel = ivec3(uvw * vec3(vol_size));
+        texel = clamp(texel, ivec3(0), vol_size - 1);
+
+        uint occ = texelFetch(shadow_volume_tex, texel, 0).r;
+        if (occ != 0u) {
+            return 0.0;
+        }
+
+        t += step_size;
     }
 
     return 1.0;
 }
 
-float traceShadowRay(vec3 origin, vec3 dir, float max_dist) {
-    return traceShadowRayLOD(origin, dir, max_dist);
+float traceShadowRay(vec3 origin, vec3 dir, float max_dist, float t_jitter) {
+    return traceShadowRayLOD(origin, dir, max_dist, t_jitter);
 }
 
 void main() {
@@ -138,27 +141,61 @@ void main() {
     vec3 N = normalize(normal);
     vec3 V = normalize(pc.cam_pos - world_pos);
 
+    /* DEBUG: Visualize world position (should be stable when camera moves) */
+    if (pc.debug_mode == 10) {
+        vec3 wp_color = fract(world_pos * 0.1);
+        out_color = vec4(wp_color, 1.0);
+        return;
+    }
+
+    /* DEBUG: Visualize shadow UVW (should map 0-1 across terrain bounds) */
+    if (pc.debug_mode == 11) {
+        vec3 bounds_size = pc.bounds_max - pc.bounds_min;
+        vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
+        out_color = vec4(uvw, 1.0);
+        return;
+    }
+
+    /* DEBUG: Show shadow value only (white=lit, black=shadow) */
+    if (pc.debug_mode == 12) {
+        vec3 shadow_origin = world_pos + N * pc.voxel_size * 0.5;
+        vec3 light_dir = normalize(vec3(-0.6, 0.9, 0.35));
+        float s = traceShadowRay(shadow_origin, light_dir, 30.0, 0.0);
+        out_color = vec4(vec3(s), 1.0);
+        return;
+    }
+
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
 
     float shadow = 1.0;
     if (pc.rt_quality > 0) {
-        vec3 shadow_origin = world_pos + N * pc.voxel_size * 0.5;
-
         vec2 noise_uv = gl_FragCoord.xy / 128.0;
-        float noise = texture(blue_noise_tex, noise_uv).r;
-        noise = fract(noise + float(pc.frame_count) * 0.6180339887);
+        float base_noise = texture(blue_noise_tex, noise_uv).r;
+        base_noise = fract(base_noise + float(pc.frame_count) * 0.6180339887);
 
-        float penumbra = 0.01 + 0.01 * float(pc.rt_quality);
-        float angle = noise * 6.28318;
-        float radius = noise * penumbra;
+        /* Jitter shadow origin along normal to break up banding */
+        float origin_jitter = (base_noise - 0.5) * pc.voxel_size * 0.5;
+        vec3 shadow_origin = world_pos + N * (pc.voxel_size * 0.5 + origin_jitter);
+
         vec3 tangent = normalize(cross(key_light_dir, vec3(0.0, 1.0, 0.01)));
         vec3 bitangent = cross(key_light_dir, tangent);
-        vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
-        vec3 jittered_light = normalize(key_light_dir + jitter);
 
-        shadow = traceShadowRay(shadow_origin, jittered_light, 30.0);
+        /* Multi-sample shadow with stratified jittering */
+        int num_samples = pc.rt_quality; /* 1, 2, or 3 samples */
+        float shadow_sum = 0.0;
+        float penumbra = 0.02 + 0.02 * float(pc.rt_quality);
+
+        for (int s = 0; s < num_samples; s++) {
+            float noise = fract(base_noise + float(s) * 0.618);
+            float angle = (float(s) + noise) * 6.28318 / float(num_samples);
+            float radius = sqrt(noise) * penumbra;
+            vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
+            vec3 jittered_light = normalize(key_light_dir + jitter);
+            shadow_sum += traceShadowRay(shadow_origin, jittered_light, 30.0, noise);
+        }
+        shadow = shadow_sum / float(num_samples);
         shadow = mix(0.35, 1.0, shadow);
     }
 

@@ -115,6 +115,9 @@ namespace patch
          */
         int32_t upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices);
 
+        /* Update shadow volume from current terrain state (call after terrain changes) */
+        void update_shadow_volume(const VoxelVolume *vol);
+
         /* GPU raymarched particle rendering */
         void render_particles_raymarched(const ParticleSystem *sys);
 
@@ -311,7 +314,7 @@ namespace patch
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;
-        int rt_quality_ = 0; /* 0=Off, 1=Fair, 2=Good, 3=High */
+        int rt_quality_ = 1; /* 0=Off, 1=Fair, 2=Good, 3=High */
         int terrain_debug_mode_ = 0; /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
 
@@ -445,6 +448,7 @@ namespace patch
         void upload_shadow_volume(const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
                                   const uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
                                   const uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2);
+        void update_shadow_volume_descriptor();
 
         bool create_blue_noise_texture();
         void destroy_blue_noise_texture();

@@ -424,10 +424,58 @@ namespace patch
                                  mip1.data(), w1, h1, d1,
                                  mip2.data(), w2, h2, d2);
 
+            update_shadow_volume_descriptor();
+
             shadow_volume_last_frame_ = vol->current_frame;
         }
 
         PROFILE_END(PROFILE_VOLUME_INIT);
+    }
+
+    void Renderer::update_shadow_volume(const VoxelVolume *vol)
+    {
+        if (!vol || !gbuffer_initialized_ || !shadow_volume_image_)
+            return;
+
+        int32_t voxels_x = vol->chunks_x * CHUNK_SIZE;
+        int32_t voxels_y = vol->chunks_y * CHUNK_SIZE;
+        int32_t voxels_z = vol->chunks_z * CHUNK_SIZE;
+
+        uint32_t w0 = static_cast<uint32_t>(voxels_x >> 1);
+        uint32_t h0 = static_cast<uint32_t>(voxels_y >> 1);
+        uint32_t d0 = static_cast<uint32_t>(voxels_z >> 1);
+
+        if (w0 == 0 || h0 == 0 || d0 == 0)
+            return;
+
+        size_t size0 = static_cast<size_t>(w0) * h0 * d0;
+        uint32_t w1 = w0 >> 1;
+        if (w1 == 0) w1 = 1;
+        uint32_t h1 = h0 >> 1;
+        if (h1 == 0) h1 = 1;
+        uint32_t d1 = d0 >> 1;
+        if (d1 == 0) d1 = 1;
+        size_t size1 = static_cast<size_t>(w1) * h1 * d1;
+
+        uint32_t w2 = w1 >> 1;
+        if (w2 == 0) w2 = 1;
+        uint32_t h2 = h1 >> 1;
+        if (h2 == 0) h2 = 1;
+        uint32_t d2 = d1 >> 1;
+        if (d2 == 0) d2 = 1;
+        size_t size2 = static_cast<size_t>(w2) * h2 * d2;
+
+        std::vector<uint8_t> mip0(size0);
+        std::vector<uint8_t> mip1(size1);
+        std::vector<uint8_t> mip2(size2);
+
+        uint32_t out_w, out_h, out_d;
+        volume_pack_shadow_volume(vol, mip0.data(), &out_w, &out_h, &out_d);
+        volume_generate_shadow_mips(mip0.data(), w0, h0, d0, mip1.data(), mip2.data());
+
+        upload_shadow_volume(mip0.data(), w0, h0, d0,
+                             mip1.data(), w1, h1, d1,
+                             mip2.data(), w2, h2, d2);
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)

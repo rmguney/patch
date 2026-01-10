@@ -146,12 +146,14 @@ struct HitInfo {
     float emissive;
     float roughness;
     float metallic;
+    bvec3 step_mask;
 };
 
 HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
+    info.step_mask = bvec3(false, true, false);
 
     vec2 box_hit = intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
@@ -178,6 +180,28 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     bool region_empty = false;
     int current_chunk_idx = -1;
 
+    /* Compute initial entry face from AABB intersection for first voxel.
+       If camera is inside bounds (box_hit.x < 0), use first DDA step direction. */
+    bvec3 last_mask;
+    if (box_hit.x > 0.0) {
+        vec3 inv_rd = 1.0 / rd;
+        vec3 t0 = (pc.bounds_min - ro) * inv_rd;
+        vec3 t1 = (pc.bounds_max - ro) * inv_rd;
+        vec3 tmin = min(t0, t1);
+        float max_tmin = max(max(tmin.x, tmin.y), tmin.z);
+        last_mask = bvec3(
+            abs(tmin.x - max_tmin) < 0.0001,
+            abs(tmin.y - max_tmin) < 0.0001,
+            abs(tmin.z - max_tmin) < 0.0001
+        );
+    } else {
+        /* Camera inside bounds - use first voxel face based on fractional position */
+        vec3 frac_pos = fract(grid_pos);
+        vec3 dist_to_face = mix(frac_pos, 1.0 - frac_pos, greaterThan(rd, vec3(0.0)));
+        float min_dist = min(min(dist_to_face.x, dist_to_face.y), dist_to_face.z);
+        last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
+    }
+
     for (int i = 0; i < (pc.max_steps > 0 ? pc.max_steps : DEFAULT_MAX_STEPS); i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
@@ -196,6 +220,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
 
         if (chunk_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+            last_mask = mask;
             side_dist += vec3(mask) * delta_dist;
             map_pos += ivec3(mask) * step_dir;
             continue;
@@ -210,6 +235,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
 
         if (region_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+            last_mask = mask;
             side_dist += vec3(mask) * delta_dist;
             map_pos += ivec3(mask) * step_dir;
             continue;
@@ -223,6 +249,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
             info.emissive = get_material_emissive(mat);
             info.roughness = get_material_roughness(mat);
             info.metallic = get_material_metallic(mat);
+            info.step_mask = last_mask;
 
             vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
             vec3 voxel_max = voxel_min + pc.voxel_size;
@@ -230,23 +257,21 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
             info.t = voxel_hit.x;
             info.pos = ro + rd * info.t;
 
-            vec3 voxel_center = voxel_min + pc.voxel_size * 0.5;
-            vec3 local = info.pos - voxel_center;
-            vec3 abs_local = abs(local);
-            float max_comp = max(max(abs_local.x, abs_local.y), abs_local.z);
-
-            if (abs_local.x >= max_comp - 0.001) {
-                info.normal = vec3(sign(local.x), 0.0, 0.0);
-            } else if (abs_local.y >= max_comp - 0.001) {
-                info.normal = vec3(0.0, sign(local.y), 0.0);
+            /* Use DDA step mask for normal - much more robust than position comparison */
+            info.normal = vec3(0.0);
+            if (last_mask.x) {
+                info.normal.x = -sign(rd.x);
+            } else if (last_mask.y) {
+                info.normal.y = -sign(rd.y);
             } else {
-                info.normal = vec3(0.0, 0.0, sign(local.z));
+                info.normal.z = -sign(rd.z);
             }
 
             return info;
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+        last_mask = mask;
         side_dist += vec3(mask) * delta_dist;
         map_pos += ivec3(mask) * step_dir;
     }

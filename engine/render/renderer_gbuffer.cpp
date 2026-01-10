@@ -879,6 +879,30 @@ namespace patch
         destroy_buffer(&staging);
     }
 
+    void Renderer::update_shadow_volume_descriptor()
+    {
+        if (!shadow_volume_view_ || !deferred_lighting_descriptor_sets_[0])
+            return;
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorImageInfo shadow_vol_info{};
+            shadow_vol_info.sampler = shadow_volume_sampler_;
+            shadow_vol_info.imageView = shadow_volume_view_;
+            shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = deferred_lighting_descriptor_sets_[i];
+            write.dstBinding = 4;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.descriptorCount = 1;
+            write.pImageInfo = &shadow_vol_info;
+
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        }
+    }
+
     bool Renderer::create_blue_noise_texture()
     {
         constexpr uint32_t NOISE_SIZE = 128;
@@ -1528,9 +1552,11 @@ namespace patch
             int32_t frame_count;
             int32_t rt_quality;
             int32_t debug_mode;
+            int32_t is_orthographic;
+            int32_t max_steps;
             float near_plane;
             float far_plane;
-            int32_t reserved[8];
+            int32_t reserved[6];
         } pc;
 
         pc.inv_view = inv_view;
@@ -1559,6 +1585,8 @@ namespace patch
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
         pc.rt_quality = rt_quality_;
         pc.debug_mode = terrain_debug_mode_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.max_steps = 512;
         memset(pc.reserved, 0, sizeof(pc.reserved));
 
         vkCmdPushConstants(command_buffers_[current_frame_], deferred_lighting_layout_,
