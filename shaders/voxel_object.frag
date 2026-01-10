@@ -45,6 +45,8 @@ layout(push_constant) uniform Constants {
     int atlas_dim;
     float near_plane;
     float far_plane;
+    int debug_mode;
+    int pad2[3];
 } pc;
 
 vec3 get_material_color(uint material_id) {
@@ -159,7 +161,14 @@ void main() {
 
             float linear_depth = length(hit_world - in_ray_origin);
 
-            out_albedo = vec4(get_material_color(mat), 1.0);
+            vec3 color = get_material_color(mat);
+
+            /* Debug mode 8: Collider visualization - orange tint for voxel objects */
+            if (pc.debug_mode == 8) {
+                color = mix(color, vec3(1.0, 0.6, 0.2), 0.7);
+            }
+
+            out_albedo = vec4(color, 1.0);
             out_normal = vec4(world_normal * 0.5 + 0.5, 1.0);
             out_material = vec4(get_material_roughness(mat), get_material_metallic(mat), get_material_emissive(mat), 0.0);
             out_linear_depth = linear_depth;

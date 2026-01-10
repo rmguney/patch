@@ -35,11 +35,11 @@ namespace patch
         bool space;
         bool shift;
         bool escape;
-        bool f3; /* DEBUG currently inactive */
-        bool f4; /* DEBUG currently inactive */
-        bool f5; /* DEBUG: Export debug info */
-        bool f6; /* DEBUG: Toggle terrain debug mode */
-        bool f7; /* DEBUG: Toggle free camera mode */
+        bool f1; /* Camera mode switch */
+        bool f2; /* Debug overlay toggle */
+        bool f3; /* Export debug info */
+        bool f4; /* Terrain debug mode next */
+        bool f5; /* Terrain debug mode previous */
     };
 
     class Window

@@ -445,13 +445,22 @@ void main() {
         return;
     }
 
+    /* Debug mode 8: collider visualization handled after hit (cyan tint) */
+
     HitInfo hit = raymarch_voxels(ray_origin, ray_world);
 
     if (!hit.hit) {
         discard;
     }
 
-    out_albedo = vec4(hit.color, 1.0);
+    vec3 final_color = hit.color;
+
+    /* Debug mode 8: Collider visualization - cyan tint for terrain */
+    if (pc.debug_mode == 8) {
+        final_color = mix(final_color, vec3(0.2, 0.8, 1.0), 0.7);
+    }
+
+    out_albedo = vec4(final_color, 1.0);
     out_normal = vec4(hit.normal * 0.5 + 0.5, 1.0);
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
     out_linear_depth = hit.t;

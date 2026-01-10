@@ -231,6 +231,12 @@ namespace patch
         case VK_ESCAPE:
             keys_.escape = down;
             break;
+        case VK_F1:
+            keys_.f1 = down;
+            break;
+        case VK_F2:
+            keys_.f2 = down;
+            break;
         case VK_F3:
             keys_.f3 = down;
             break;
@@ -239,12 +245,6 @@ namespace patch
             break;
         case VK_F5:
             keys_.f5 = down;
-            break;
-        case VK_F6:
-            keys_.f6 = down;
-            break;
-        case VK_F7:
-            keys_.f7 = down;
             break;
         }
     }

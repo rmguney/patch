@@ -248,7 +248,7 @@ static bool draw_overlay(Renderer &renderer, float fps, const BallPitStats *stat
     }
 
     y_px += unit * 14.0f;
-    snprintf(line, sizeof(line), "--- Debug/Profiler (F3 toggle, F5 export) ---");
+    snprintf(line, sizeof(line), "--- Debug (F2 toggle, F3 export, F4/F5 mode) ---");
     renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.9f, 0.6f), 1.0f, line);
 
 #ifdef PATCH_PROFILE
@@ -315,7 +315,7 @@ static bool draw_overlay(Renderer &renderer, float fps, const BallPitStats *stat
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 0.5f), 1.0f, line);
 
         y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  F6: %d  DRAWS: %d",
+        snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d  DRAWS: %d",
                  dbg->camera_pos[0], dbg->camera_pos[1], dbg->camera_pos[2],
                  dbg->terrain_debug_mode, dbg->terrain_draw_count);
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 1.0f), 1.0f, line);
@@ -328,7 +328,7 @@ static bool draw_overlay(Renderer &renderer, float fps, const BallPitStats *stat
         Vec3 btn_color = hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
         renderer.draw_ui_quad_px(x_px, y_px, btn_w, btn_h, btn_color, 0.9f);
         renderer.draw_ui_text_px(x_px + unit * 4.0f, y_px + unit * 2.0f, text_h_px,
-                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT ALL] F5");
+                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT ALL] F3");
 
         if (feedback && feedback->timer > 0.0f)
         {
@@ -471,11 +471,12 @@ int patch_main(int argc, char *argv[])
     renderer.set_view_angle(45.0f, 26.0f);
 
     bool escape_was_down = false;
-    bool f3_was_down = false;
-    bool f5_was_down = false;    /* DEBUG: F5 export key */
-    bool f6_was_down = false;    /* DEBUG: F6 terrain debug mode */
-    bool f7_was_down = false;    /* DEBUG: F7 free camera toggle */
-    bool mouse_was_down = false; /* DEBUG: For button click detection */
+    bool f1_was_down = false;    /* F1: Camera mode switch */
+    bool f2_was_down = false;    /* F2: Debug overlay toggle */
+    bool f3_was_down = false;    /* F3: Export debug info */
+    bool f4_was_down = false;    /* F4: Terrain debug mode next */
+    bool f5_was_down = false;    /* F5: Terrain debug mode previous */
+    bool mouse_was_down = false; /* For button click detection */
     bool show_overlay = false;
     int32_t dbg_total_uploaded = 0;
     DebugSceneInfo dbg_info = {};          /* DEBUG: Unified debug info */
@@ -514,30 +515,11 @@ int patch_main(int argc, char *argv[])
         bool escape_pressed = escape_down && !escape_was_down;
         escape_was_down = escape_down;
 
-        bool f3_down = window.keys().f3;
-        bool f3_pressed = f3_down && !f3_was_down;
-        f3_was_down = f3_down;
-
-        /* DEBUG: F5 to export debug info */
-        bool f5_down = window.keys().f5;
-        bool f5_pressed = f5_down && !f5_was_down;
-        f5_was_down = f5_down;
-
-        /* DEBUG: F6 to cycle terrain debug mode (0-7) */
-        bool f6_down = window.keys().f6;
-        bool f6_pressed = f6_down && !f6_was_down;
-        f6_was_down = f6_down;
-        if (f6_pressed)
-        {
-            int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 8);
-        }
-
-        /* DEBUG: F7 to toggle free camera mode */
-        bool f7_down = window.keys().f7;
-        bool f7_pressed = f7_down && !f7_was_down;
-        f7_was_down = f7_down;
-        if (f7_pressed)
+        /* F1: Camera mode switch */
+        bool f1_down = window.keys().f1;
+        bool f1_pressed = f1_down && !f1_was_down;
+        f1_was_down = f1_down;
+        if (f1_pressed)
         {
             free_camera_active = !free_camera_active;
             if (free_camera_active)
@@ -574,7 +556,11 @@ int patch_main(int argc, char *argv[])
             }
         }
 
-        if (f3_pressed)
+        /* F2: Debug overlay toggle */
+        bool f2_down = window.keys().f2;
+        bool f2_pressed = f2_down && !f2_was_down;
+        f2_was_down = f2_down;
+        if (f2_pressed)
         {
             show_overlay = !show_overlay;
 #ifdef PATCH_PROFILE
@@ -585,17 +571,42 @@ int patch_main(int argc, char *argv[])
 #endif
         }
 
-        /* DEBUG: Mouse click detection (released this frame) */
+        /* F3: Export debug info */
+        bool f3_down = window.keys().f3;
+        bool f3_pressed = f3_down && !f3_was_down;
+        f3_was_down = f3_down;
+
+        /* F4: Terrain debug mode next */
+        bool f4_down = window.keys().f4;
+        bool f4_pressed = f4_down && !f4_was_down;
+        f4_was_down = f4_down;
+        if (f4_pressed)
+        {
+            int mode = renderer.DEBUG_get_terrain_debug_mode();
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 9);
+        }
+
+        /* F5: Terrain debug mode previous */
+        bool f5_down = window.keys().f5;
+        bool f5_pressed = f5_down && !f5_was_down;
+        f5_was_down = f5_down;
+        if (f5_pressed)
+        {
+            int mode = renderer.DEBUG_get_terrain_debug_mode();
+            renderer.DEBUG_set_terrain_debug_mode((mode + 8) % 9);
+        }
+
+        /* Mouse click detection (released this frame) */
         bool mouse_down = window.mouse().left_down;
         bool mouse_clicked = !mouse_down && mouse_was_down;
         mouse_was_down = mouse_down;
 
-        /* DEBUG: Update feedback timer */
+        /* Update feedback timer */
         if (dbg_feedback.timer > 0.0f)
             dbg_feedback.timer -= dt;
 
-        /* DEBUG: F5 to export debug info (handled later with button click) */
-        bool do_export = f5_pressed;
+        /* F3 to export debug info (handled later with button click) */
+        bool do_export = f3_pressed;
         (void)do_export; /* Will be combined with button click below */
 
         app_ui_update(&ui, dt, window.mouse().x, window.mouse().y,
@@ -886,7 +897,7 @@ int patch_main(int argc, char *argv[])
                                        mouse_clicked, &dbg_feedback);
         }
 
-        /* DEBUG: Export on F5 or button click (exports all: debug + profile if available) */
+        /* Export on F3 or button click (exports all: debug + profile if available) */
         if (dbg_has_info && (do_export || btn_clicked))
         {
             const char *debug_filename = "debug_info.txt";
