@@ -42,7 +42,6 @@ TEST(single_island_detection)
     VoxelVolume *vol = volume_create(2, 2, 2, bounds);
     ASSERT(vol != NULL);
 
-    /* Create a single connected block */
     Vec3 min_corner = {-2.0f, 0.0f, -2.0f};
     Vec3 max_corner = {2.0f, 4.0f, 2.0f};
     volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
@@ -53,7 +52,6 @@ TEST(single_island_detection)
     ConnectivityResult result;
     connectivity_analyze_volume(vol, bounds.min_y + 0.1f, 0, &work, &result);
 
-    /* Should find exactly one island (anchored to floor) */
     ASSERT(result.island_count == 1);
     ASSERT(result.floating_count == 0);
     ASSERT(result.anchored_count == 1);
@@ -70,7 +68,6 @@ TEST(floating_island_detection)
     VoxelVolume *vol = volume_create(2, 2, 2, bounds);
     ASSERT(vol != NULL);
 
-    /* Create a floating block (not touching floor) */
     Vec3 min_corner = {-2.0f, 10.0f, -2.0f};
     Vec3 max_corner = {2.0f, 14.0f, 2.0f};
     volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
@@ -81,7 +78,6 @@ TEST(floating_island_detection)
     ConnectivityResult result;
     connectivity_analyze_volume(vol, bounds.min_y + 0.1f, 0, &work, &result);
 
-    /* Should find exactly one floating island */
     ASSERT(result.island_count == 1);
     ASSERT(result.floating_count == 1);
     ASSERT(result.anchored_count == 0);
@@ -98,7 +94,6 @@ TEST(multiple_islands)
     VoxelVolume *vol = volume_create(2, 2, 2, bounds);
     ASSERT(vol != NULL);
 
-    /* Create two separate blocks - one anchored, one floating */
     Vec3 anchored_min = {-8.0f, 0.0f, -2.0f};
     Vec3 anchored_max = {-4.0f, 4.0f, 2.0f};
     volume_fill_box(vol, anchored_min, anchored_max, MAT_STONE);
@@ -113,7 +108,6 @@ TEST(multiple_islands)
     ConnectivityResult result;
     connectivity_analyze_volume(vol, bounds.min_y + 0.1f, 0, &work, &result);
 
-    /* Should find two islands */
     ASSERT(result.island_count == 2);
     ASSERT(result.floating_count == 1);
     ASSERT(result.anchored_count == 1);
@@ -129,7 +123,6 @@ TEST(island_extraction)
     VoxelVolume *vol = volume_create(2, 2, 2, bounds);
     ASSERT(vol != NULL);
 
-    /* Create a small floating block */
     Vec3 min_corner = {0.0f, 10.0f, 0.0f};
     Vec3 max_corner = {2.0f, 12.0f, 2.0f};
     volume_fill_box(vol, min_corner, max_corner, MAT_WOOD);
@@ -144,13 +137,12 @@ TEST(island_extraction)
     ASSERT(result.islands[0].is_floating);
     ASSERT(result.islands[0].voxel_count > 0);
 
-    /* Extract the island voxels */
     const IslandInfo *island = &result.islands[0];
     int32_t size_x = island->voxel_max_x - island->voxel_min_x + 1;
     int32_t size_y = island->voxel_max_y - island->voxel_min_y + 1;
     int32_t size_z = island->voxel_max_z - island->voxel_min_z + 1;
 
-    uint8_t voxels[64 * 64 * 64]; /* Large enough */
+    uint8_t voxels[64 * 64 * 64];
     memset(voxels, 0, sizeof(voxels));
 
     Vec3 origin;
@@ -171,12 +163,10 @@ TEST(island_removal)
     VoxelVolume *vol = volume_create(2, 2, 2, bounds);
     ASSERT(vol != NULL);
 
-    /* Create a floating block */
     Vec3 min_corner = {0.0f, 10.0f, 0.0f};
     Vec3 max_corner = {2.0f, 12.0f, 2.0f};
     volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
 
-    /* Verify voxels exist */
     Vec3 check_pos = {1.0f, 11.0f, 1.0f};
     ASSERT(volume_get_at(vol, check_pos) == MAT_STONE);
 
@@ -188,12 +178,10 @@ TEST(island_removal)
 
     ASSERT(result.island_count == 1);
 
-    /* Remove the island */
     volume_edit_begin(vol);
     connectivity_remove_island(vol, &result.islands[0], &work);
     volume_edit_end(vol);
 
-    /* Verify voxels removed */
     ASSERT(volume_get_at(vol, check_pos) == MAT_AIR);
 
     connectivity_work_destroy(&work);
@@ -203,21 +191,14 @@ TEST(island_removal)
 
 TEST(stack_overflow_failsafe)
 {
-    /*
-     * Test that large islands exceeding CONNECTIVITY_WORK_STACK_SIZE (16384)
-     * are handled gracefully. The failsafe marks overflowed islands as ANCHOR_FLOOR
-     * to prevent incorrect fragmentation.
-     */
     Bounds3D bounds = {-64.0f, 64.0f, 0.0f, 96.0f, -64.0f, 64.0f};
-    VoxelVolume *vol = volume_create(4, 3, 4, bounds); /* 4x3x4 chunks = 128x96x128 voxels */
+    VoxelVolume *vol = volume_create(4, 3, 4, bounds);
     ASSERT(vol != NULL);
 
-    /* Create a large floating cube that may exceed stack capacity */
     Vec3 min_corner = {-24.0f, 32.0f, -24.0f};
-    Vec3 max_corner = {24.0f, 80.0f, 24.0f}; /* 48x48x48 world units */
+    Vec3 max_corner = {24.0f, 80.0f, 24.0f};
     volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
 
-    /* Verify voxels exist */
     Vec3 check_pos = {0.0f, 56.0f, 0.0f};
     ASSERT(volume_get_at(vol, check_pos) == MAT_STONE);
 
@@ -227,10 +208,8 @@ TEST(stack_overflow_failsafe)
     ConnectivityResult result;
     connectivity_analyze_volume(vol, bounds.min_y + 0.1f, 0, &work, &result);
 
-    /* Analysis must complete without crashing */
     ASSERT(result.island_count >= 1);
 
-    /* Find the large island */
     const IslandInfo *large_island = NULL;
     int32_t max_voxels = 0;
     for (int32_t i = 0; i < result.island_count; i++)
@@ -244,20 +223,11 @@ TEST(stack_overflow_failsafe)
     ASSERT(large_island != NULL);
     ASSERT(large_island->voxel_count > 0);
 
-    /*
-     * If stack overflow occurred during flood fill, island should be marked
-     * as ANCHOR_FLOOR (failsafe). If no overflow, island should be floating.
-     * Both cases are valid - we're testing that overflow doesn't crash and
-     * that the failsafe works correctly.
-     */
     if (large_island->anchor == ANCHOR_FLOOR && !large_island->is_floating)
     {
-        /* Stack overflow failsafe triggered - this is expected for very large islands */
-        /* The island is marked anchored to prevent incorrect fragmentation */
     }
     else
     {
-        /* No overflow - island should be properly detected as floating */
         ASSERT(large_island->is_floating || large_island->anchor != ANCHOR_NONE);
     }
 
@@ -270,12 +240,10 @@ TEST(determinism)
 {
     Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
 
-    /* Create two identical volumes */
     VoxelVolume *vol1 = volume_create(2, 2, 2, bounds);
     VoxelVolume *vol2 = volume_create(2, 2, 2, bounds);
     ASSERT(vol1 != NULL && vol2 != NULL);
 
-    /* Fill both with same pattern */
     Vec3 positions[] = {
         {-6.0f, 0.0f, -2.0f},
         {-4.0f, 0.0f, -2.0f},
@@ -299,7 +267,6 @@ TEST(determinism)
     connectivity_analyze_volume(vol1, bounds.min_y + 0.1f, 0, &work1, &result1);
     connectivity_analyze_volume(vol2, bounds.min_y + 0.1f, 0, &work2, &result2);
 
-    /* Results must be identical */
     ASSERT(result1.island_count == result2.island_count);
     ASSERT(result1.floating_count == result2.floating_count);
     ASSERT(result1.anchored_count == result2.anchored_count);
@@ -317,6 +284,84 @@ TEST(determinism)
     return 1;
 }
 
+TEST(analyze_region_subset)
+{
+    Bounds3D bounds = {-32.0f, 32.0f, 0.0f, 32.0f, -32.0f, 32.0f};
+    VoxelVolume *vol = volume_create(4, 2, 4, bounds);
+    ASSERT(vol != NULL);
+
+    Vec3 block1_min = {-20.0f, 10.0f, -2.0f};
+    Vec3 block1_max = {-16.0f, 14.0f, 2.0f};
+    volume_fill_box(vol, block1_min, block1_max, MAT_STONE);
+
+    Vec3 block2_min = {16.0f, 10.0f, -2.0f};
+    Vec3 block2_max = {20.0f, 14.0f, 2.0f};
+    volume_fill_box(vol, block2_min, block2_max, MAT_BRICK);
+
+    ConnectivityWorkBuffer work;
+    ASSERT(connectivity_work_init(&work, vol));
+
+    Vec3 region_min = {-32.0f, 0.0f, -32.0f};
+    Vec3 region_max = {0.0f, 32.0f, 32.0f};
+
+    ConnectivityResult result;
+    connectivity_analyze_region(vol, region_min, region_max,
+                                bounds.min_y + 0.1f, 0, &work, &result);
+
+    printf("(found %d islands in left region) ", result.island_count);
+
+    ASSERT(result.island_count == 1);
+    ASSERT(result.floating_count == 1);
+
+    connectivity_work_clear(&work);
+    connectivity_analyze_volume(vol, bounds.min_y + 0.1f, 0, &work, &result);
+
+    printf("(found %d islands in full volume) ", result.island_count);
+
+    ASSERT(result.island_count == 2);
+
+    connectivity_work_destroy(&work);
+    volume_destroy(vol);
+    return 1;
+}
+
+TEST(analyze_dirty_chunks)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
+    VoxelVolume *vol = volume_create(2, 2, 2, bounds);
+    ASSERT(vol != NULL);
+
+    Vec3 block_min = {0.0f, 10.0f, 0.0f};
+    Vec3 block_max = {4.0f, 14.0f, 4.0f};
+
+    volume_edit_begin(vol);
+    volume_fill_box(vol, block_min, block_max, MAT_STONE);
+    volume_edit_end(vol);
+
+    volume_begin_frame(vol);
+    int32_t dirty_indices[VOLUME_MAX_DIRTY_PER_FRAME];
+    int32_t count = volume_get_dirty_chunks(vol, dirty_indices, VOLUME_MAX_DIRTY_PER_FRAME);
+    volume_mark_chunks_uploaded(vol, dirty_indices, count);
+
+    ConnectivityWorkBuffer work;
+    ASSERT(connectivity_work_init(&work, vol));
+
+    volume_edit_begin(vol);
+    volume_edit_set(vol, vec3_create(2.0f, 12.0f, 2.0f), MAT_AIR);
+    volume_edit_end(vol);
+
+    ConnectivityResult result;
+    connectivity_analyze_dirty(vol, bounds.min_y + 0.1f, 0, &work, &result);
+
+    printf("(dirty analysis found %d islands) ", result.island_count);
+
+    ASSERT(result.island_count >= 1);
+
+    connectivity_work_destroy(&work);
+    volume_destroy(vol);
+    return 1;
+}
+
 int main(void)
 {
     printf("=== Connectivity Tests ===\n");
@@ -329,6 +374,10 @@ int main(void)
     RUN_TEST(island_removal);
     RUN_TEST(stack_overflow_failsafe);
     RUN_TEST(determinism);
+
+    printf("\n=== Region/Dirty Analysis Tests ===\n");
+    RUN_TEST(analyze_region_subset);
+    RUN_TEST(analyze_dirty_chunks);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;

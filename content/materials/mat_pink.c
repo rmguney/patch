@@ -1,5 +1,5 @@
 /*
- * mat_pink.c - Decorative pink (emissive)
+ * mat_pink.c - Decorative pink
  */
 #include "content/materials.h"
 
@@ -11,7 +11,7 @@ const MaterialDescriptor g_mat_pink = {
     .hardness = 0.3f,
     .friction = 0.5f,
     .restitution = 0.3f,
-    .emissive = 0.3f,
+    .emissive = 0.0f,
     .roughness = 0.6f,
     .blast_resistance = 0.2f,
     .burn_rate = 0.0f,

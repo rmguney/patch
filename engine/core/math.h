@@ -64,11 +64,6 @@ extern "C"
         return vec3_create(v.x * s, v.y * s, v.z * s);
     }
 
-    static inline Vec3 vec3_negate(Vec3 v)
-    {
-        return vec3_create(-v.x, -v.y, -v.z);
-    }
-
     static inline float vec3_dot(Vec3 a, Vec3 b)
     {
         return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -253,72 +248,11 @@ extern "C"
         return inv;
     }
 
-    static inline Mat4 mat4_rotation_x(float angle)
-    {
-        Mat4 m = mat4_identity();
-        float c = cosf(angle);
-        float s = sinf(angle);
-        m.m[5] = c;
-        m.m[6] = s;
-        m.m[9] = -s;
-        m.m[10] = c;
-        return m;
-    }
-
-    static inline Mat4 mat4_rotation_y(float angle)
-    {
-        Mat4 m = mat4_identity();
-        float c = cosf(angle);
-        float s = sinf(angle);
-        m.m[0] = c;
-        m.m[2] = -s;
-        m.m[8] = s;
-        m.m[10] = c;
-        return m;
-    }
-
-    static inline Mat4 mat4_rotation_z(float angle)
-    {
-        Mat4 m = mat4_identity();
-        float c = cosf(angle);
-        float s = sinf(angle);
-        m.m[0] = c;
-        m.m[1] = s;
-        m.m[4] = -s;
-        m.m[5] = c;
-        return m;
-    }
-
-    static inline Mat4 mat4_rotation_euler(Vec3 r)
-    {
-        Mat4 rx = mat4_rotation_x(r.x);
-        Mat4 ry = mat4_rotation_y(r.y);
-        Mat4 rz = mat4_rotation_z(r.z);
-        return mat4_multiply(mat4_multiply(rz, ry), rx);
-    }
-
     /*
      * 3x3 rotation matrix helpers (compact rotation-only, no translation).
      * Used by renderers to transform voxel positions efficiently.
      * m[0-8] stored row-major: m[0],m[1],m[2] = row 0, etc.
      */
-    static inline void mat3_rotation_euler(Vec3 rot, float m[9])
-    {
-        float cx = cosf(rot.x), sx = sinf(rot.x);
-        float cy = cosf(rot.y), sy = sinf(rot.y);
-        float cz = cosf(rot.z), sz = sinf(rot.z);
-
-        m[0] = cy * cz;
-        m[1] = -cy * sz;
-        m[2] = sy;
-        m[3] = sx * sy * cz + cx * sz;
-        m[4] = -sx * sy * sz + cx * cz;
-        m[5] = -sx * cy;
-        m[6] = -cx * sy * cz + sx * sz;
-        m[7] = cx * sy * sz + sx * cz;
-        m[8] = cx * cy;
-    }
-
     static inline Vec3 mat3_transform_vec3(const float m[9], Vec3 p)
     {
         return vec3_create(
@@ -491,21 +425,6 @@ extern "C"
         m->m[13] = 0.0f;
         m->m[14] = 0.0f;
         m->m[15] = 1.0f;
-    }
-
-    static inline float angle_wrap(float angle)
-    {
-        while (angle > K_PI)
-            angle -= 2.0f * K_PI;
-        while (angle < -K_PI)
-            angle += 2.0f * K_PI;
-        return angle;
-    }
-
-    static inline float lerp_angle(float from, float to, float t)
-    {
-        float diff = angle_wrap(to - from);
-        return from + diff * t;
     }
 
     static inline float lerpf(float a, float b, float t)

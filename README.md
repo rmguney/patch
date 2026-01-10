@@ -1,6 +1,6 @@
 # Patch
 
-Raymarched voxel engine with deterministic simulation and destruction
+Raymarched voxel engine with deterministic simulation and destruction. This project serves as an R&D testbed for proprietary game and simulation concepts.
 
 - **Simulation:** C11, data-oriented, chunked voxel volumes
 - **Orchestration/render/platform:** C++20 (Vulkan renderer + Win32 window/input)
@@ -23,25 +23,6 @@ Raymarched voxel engine with deterministic simulation and destruction
 
 ![building gif](.github/readme/building.gif)
 
-## Project structure
-
-```
-patch/
-├── engine/        # Reusable engine code (no game logic)
-│   ├── core/      # Types, math, RNG, arenas
-│   ├── voxel/     # Chunked volumes (32³), occupancy, connectivity
-│   ├── physics/   # Physics, particles, broadphase
-│   ├── sim/       # Scene tick, entities, voxel objects, terrain detach
-│   ├── render/    # Vulkan renderer (read-only view of sim state)
-│   └── platform/  # Win32 window/input/time
-├── content/       # C data descriptors (materials, scenes, voxel shapes)
-├── game/          # Sample scenes + render-view builders
-├── tools/         # Build-time utilities
-├── tests/         # Automated tests running in during compile time
-├── shaders/       # GLSL shaders (compiled + embedded at build time)
-└── app/           # Thin executable wiring everything together
-```
-
 ## Tools
 
 ### voxelize
@@ -55,6 +36,25 @@ Build-time OBJ mesh to C voxel shape converter. Generates `VoxelShape` descripto
 - Uses triangle-AABB overlap (Separating Axis Theorem) for conservative voxelization
 - Self-contained OBJ parser
 - Output is a C source file ready for inclusion in `content/voxel_shapes.c`
+
+## Project structure
+
+```
+patch/
+├── engine/        # Reusable engine code (no game logic)
+│   ├── core/      # Types, math, RNG, spatial hash, profiling
+│   ├── voxel/     # Chunked volumes (32³), occupancy, connectivity
+│   ├── physics/   # Voxel body physics, particles
+│   ├── sim/       # Voxel objects, terrain detach, UI
+│   ├── render/    # Vulkan renderer (read-only view of sim state)
+│   └── platform/  # Win32 window/input/time
+├── content/       # C data descriptors (materials, scenes, voxel shapes)
+├── game/          # Sample scenes + render-view builders
+├── tools/         # Build-time utilities
+├── tests/         # Automated tests (run during compile via CTest)
+├── shaders/       # GLSL shaders (compiled + embedded at build time)
+└── app/           # Thin executable wiring everything together
+```
 
 ## Build
 

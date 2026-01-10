@@ -119,7 +119,7 @@ void main() {
     vec4 albedo_sample = texture(gbuffer_albedo, in_uv);
 
     if (albedo_sample.a < 0.01) {
-        out_color = vec4(0.2, 0.2, 0.25, 1.0);
+        out_color = vec4(0.75, 0.80, 0.95, 1.0);
         gl_FragDepth = 1.0;
         return;
     }
@@ -139,8 +139,8 @@ void main() {
     vec3 V = normalize(pc.cam_pos - world_pos);
 
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
-    vec3 key_color = vec3(1.05, 1.0, 0.96);
-    float key_strength = 1.25;
+    vec3 key_color = vec3(1.0, 0.98, 0.95);
+    float key_strength = 1.0;
 
     float shadow = 1.0;
     if (pc.rt_quality > 0) {

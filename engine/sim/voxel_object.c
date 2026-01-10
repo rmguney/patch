@@ -8,7 +8,6 @@
 
 static int32_t allocate_object_slot(VoxelObjectWorld *world)
 {
-    /* First try to find inactive slot */
     for (int32_t i = 0; i < world->object_count; i++)
     {
         if (!world->objects[i].active)
@@ -16,7 +15,6 @@ static int32_t allocate_object_slot(VoxelObjectWorld *world)
             return i;
         }
     }
-    /* Allocate new slot if available */
     if (world->object_count >= VOBJ_MAX_OBJECTS)
         return -1;
     return world->object_count++;
@@ -44,12 +42,18 @@ static void recalc_object_shape(VoxelObject *obj)
             {
                 if (obj->voxels[vobj_index(x, y, z)].material != 0)
                 {
-                    if (x < min_x) min_x = x;
-                    if (x > max_x) max_x = x;
-                    if (y < min_y) min_y = y;
-                    if (y > max_y) max_y = y;
-                    if (z < min_z) min_z = z;
-                    if (z > max_z) max_z = z;
+                    if (x < min_x)
+                        min_x = x;
+                    if (x > max_x)
+                        max_x = x;
+                    if (y < min_y)
+                        min_y = y;
+                    if (y > max_y)
+                        max_y = y;
+                    if (z < min_z)
+                        min_z = z;
+                    if (z > max_z)
+                        max_z = z;
                     com_x += (float)x + 0.5f;
                     com_y += (float)y + 0.5f;
                     com_z += (float)z + 0.5f;
@@ -98,50 +102,22 @@ static void recalc_object_shape(VoxelObject *obj)
                         float dy = (cy - com_y) * obj->voxel_size;
                         float dz = (cz - com_z) * obj->voxel_size;
                         float dist_sq = dx * dx + dy * dy + dz * dz;
-                        if (dist_sq > max_dist_sq) max_dist_sq = dist_sq;
+                        if (dist_sq > max_dist_sq)
+                            max_dist_sq = dist_sq;
                     }
                 }
             }
         }
     }
     obj->radius = sqrtf(max_dist_sq);
-
-    int32_t support_min_x = VOBJ_GRID_SIZE, support_max_x = 0;
-    int32_t support_min_z = VOBJ_GRID_SIZE, support_max_z = 0;
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
-    {
-        for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
-        {
-            if (obj->voxels[vobj_index(x, min_y, z)].material != 0)
-            {
-                if (x < support_min_x) support_min_x = x;
-                if (x > support_max_x) support_max_x = x;
-                if (z < support_min_z) support_min_z = z;
-                if (z > support_max_z) support_max_z = z;
-            }
-        }
-    }
-
-    float support_cx = ((float)support_min_x + (float)support_max_x + 1.0f) * 0.5f * obj->voxel_size - half_size_full;
-    float support_cz = ((float)support_min_z + (float)support_max_z + 1.0f) * 0.5f * obj->voxel_size - half_size_full;
-    float support_half_x = ((float)(support_max_x - support_min_x + 1) * 0.5f) * obj->voxel_size;
-    float support_half_z = ((float)(support_max_z - support_min_z + 1) * 0.5f) * obj->voxel_size;
-    obj->support_min = vec3_create(support_cx - support_half_x, 0.0f, support_cz - support_half_z);
-    obj->support_max = vec3_create(support_cx + support_half_x, 0.0f, support_cz + support_half_z);
 }
 
-/*
- * Flood fill for island splitting (iterative with explicit stack)
- * Stack size bounded to VOBJ_TOTAL_VOXELS (worst case: all voxels connected)
- */
 static void flood_fill_voxels(const VoxelObject *obj, uint8_t *visited,
                               int32_t start_x, int32_t start_y, int32_t start_z)
 {
-    /* Explicit stack: packed coordinates (x + y*16 + z*256 = index) */
-    int32_t stack[VOBJ_TOTAL_VOXELS];
+    static int32_t stack[VOBJ_TOTAL_VOXELS];
     int32_t stack_top = 0;
 
-    /* Push starting voxel if valid */
     int32_t start_idx = vobj_index(start_x, start_y, start_z);
     if (start_x < 0 || start_x >= VOBJ_GRID_SIZE ||
         start_y < 0 || start_y >= VOBJ_GRID_SIZE ||
@@ -152,7 +128,6 @@ static void flood_fill_voxels(const VoxelObject *obj, uint8_t *visited,
     stack[stack_top++] = start_idx;
     visited[start_idx] = 1;
 
-    /* 6-connected neighbor offsets */
     static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
     static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
     static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
@@ -184,14 +159,9 @@ static void flood_fill_voxels(const VoxelObject *obj, uint8_t *visited,
     }
 }
 
-/*
- * Split disconnected islands (iterative with work queue)
- * Uses bounded queue sized to VOBJ_MAX_OBJECTS
- */
 static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_index)
 {
-    /* Work queue of object indices to process */
-    int32_t work_queue[VOBJ_MAX_OBJECTS];
+    static int32_t work_queue[VOBJ_MAX_OBJECTS];
     int32_t queue_head = 0;
     int32_t queue_tail = 0;
 
@@ -207,7 +177,6 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
 
         uint8_t visited[VOBJ_TOTAL_VOXELS] = {0};
 
-        /* Find first solid voxel */
         int32_t first_x = -1, first_y = -1, first_z = -1;
         for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS && first_x < 0; i++)
         {
@@ -219,10 +188,8 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
         if (first_x < 0)
             continue;
 
-        /* Flood fill from first voxel */
         flood_fill_voxels(obj, visited, first_x, first_y, first_z);
 
-        /* Count unvisited solid voxels */
         int32_t unvisited_count = 0;
         for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
         {
@@ -234,7 +201,6 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
         if (unvisited_count == 0)
             continue;
 
-        /* Create new object for disconnected voxels */
         if (world->object_count >= VOBJ_MAX_OBJECTS)
             continue;
 
@@ -244,13 +210,11 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
         new_obj->velocity = obj->velocity;
         new_obj->angular_velocity = obj->angular_velocity;
         new_obj->orientation = obj->orientation;
-        new_obj->rotation = obj->rotation;
         new_obj->voxel_size = obj->voxel_size;
         new_obj->active = true;
         new_obj->bounds_dirty = true;
         new_obj->voxel_count = 0;
 
-        /* Move unvisited voxels to new object */
         for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
         {
             if (obj->voxels[i].material != 0 && !visited[i])
@@ -268,7 +232,6 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
         recalc_object_shape(obj);
         recalc_object_shape(new_obj);
 
-        /* Apply separation impulse to prevent immediate re-collision */
         Vec3 obj_com = vec3_add(obj->position, obj->center_of_mass_offset);
         Vec3 new_com = vec3_add(new_obj->position, new_obj->center_of_mass_offset);
         Vec3 sep_dir = vec3_sub(new_com, obj_com);
@@ -281,19 +244,14 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
             float total_mass = obj->mass + new_obj->mass;
 
             obj->velocity = vec3_sub(obj->velocity,
-                vec3_scale(sep_dir, impulse * new_obj->mass / total_mass));
+                                     vec3_scale(sep_dir, impulse * new_obj->mass / total_mass));
             new_obj->velocity = vec3_add(new_obj->velocity,
-                vec3_scale(sep_dir, impulse * obj->mass / total_mass));
+                                         vec3_scale(sep_dir, impulse * obj->mass / total_mass));
 
             obj->velocity.y += 0.3f;
             new_obj->velocity.y += 0.3f;
         }
 
-        /* Force inertia recomputation for both fragments */
-        obj->inv_inertia_local[0] = 0.0f;
-        new_obj->inv_inertia_local[0] = 0.0f;
-
-        /* Add angular velocity so fragments tumble (like fresh spheres get random spin) */
         float ang_scale = 1.5f;
         Vec3 sep_cross = vec3_cross(sep_dir, vec3_create(0.0f, 1.0f, 0.0f));
         float cross_len = vec3_length(sep_cross);
@@ -308,17 +266,12 @@ static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_inde
         obj->angular_velocity = vec3_add(obj->angular_velocity, sep_cross);
         new_obj->angular_velocity = vec3_sub(new_obj->angular_velocity, sep_cross);
 
-        /* Add both to work queue for further splitting (bounded check) */
         if (queue_tail < VOBJ_MAX_OBJECTS)
             work_queue[queue_tail++] = current_idx;
         if (queue_tail < VOBJ_MAX_OBJECTS)
             work_queue[queue_tail++] = new_obj_idx;
     }
 }
-
-/*
- * Public API
- */
 
 VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
 {
@@ -328,17 +281,8 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
 
     world->bounds = bounds;
     world->voxel_size = voxel_size;
-    world->gravity = vec3_create(0.0f, -10.0f, 0.0f);
-    world->damping = 0.95f;         /* 5% linear damping coefficient */
-    world->angular_damping = 0.70f; /* 30% angular damping coefficient */
-    world->restitution = 0.25f;      /* Lower bounce for faster settling */
-    world->floor_friction = 0.7f;    /* More friction = faster stop */
     world->object_count = 0;
-    world->enable_object_collision = true;
-
-    /* Cell size = 2x typical object radius for good distribution */
-    float cell_size = 1.5f;
-    spatial_hash_init(&world->collision_grid, cell_size, bounds);
+    world->terrain = NULL;
 
     return world;
 }
@@ -376,11 +320,9 @@ int32_t voxel_object_world_add_sphere(VoxelObjectWorld *world, Vec3 position,
         rng_range_f32(rng, -0.5f, 0.5f),
         rng_range_f32(rng, -0.5f, 0.5f),
         rng_range_f32(rng, -0.5f, 0.5f));
-    obj->rotation = vec3_zero();
     obj->active = true;
     obj->bounds_dirty = true;
 
-    /* Use world's voxel_size for consistent cube sizes across scene */
     obj->voxel_size = world->voxel_size;
     obj->voxel_count = 0;
 
@@ -429,11 +371,9 @@ int32_t voxel_object_world_add_box(VoxelObjectWorld *world, Vec3 position,
         rng_range_f32(rng, -0.3f, 0.3f),
         rng_range_f32(rng, -0.3f, 0.3f),
         rng_range_f32(rng, -0.3f, 0.3f));
-    obj->rotation = vec3_zero();
     obj->active = true;
     obj->bounds_dirty = true;
 
-    /* Use world's voxel_size for consistent cube sizes across scene */
     obj->voxel_size = world->voxel_size;
     obj->voxel_count = 0;
 
@@ -481,7 +421,6 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         if (!obj->active || obj->voxel_count == 0)
             continue;
 
-        /* Sphere broadphase */
         Vec3 pivot = vec3_add(obj->position, obj->center_of_mass_offset);
         Vec3 oc = vec3_sub(origin, pivot);
         float a = vec3_dot(dir, dir);
@@ -504,7 +443,6 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         if (t_sphere < 0.0f || t_sphere >= closest_t)
             continue;
 
-        /* Transform ray to local space using quaternion rotation */
         float rot_mat[9], inv_rot_mat[9];
         quat_to_mat3(obj->orientation, rot_mat);
         mat3_transpose(rot_mat, inv_rot_mat);
@@ -518,7 +456,6 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
                                                   half_size + obj->center_of_mass_offset.y,
                                                   half_size + obj->center_of_mass_offset.z));
 
-        /* DDA ray march */
         Vec3 inv_dir;
         inv_dir.x = (fabsf(local_dir.x) > 0.0001f) ? 1.0f / local_dir.x : 1e10f;
         inv_dir.y = (fabsf(local_dir.y) > 0.0001f) ? 1.0f / local_dir.y : 1e10f;
@@ -628,17 +565,16 @@ int32_t voxel_object_destroy_at_point(VoxelObjectWorld *world, int32_t obj_index
     quat_to_mat3(obj->orientation, rot_mat);
     Vec3 pivot = vec3_add(obj->position, obj->center_of_mass_offset);
 
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE && destroyed_count < max_output; z++)
+    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
     {
-        for (int32_t y = 0; y < VOBJ_GRID_SIZE && destroyed_count < max_output; y++)
+        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
         {
-            for (int32_t x = 0; x < VOBJ_GRID_SIZE && destroyed_count < max_output; x++)
+            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
             {
                 int32_t idx = vobj_index(x, y, z);
                 if (obj->voxels[idx].material == 0)
                     continue;
 
-                /* Compute world position of this voxel */
                 Vec3 local_pos;
                 local_pos.x = ((float)x + 0.5f) * obj->voxel_size - half_size - obj->center_of_mass_offset.x;
                 local_pos.y = ((float)y + 0.5f) * obj->voxel_size - half_size - obj->center_of_mass_offset.y;
@@ -651,10 +587,13 @@ int32_t voxel_object_destroy_at_point(VoxelObjectWorld *world, int32_t obj_index
 
                 if (dist < destroy_radius)
                 {
-                    if (out_positions)
-                        out_positions[destroyed_count] = voxel_pos;
-                    if (out_materials)
-                        out_materials[destroyed_count] = obj->voxels[idx].material;
+                    if (destroyed_count < max_output)
+                    {
+                        if (out_positions)
+                            out_positions[destroyed_count] = voxel_pos;
+                        if (out_materials)
+                            out_materials[destroyed_count] = obj->voxels[idx].material;
+                    }
 
                     obj->voxels[idx].material = 0;
                     obj->voxel_count--;
@@ -688,7 +627,6 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
     if (!world || !voxels || size_x <= 0 || size_y <= 0 || size_z <= 0)
         return -1;
 
-    /* Check if island fits in VOBJ_GRID_SIZE */
     if (size_x > VOBJ_GRID_SIZE || size_y > VOBJ_GRID_SIZE || size_z > VOBJ_GRID_SIZE)
         return -1;
 
@@ -705,13 +643,11 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
     obj->bounds_dirty = true;
     obj->velocity = initial_velocity;
     obj->orientation = quat_identity();
-    obj->rotation = vec3_zero();
     obj->angular_velocity = vec3_create(
         rng_range_f32(rng, -1.0f, 1.0f),
         rng_range_f32(rng, -0.5f, 0.5f),
         rng_range_f32(rng, -1.0f, 1.0f));
 
-    /* Copy voxels into object grid (centered) */
     int32_t offset_x = (VOBJ_GRID_SIZE - size_x) / 2;
     int32_t offset_y = (VOBJ_GRID_SIZE - size_y) / 2;
     int32_t offset_z = (VOBJ_GRID_SIZE - size_z) / 2;
@@ -744,7 +680,6 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
         return -1;
     }
 
-    /* Compute position: origin is corner of source voxels, adjust for centering */
     float src_center_x = origin.x + (float)size_x * voxel_size * 0.5f;
     float src_center_y = origin.y + (float)size_y * voxel_size * 0.5f;
     float src_center_z = origin.z + (float)size_z * voxel_size * 0.5f;

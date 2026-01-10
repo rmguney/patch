@@ -14,13 +14,11 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
 
     int32_t total_voxels = vol->total_chunks * CHUNK_VOXEL_COUNT;
 
-    /* Allocate visited bitmap (1 bit per voxel) */
     work->visited_size = (total_voxels + 7) / 8;
     work->visited = (uint8_t *)calloc(1, (size_t)work->visited_size);
     if (!work->visited)
         return false;
 
-    /* Allocate island ID per voxel */
     work->island_ids_size = total_voxels;
     work->island_ids = (uint8_t *)calloc(1, (size_t)work->island_ids_size);
     if (!work->island_ids)
@@ -30,7 +28,6 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
         return false;
     }
 
-    work->stack_top = 0;
     return true;
 }
 
@@ -63,7 +60,6 @@ void connectivity_work_clear(ConnectivityWorkBuffer *work)
     work->stack_top = 0;
 }
 
-/* Global voxel index for a position in volume */
 static inline int32_t global_voxel_index(const VoxelVolume *vol, int32_t cx, int32_t cy, int32_t cz,
                                          int32_t lx, int32_t ly, int32_t lz)
 {
@@ -87,20 +83,9 @@ static inline void set_island_id(ConnectivityWorkBuffer *work, int32_t global_id
     work->island_ids[global_idx] = island_id;
 }
 
-/* 6-connected neighbors (face-adjacent only for stability) */
 static const int32_t NEIGHBOR_OFFSETS[6][3] = {
     {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
 
-/*
- * Bit packing for stack entries (no overlaps):
- * - lz: bits 0-4   (5 bits, 0-31)
- * - ly: bits 5-9   (5 bits, 0-31)
- * - lx: bits 10-14 (5 bits, 0-31)
- * - cz: bits 15-18 (4 bits, 0-15)
- * - cy: bits 19-22 (4 bits, 0-15)
- * - cx: bits 23-26 (4 bits, 0-15)
- * Total: 27 bits
- */
 static inline int32_t pack_voxel_pos(int32_t cx, int32_t cy, int32_t cz,
                                      int32_t lx, int32_t ly, int32_t lz)
 {
@@ -144,7 +129,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         int32_t cx, cy, cz, lx, ly, lz;
         unpack_voxel_pos(packed, &cx, &cy, &cz, &lx, &ly, &lz);
 
-        /* Get voxel material */
         Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
         if (!chunk)
             continue;
@@ -153,14 +137,12 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         if (mat == 0)
             continue;
 
-        /* Update island stats */
         island->voxel_count++;
 
         Vec3 world_pos = volume_voxel_to_world(vol, cx, cy, cz, lx, ly, lz);
         com_sum = vec3_add(com_sum, world_pos);
         mass_sum += 1.0f;
 
-        /* Update bounding box */
         if (world_pos.x < island->min_corner.x)
             island->min_corner.x = world_pos.x;
         if (world_pos.y < island->min_corner.y)
@@ -174,7 +156,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         if (world_pos.z > island->max_corner.z)
             island->max_corner.z = world_pos.z;
 
-        /* Update voxel bounds */
         int32_t global_vx = cx * CHUNK_SIZE + lx;
         int32_t global_vy = cy * CHUNK_SIZE + ly;
         int32_t global_vz = cz * CHUNK_SIZE + lz;
@@ -192,7 +173,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         if (global_vz > island->voxel_max_z)
             island->voxel_max_z = global_vz;
 
-        /* Check anchor conditions */
         if (world_pos.y <= anchor_y + vol->voxel_size)
         {
             island->anchor = ANCHOR_FLOOR;
@@ -201,9 +181,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         {
             island->anchor = ANCHOR_MATERIAL;
         }
-        /* Volume edge anchoring only applies to floor-level voxels at boundaries.
-         * This prevents terrain edges from detaching while allowing floating
-         * structures near boundaries to properly fragment. */
         if ((cx == 0 || cx == vol->chunks_x - 1 ||
              cz == 0 || cz == vol->chunks_z - 1) &&
             world_pos.y <= anchor_y + vol->voxel_size * 2.0f)
@@ -212,7 +189,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
                 island->anchor = ANCHOR_VOLUME_EDGE;
         }
 
-        /* Process neighbors */
         for (int32_t n = 0; n < 6; n++)
         {
             int32_t nx = lx + NEIGHBOR_OFFSETS[n][0];
@@ -222,7 +198,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
             int32_t ncy = cy;
             int32_t ncz = cz;
 
-            /* Handle chunk boundary crossing */
             if (nx < 0)
             {
                 ncx--;
@@ -254,7 +229,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
                 nz = 0;
             }
 
-            /* Bounds check */
             if (ncx < 0 || ncx >= vol->chunks_x ||
                 ncy < 0 || ncy >= vol->chunks_y ||
                 ncz < 0 || ncz >= vol->chunks_z)
@@ -266,7 +240,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
             if (is_visited(work, neighbor_global))
                 continue;
 
-            /* Check if neighbor is solid */
             Chunk *neighbor_chunk = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
             if (!neighbor_chunk)
                 continue;
@@ -274,7 +247,6 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
             if (chunk_get(neighbor_chunk, nx, ny, nz) == 0)
                 continue;
 
-            /* Mark visited and add to stack */
             set_visited(work, neighbor_global);
             set_island_id(work, neighbor_global, island_id);
 
@@ -285,15 +257,13 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
             }
             else
             {
-                /* Stack overflow - mark island as incomplete/anchored to prevent
-                 * incorrect fragmentation. Better to keep pieces attached than
-                 * incorrectly split them. */
+                /* Stack overflow: force anchor to be safe, but note that this
+                   neighbor's neighbors won't be explored, potentially orphaning them. */
                 island->anchor = ANCHOR_FLOOR;
             }
         }
     }
 
-    /* Finalize island */
     if (mass_sum > 0.0f)
     {
         island->center_of_mass = vec3_scale(com_sum, 1.0f / mass_sum);
@@ -314,13 +284,11 @@ void connectivity_analyze_region(const VoxelVolume *vol,
     memset(result, 0, sizeof(ConnectivityResult));
     connectivity_work_clear(work);
 
-    /* Convert region to chunk/voxel bounds */
     int32_t start_cx, start_cy, start_cz;
     int32_t end_cx, end_cy, end_cz;
     volume_world_to_chunk(vol, region_min, &start_cx, &start_cy, &start_cz);
     volume_world_to_chunk(vol, region_max, &end_cx, &end_cy, &end_cz);
 
-    /* Clamp to volume bounds */
     if (start_cx < 0)
         start_cx = 0;
     if (start_cy < 0)
@@ -336,7 +304,6 @@ void connectivity_analyze_region(const VoxelVolume *vol,
 
     uint8_t next_island_id = 1;
 
-    /* Scan all voxels */
     for (int32_t cz = start_cz; cz <= end_cz; cz++)
     {
         for (int32_t cy = start_cy; cy <= end_cy; cy++)
@@ -367,7 +334,6 @@ void connectivity_analyze_region(const VoxelVolume *vol,
 
                             result->total_voxels_checked++;
 
-                            /* Found unvisited solid voxel - start new island */
                             if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
                                 break;
 
@@ -435,7 +401,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         return;
     }
 
-    /* No recent edits - nothing to analyze */
     if (vol->last_edit_count == 0)
     {
         memset(result, 0, sizeof(ConnectivityResult));
@@ -443,7 +408,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         return;
     }
 
-    /* Compute chunk bounds from last edit batch */
     int32_t min_cx = vol->chunks_x, min_cy = vol->chunks_y, min_cz = vol->chunks_z;
     int32_t max_cx = -1, max_cy = -1, max_cz = -1;
 
@@ -453,7 +417,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         if (chunk_idx < 0 || chunk_idx >= vol->total_chunks)
             continue;
 
-        /* Convert linear index to 3D coordinates */
         int32_t cx = chunk_idx % vol->chunks_x;
         int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
         int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
@@ -472,7 +435,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
             max_cz = cz;
     }
 
-    /* No valid chunks found */
     if (max_cx < 0)
     {
         memset(result, 0, sizeof(ConnectivityResult));
@@ -480,7 +442,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         return;
     }
 
-    /* Expand by 1 chunk in each direction to catch cross-boundary islands */
     min_cx = (min_cx > 0) ? min_cx - 1 : 0;
     min_cy = (min_cy > 0) ? min_cy - 1 : 0;
     min_cz = (min_cz > 0) ? min_cz - 1 : 0;
@@ -488,7 +449,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
     max_cy = (max_cy < vol->chunks_y - 1) ? max_cy + 1 : vol->chunks_y - 1;
     max_cz = (max_cz < vol->chunks_z - 1) ? max_cz + 1 : vol->chunks_z - 1;
 
-    /* Convert chunk bounds to world-space region */
     float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
     Vec3 region_min = vec3_create(
         vol->bounds.min_x + min_cx * chunk_world_size,
@@ -502,35 +462,6 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
     connectivity_analyze_region(vol, region_min, region_max, anchor_y, anchor_material, work, result);
 
     PROFILE_END(PROFILE_SIM_CONNECTIVITY);
-}
-
-int32_t connectivity_extract_island(const VoxelVolume *vol,
-                                    const IslandInfo *island,
-                                    uint8_t *out_voxels,
-                                    int32_t out_size_x, int32_t out_size_y, int32_t out_size_z,
-                                    Vec3 *out_origin)
-{
-    if (!vol || !island || !out_voxels)
-        return 0;
-
-    int32_t size_x = island->voxel_max_x - island->voxel_min_x + 1;
-    int32_t size_y = island->voxel_max_y - island->voxel_min_y + 1;
-    int32_t size_z = island->voxel_max_z - island->voxel_min_z + 1;
-
-    if (size_x > out_size_x || size_y > out_size_y || size_z > out_size_z)
-        return 0;
-
-    memset(out_voxels, 0, (size_t)(out_size_x * out_size_y * out_size_z));
-
-    /* Compute world origin */
-    if (out_origin)
-    {
-        out_origin->x = vol->bounds.min_x + island->voxel_min_x * vol->voxel_size;
-        out_origin->y = vol->bounds.min_y + island->voxel_min_y * vol->voxel_size;
-        out_origin->z = vol->bounds.min_z + island->voxel_min_z * vol->voxel_size;
-    }
-
-    return island->voxel_count;
 }
 
 int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
@@ -552,7 +483,6 @@ int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
 
     memset(out_voxels, 0, (size_t)(out_size_x * out_size_y * out_size_z));
 
-    /* Compute world origin */
     if (out_origin)
     {
         out_origin->x = vol->bounds.min_x + island->voxel_min_x * vol->voxel_size;
@@ -563,7 +493,6 @@ int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
     uint8_t target_id = (uint8_t)island->island_id;
     int32_t copied = 0;
 
-    /* Copy only voxels that belong to this specific island */
     for (int32_t gz = island->voxel_min_z; gz <= island->voxel_max_z; gz++)
     {
         int32_t cz = gz / CHUNK_SIZE;
@@ -579,7 +508,6 @@ int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
                 int32_t cx = gx / CHUNK_SIZE;
                 int32_t lx = gx % CHUNK_SIZE;
 
-                /* Check if this voxel belongs to the target island */
                 int32_t global_idx = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
                 if (global_idx < 0 || global_idx >= work->island_ids_size)
                     continue;
@@ -621,7 +549,6 @@ void connectivity_remove_island(VoxelVolume *vol, const IslandInfo *island,
 
     volume_edit_begin(vol);
 
-    /* Only remove voxels that belong to this specific island */
     for (int32_t gz = island->voxel_min_z; gz <= island->voxel_max_z; gz++)
     {
         int32_t cz = gz / CHUNK_SIZE;
@@ -637,7 +564,6 @@ void connectivity_remove_island(VoxelVolume *vol, const IslandInfo *island,
                 int32_t cx = gx / CHUNK_SIZE;
                 int32_t lx = gx % CHUNK_SIZE;
 
-                /* Check if this voxel belongs to the target island */
                 int32_t global_idx = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
                 if (global_idx < 0 || global_idx >= work->island_ids_size)
                     continue;

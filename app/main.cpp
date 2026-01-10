@@ -77,7 +77,7 @@ struct DebugSceneInfo
     int32_t object_count;
     int32_t total_chunks;
     int32_t solid_voxels;
-    int32_t active_chunks;  /* Chunks with has_any==1 */
+    int32_t active_chunks; /* Chunks with has_any==1 */
     int32_t dirty_queue_count;
     int32_t total_uploaded;
     bool dirty_overflow;
@@ -107,7 +107,7 @@ struct DebugSceneInfo
 struct DebugExportFeedback
 {
     char filename[128];
-    float timer;          /* Countdown to hide feedback */
+    float timer; /* Countdown to hide feedback */
     bool success;
 };
 
@@ -155,10 +155,15 @@ static bool export_debug_info(const char *filename, const DebugSceneInfo *info, 
 
     /* AABB intersection test */
     float ray_dir_x = -info->camera_pos[0];
-    float ray_dir_y = -info->camera_pos[1] + 4.0f;  /* Looking at y=4 center */
+    float ray_dir_y = -info->camera_pos[1] + 4.0f; /* Looking at y=4 center */
     float ray_dir_z = -info->camera_pos[2];
     float len = sqrtf(ray_dir_x * ray_dir_x + ray_dir_y * ray_dir_y + ray_dir_z * ray_dir_z);
-    if (len > 0.001f) { ray_dir_x /= len; ray_dir_y /= len; ray_dir_z /= len; }
+    if (len > 0.001f)
+    {
+        ray_dir_x /= len;
+        ray_dir_y /= len;
+        ray_dir_z /= len;
+    }
 
     fprintf(f, "Ray dir (to center): %.3f, %.3f, %.3f\n", ray_dir_x, ray_dir_y, ray_dir_z);
 
@@ -184,73 +189,26 @@ static bool export_debug_info(const char *filename, const DebugSceneInfo *info, 
     return true;
 }
 
-/* DEBUG: Draw debug overlay at bottom of screen. Returns true if export button clicked. */
-static bool draw_debug_overlay(Renderer &renderer, const DebugSceneInfo *info, int32_t window_height,
-                               float mouse_x, float mouse_y, bool mouse_clicked,
-                               const DebugExportFeedback *feedback)
+static bool export_all_debug(const char *debug_filename, const char *profile_filename,
+                             const DebugSceneInfo *info, float fps)
 {
-    if (!info)
+    if (!export_debug_info(debug_filename, info, fps))
         return false;
 
-    char line[256];
-    const float text_h = 14.0f;
-    const float x = 20.0f;
-    float y = (float)window_height - 40.0f;
+#ifdef PATCH_PROFILE
+    export_profile_csv(profile_filename);
+#else
+    (void)profile_filename;
+#endif
 
-    /* Line 1: Content info (yellow) */
-    snprintf(line, sizeof(line), "[DEBUG] OBJ: %d  CHUNKS: %d/%d  SOLID: %d",
-             info->object_count, info->active_chunks, info->total_chunks, info->solid_voxels);
-    renderer.draw_ui_text_px(x, y, text_h, vec3_create(1.0f, 1.0f, 0.0f), 1.0f, line);
-
-    /* Line 2: Renderer state (orange) */
-    y -= 20.0f;
-    snprintf(line, sizeof(line), "[DEBUG] GBUF: %s  PIPE: %s  DESC: %s  VOXRES: %s",
-             info->gbuffer_init ? "yes" : "NO",
-             info->gbuffer_pipeline_valid ? "yes" : "NO",
-             info->gbuffer_descriptors_valid ? "yes" : "NO",
-             info->voxel_res_init ? "yes" : "NO");
-    renderer.draw_ui_text_px(x, y, text_h, vec3_create(1.0f, 0.5f, 0.0f), 1.0f, line);
-
-    /* Line 3: Upload/dirty info (green) */
-    y -= 20.0f;
-    snprintf(line, sizeof(line), "[DEBUG] UPLOADED: %d  DIRTY_Q: %d  OVERFLOW: %s",
-             info->total_uploaded, info->dirty_queue_count,
-             info->dirty_overflow ? "YES" : "no");
-    renderer.draw_ui_text_px(x, y, text_h, vec3_create(0.5f, 1.0f, 0.5f), 1.0f, line);
-
-    /* Line 4: Camera info (cyan) */
-    y -= 20.0f;
-    snprintf(line, sizeof(line), "[DEBUG] CAM: %.1f, %.1f, %.1f  F6: %d  DRAWS: %d",
-             info->camera_pos[0], info->camera_pos[1], info->camera_pos[2],
-             info->terrain_debug_mode, info->terrain_draw_count);
-    renderer.draw_ui_text_px(x, y, text_h, vec3_create(0.5f, 1.0f, 1.0f), 1.0f, line);
-
-    /* Export button */
-    y -= 24.0f;
-    const float btn_w = 120.0f;
-    const float btn_h = 20.0f;
-    /* Both button and mouse use screen coords (y=0 at top) */
-    bool hovered = mouse_x >= x && mouse_x <= x + btn_w &&
-                   mouse_y >= y && mouse_y <= y + btn_h;
-    Vec3 btn_color = hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
-    renderer.draw_ui_quad_px(x, y, btn_w, btn_h, btn_color, 0.9f);
-    renderer.draw_ui_text_px(x + 8.0f, y + 3.0f, text_h, vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT] F5");
-
-    /* Feedback message */
-    if (feedback && feedback->timer > 0.0f)
-    {
-        Vec3 fb_color = feedback->success ? vec3_create(0.3f, 1.0f, 0.3f) : vec3_create(1.0f, 0.3f, 0.3f);
-        snprintf(line, sizeof(line), "%s: %s",
-                 feedback->success ? "Saved" : "Failed",
-                 feedback->filename);
-        renderer.draw_ui_text_px(x + btn_w + 10.0f, y + 3.0f, text_h, fb_color, 1.0f, line);
-    }
-
-    return hovered && mouse_clicked;
+    return true;
 }
 
-static void draw_frame_overlay(Renderer &renderer, float fps, const BallPitStats *stats,
-                               int32_t window_width, int32_t window_height, bool show_profiling)
+static bool draw_overlay(Renderer &renderer, float fps, const BallPitStats *stats,
+                         int32_t window_width, int32_t window_height,
+                         const DebugSceneInfo *dbg,
+                         float mouse_x, float mouse_y, bool mouse_clicked,
+                         const DebugExportFeedback *feedback)
 {
     renderer.begin_ui();
     const float w = (float)((window_width > 0) ? window_width : 1);
@@ -289,51 +247,104 @@ static void draw_frame_overlay(Renderer &renderer, float fps, const BallPitStats
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.82f, 0.9f, 1.0f), 1.0f, line);
     }
 
-    if (show_profiling)
-    {
-        y_px += unit * 14.0f;
-        snprintf(line, sizeof(line), "--- Profiler (F3 toggle, F4 export) ---");
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.9f, 0.6f), 1.0f, line);
+    y_px += unit * 14.0f;
+    snprintf(line, sizeof(line), "--- Debug/Profiler (F3 toggle, F5 export) ---");
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.9f, 0.6f), 1.0f, line);
 
 #ifdef PATCH_PROFILE
-        y_px += unit * 10.0f;
-        float avg_fps = profile_get_avg_fps();
-        float min_fps = profile_get_max_ms(PROFILE_FRAME_TOTAL) > 0.001f ? 1000.0f / profile_get_max_ms(PROFILE_FRAME_TOTAL) : 0.0f;
-        snprintf(line, sizeof(line), "FPS: %.0f avg, %.0f min (worst frame)",
-                 avg_fps, min_fps);
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
+    y_px += unit * 10.0f;
+    float avg_fps = profile_get_avg_fps();
+    float min_fps = profile_get_max_ms(PROFILE_FRAME_TOTAL) > 0.001f ? 1000.0f / profile_get_max_ms(PROFILE_FRAME_TOTAL) : 0.0f;
+    snprintf(line, sizeof(line), "FPS: %.0f avg, %.0f min (worst frame)",
+             avg_fps, min_fps);
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
 
-        y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "Frame: %.2fms avg, %.2fms max, %.2fms p99",
-                 profile_get_avg_ms(PROFILE_FRAME_TOTAL),
-                 profile_get_max_ms(PROFILE_FRAME_TOTAL),
-                 profile_get_p99_ms(PROFILE_FRAME_TOTAL));
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
+    y_px += unit * 10.0f;
+    snprintf(line, sizeof(line), "Frame: %.2fms avg, %.2fms max, %.2fms p99",
+             profile_get_avg_ms(PROFILE_FRAME_TOTAL),
+             profile_get_max_ms(PROFILE_FRAME_TOTAL),
+             profile_get_p99_ms(PROFILE_FRAME_TOTAL));
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
 
-        y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "Budget: %.0f%% used, %d overruns",
-                 profile_budget_used_pct(), profile_budget_overruns());
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
+    y_px += unit * 10.0f;
+    snprintf(line, sizeof(line), "Budget: %.0f%% used, %d overruns",
+             profile_budget_used_pct(), profile_budget_overruns());
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
 
-        y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "Sim: %.2fms (phys %.2fms, part %.2fms)",
-                 profile_get_avg_ms(PROFILE_SIM_TICK),
-                 profile_get_avg_ms(PROFILE_SIM_PHYSICS),
-                 profile_get_avg_ms(PROFILE_SIM_PARTICLES));
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
+    y_px += unit * 10.0f;
+    snprintf(line, sizeof(line), "Sim: %.2fms (phys %.2fms, part %.2fms)",
+             profile_get_avg_ms(PROFILE_SIM_TICK),
+             profile_get_avg_ms(PROFILE_SIM_PHYSICS),
+             profile_get_avg_ms(PROFILE_SIM_PARTICLES));
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
 #endif
 
-        Renderer::GPUTimings gpu_timings;
-        if (renderer.get_gpu_timings(&gpu_timings))
+    Renderer::GPUTimings gpu_timings;
+    if (renderer.get_gpu_timings(&gpu_timings))
+    {
+        y_px += unit * 10.0f;
+        snprintf(line, sizeof(line), "GPU: %.2fms (shadow %.2fms, main %.2fms)",
+                 gpu_timings.total_gpu_ms, gpu_timings.shadow_pass_ms, gpu_timings.main_pass_ms);
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.8f, 0.7f, 1.0f), 1.0f, line);
+    }
+
+    if (dbg)
+    {
+        y_px += unit * 14.0f;
+        snprintf(line, sizeof(line), "--- Scene Debug ---");
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 1.0f, 0.0f), 1.0f, line);
+
+        y_px += unit * 10.0f;
+        snprintf(line, sizeof(line), "OBJ: %d  CHUNKS: %d/%d  SOLID: %d",
+                 dbg->object_count, dbg->active_chunks, dbg->total_chunks, dbg->solid_voxels);
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 1.0f, 0.0f), 1.0f, line);
+
+        y_px += unit * 10.0f;
+        snprintf(line, sizeof(line), "GBUF: %s  PIPE: %s  DESC: %s  VOXRES: %s  VOBJ: %s",
+                 dbg->gbuffer_init ? "yes" : "NO",
+                 dbg->gbuffer_pipeline_valid ? "yes" : "NO",
+                 dbg->gbuffer_descriptors_valid ? "yes" : "NO",
+                 dbg->voxel_res_init ? "yes" : "NO",
+                 dbg->vobj_res_init ? "yes" : "NO");
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.5f, 0.0f), 1.0f, line);
+
+        y_px += unit * 10.0f;
+        snprintf(line, sizeof(line), "UPLOADED: %d  DIRTY_Q: %d  OVERFLOW: %s",
+                 dbg->total_uploaded, dbg->dirty_queue_count,
+                 dbg->dirty_overflow ? "YES" : "no");
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 0.5f), 1.0f, line);
+
+        y_px += unit * 10.0f;
+        snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  F6: %d  DRAWS: %d",
+                 dbg->camera_pos[0], dbg->camera_pos[1], dbg->camera_pos[2],
+                 dbg->terrain_debug_mode, dbg->terrain_draw_count);
+        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 1.0f), 1.0f, line);
+
+        y_px += unit * 12.0f;
+        const float btn_w = unit * 60.0f;
+        const float btn_h = unit * 12.0f;
+        bool hovered = mouse_x >= x_px && mouse_x <= x_px + btn_w &&
+                       mouse_y >= y_px && mouse_y <= y_px + btn_h;
+        Vec3 btn_color = hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
+        renderer.draw_ui_quad_px(x_px, y_px, btn_w, btn_h, btn_color, 0.9f);
+        renderer.draw_ui_text_px(x_px + unit * 4.0f, y_px + unit * 2.0f, text_h_px,
+                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT ALL] F5");
+
+        if (feedback && feedback->timer > 0.0f)
         {
-            y_px += unit * 10.0f;
-            snprintf(line, sizeof(line), "GPU: %.2fms (shadow %.2fms, main %.2fms)",
-                     gpu_timings.total_gpu_ms, gpu_timings.shadow_pass_ms, gpu_timings.main_pass_ms);
-            renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.8f, 0.7f, 1.0f), 1.0f, line);
+            Vec3 fb_color = feedback->success ? vec3_create(0.3f, 1.0f, 0.3f) : vec3_create(1.0f, 0.3f, 0.3f);
+            snprintf(line, sizeof(line), "%s: %s",
+                     feedback->success ? "Saved" : "Failed",
+                     feedback->filename);
+            renderer.draw_ui_text_px(x_px + btn_w + unit * 4.0f, y_px + unit * 2.0f, text_h_px, fb_color, 1.0f, line);
         }
+
+        renderer.end_ui();
+        return hovered && mouse_clicked;
     }
 
     renderer.end_ui();
+    return false;
 }
 
 enum class AppState
@@ -439,7 +450,6 @@ int patch_main(int argc, char *argv[])
             app_state = AppState::Playing;
             app_ui_hide(&ui);
 
-            /* Initialize renderer resources for the scene */
             if (current_scene == ActiveScene::BallPit)
             {
                 VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
@@ -462,23 +472,22 @@ int patch_main(int argc, char *argv[])
 
     bool escape_was_down = false;
     bool f3_was_down = false;
-    bool f4_was_down = false;
-    bool f5_was_down = false;  /* DEBUG: F5 export key */
-    bool f6_was_down = false;  /* DEBUG: F6 terrain debug mode */
-    bool f7_was_down = false;  /* DEBUG: F7 free camera toggle */
-    bool mouse_was_down = false;  /* DEBUG: For button click detection */
-    bool show_profiling = false;
+    bool f5_was_down = false;    /* DEBUG: F5 export key */
+    bool f6_was_down = false;    /* DEBUG: F6 terrain debug mode */
+    bool f7_was_down = false;    /* DEBUG: F7 free camera toggle */
+    bool mouse_was_down = false; /* DEBUG: For button click detection */
+    bool show_overlay = false;
     int32_t dbg_total_uploaded = 0;
-    DebugSceneInfo dbg_info = {};  /* DEBUG: Unified debug info */
-    DebugExportFeedback dbg_feedback = {};  /* DEBUG: Export feedback */
+    DebugSceneInfo dbg_info = {};          /* DEBUG: Unified debug info */
+    DebugExportFeedback dbg_feedback = {}; /* DEBUG: Export feedback */
     float fps_smooth = 0.0f;
 
     /* DEBUG: Free camera state */
     bool free_camera_active = false;
     bool free_camera_mouse_captured = false;
     Vec3 free_camera_pos = vec3_create(20.0f, 20.0f, 20.0f);
-    float free_camera_yaw = -135.0f;   /* degrees, looking toward origin */
-    float free_camera_pitch = -30.0f;  /* degrees */
+    float free_camera_yaw = -135.0f;  /* degrees, looking toward origin */
+    float free_camera_pitch = -30.0f; /* degrees */
     float last_mouse_x = 0.0f;
     float last_mouse_y = 0.0f;
 
@@ -490,7 +499,6 @@ int patch_main(int argc, char *argv[])
         float raw_dt = platform_time_delta_seconds(last_time, current_time);
         last_time = current_time;
 
-        /* Clamp dt for physics stability only */
         float dt = raw_dt;
         if (dt > 0.1f)
             dt = 0.1f;
@@ -509,10 +517,6 @@ int patch_main(int argc, char *argv[])
         bool f3_down = window.keys().f3;
         bool f3_pressed = f3_down && !f3_was_down;
         f3_was_down = f3_down;
-
-        bool f4_down = window.keys().f4;
-        bool f4_pressed = f4_down && !f4_was_down;
-        f4_was_down = f4_down;
 
         /* DEBUG: F5 to export debug info */
         bool f5_down = window.keys().f5;
@@ -572,21 +576,14 @@ int patch_main(int argc, char *argv[])
 
         if (f3_pressed)
         {
-            show_profiling = !show_profiling;
+            show_overlay = !show_overlay;
 #ifdef PATCH_PROFILE
-            if (show_profiling)
+            if (show_overlay)
             {
                 profile_reset_all();
             }
 #endif
         }
-
-#ifdef PATCH_PROFILE
-        if (f4_pressed && show_profiling)
-        {
-            export_profile_csv("profile_results.csv");
-        }
-#endif
 
         /* DEBUG: Mouse click detection (released this frame) */
         bool mouse_down = window.mouse().left_down;
@@ -599,7 +596,7 @@ int patch_main(int argc, char *argv[])
 
         /* DEBUG: F5 to export debug info (handled later with button click) */
         bool do_export = f5_pressed;
-        (void)do_export;  /* Will be combined with button click below */
+        (void)do_export; /* Will be combined with button click below */
 
         app_ui_update(&ui, dt, window.mouse().x, window.mouse().y,
                       window.mouse().left_down, window.width(), window.height());
@@ -625,7 +622,6 @@ int patch_main(int argc, char *argv[])
             app_ui_hide(&ui);
             renderer.set_orthographic(16.0f, 16.0f, 200.0f);
 
-            /* Initialize renderer resources for the new scene */
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             if (terrain)
             {
@@ -729,8 +725,10 @@ int patch_main(int argc, char *argv[])
                 free_camera_pitch -= dy * sensitivity;
 
                 /* Clamp pitch to avoid gimbal lock */
-                if (free_camera_pitch > 89.0f) free_camera_pitch = 89.0f;
-                if (free_camera_pitch < -89.0f) free_camera_pitch = -89.0f;
+                if (free_camera_pitch > 89.0f)
+                    free_camera_pitch = 89.0f;
+                if (free_camera_pitch < -89.0f)
+                    free_camera_pitch = -89.0f;
             }
 
             /* Calculate camera forward/right vectors */
@@ -747,12 +745,18 @@ int patch_main(int argc, char *argv[])
 
             /* WASD movement */
             const float move_speed = 20.0f * dt;
-            if (window.keys().w) free_camera_pos = vec3_add(free_camera_pos, vec3_scale(forward, move_speed));
-            if (window.keys().s) free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(forward, move_speed));
-            if (window.keys().d) free_camera_pos = vec3_add(free_camera_pos, vec3_scale(right, move_speed));
-            if (window.keys().a) free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(right, move_speed));
-            if (window.keys().space) free_camera_pos.y += move_speed;
-            if (window.keys().shift) free_camera_pos.y -= move_speed;
+            if (window.keys().w)
+                free_camera_pos = vec3_add(free_camera_pos, vec3_scale(forward, move_speed));
+            if (window.keys().s)
+                free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(forward, move_speed));
+            if (window.keys().d)
+                free_camera_pos = vec3_add(free_camera_pos, vec3_scale(right, move_speed));
+            if (window.keys().a)
+                free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(right, move_speed));
+            if (window.keys().space)
+                free_camera_pos.y += move_speed;
+            if (window.keys().shift)
+                free_camera_pos.y -= move_speed;
 
             Vec3 target = vec3_add(free_camera_pos, forward);
             renderer.set_look_at(free_camera_pos, target);
@@ -784,12 +788,10 @@ int patch_main(int argc, char *argv[])
                 overlay_stats = &data->stats;
             }
 
-            /* Get scene systems for rendering */
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             VoxelObjectWorld *objects = ball_pit_get_objects(active_scene);
             ParticleSystem *particles = ball_pit_get_particles(active_scene);
 
-            /* Prepare and upload dirty terrain chunks to GPU */
             if (terrain)
             {
                 volume_begin_frame(terrain);
@@ -802,7 +804,6 @@ int patch_main(int argc, char *argv[])
                 }
             }
 
-            /* G-buffer deferred rendering pipeline */
             renderer.begin_gbuffer_pass();
 
             if (terrain)
@@ -822,7 +823,6 @@ int patch_main(int argc, char *argv[])
 
             renderer.end_gbuffer_pass();
             renderer.render_deferred_lighting(image_index);
-            /* Note: render_deferred_lighting already begins the main render pass */
         }
         else
         {
@@ -831,15 +831,14 @@ int patch_main(int argc, char *argv[])
         PROFILE_END(PROFILE_RENDER_MAIN);
 
         PROFILE_BEGIN(PROFILE_RENDER_UI);
-        draw_frame_overlay(renderer, fps_smooth, overlay_stats, window.width(), window.height(), show_profiling);
 
-        /* DEBUG: Populate unified debug info and draw overlay */
+        /* DEBUG: Populate unified debug info */
+        bool dbg_has_info = false;
         if (active_scene && current_scene == ActiveScene::BallPit)
         {
             VoxelObjectWorld *dbg_objects = ball_pit_get_objects(active_scene);
             VoxelVolume *dbg_terrain = ball_pit_get_terrain(active_scene);
 
-            /* Populate debug info struct */
             dbg_info.object_count = dbg_objects ? dbg_objects->object_count : -1;
             dbg_info.total_chunks = dbg_terrain ? dbg_terrain->total_chunks : 0;
             dbg_info.active_chunks = dbg_terrain ? dbg_terrain->active_chunks : 0;
@@ -869,26 +868,32 @@ int patch_main(int argc, char *argv[])
                 dbg_info.voxel_size = dbg_terrain->voxel_size;
             }
 
-            /* Camera position */
             Vec3 cam = renderer.get_camera_position();
             dbg_info.camera_pos[0] = cam.x;
             dbg_info.camera_pos[1] = cam.y;
             dbg_info.camera_pos[2] = cam.z;
 
-            /* DEBUG: Draw overlay and check for button click */
-            /* Note: mouse Y is in top-left coords (0 at top), overlay uses bottom-left (0 at bottom) */
-            bool btn_clicked = draw_debug_overlay(renderer, &dbg_info, window.height(),
-                                                  window.mouse().x, window.mouse().y,
-                                                  mouse_clicked, &dbg_feedback);
+            dbg_has_info = true;
+        }
 
-            /* DEBUG: Export on F5 or button click */
-            if (do_export || btn_clicked)
-            {
-                const char *filename = "debug_info.txt";
-                dbg_feedback.success = export_debug_info(filename, &dbg_info, fps_smooth);
-                snprintf(dbg_feedback.filename, sizeof(dbg_feedback.filename), "%s", filename);
-                dbg_feedback.timer = 3.0f;  /* Show for 3 seconds */
-            }
+        bool btn_clicked = false;
+        if (show_overlay)
+        {
+            btn_clicked = draw_overlay(renderer, fps_smooth, overlay_stats,
+                                       window.width(), window.height(),
+                                       dbg_has_info ? &dbg_info : nullptr,
+                                       window.mouse().x, window.mouse().y,
+                                       mouse_clicked, &dbg_feedback);
+        }
+
+        /* DEBUG: Export on F5 or button click (exports all: debug + profile if available) */
+        if (dbg_has_info && (do_export || btn_clicked))
+        {
+            const char *debug_filename = "debug_info.txt";
+            const char *profile_filename = "profile_results.csv";
+            dbg_feedback.success = export_all_debug(debug_filename, profile_filename, &dbg_info, fps_smooth);
+            snprintf(dbg_feedback.filename, sizeof(dbg_feedback.filename), "%s + %s", debug_filename, profile_filename);
+            dbg_feedback.timer = 3.0f; /* Show for 3 seconds */
         }
 
         ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
@@ -923,7 +928,6 @@ int patch_main(int argc, char *argv[])
         PROFILE_END(PROFILE_FRAME_TOTAL);
         PROFILE_FRAME_END();
 
-        /* Update FPS from profiler (single source of truth) */
 #ifdef PATCH_PROFILE
         float fps = profile_get_fps();
         fps_smooth = fps_smooth < 0.01f ? fps : fps_smooth * 0.9f + fps * 0.1f;

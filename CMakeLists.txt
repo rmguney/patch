@@ -56,17 +56,8 @@ endif()
 # Static library: engine_physics (C only)
 # -----------------------------------------------------------------------------
 set(ENGINE_PHYSICS_SOURCES
-    engine/physics/rigid_body.h
-    engine/physics/rigid_body.c
     engine/physics/particles.h
     engine/physics/particles.c
-    engine/physics/broadphase.h
-    engine/physics/physics_step.h
-    engine/physics/physics_step.c
-    engine/physics/volume_contact.h
-    engine/physics/volume_contact.c
-    engine/physics/voxel_body.h
-    engine/physics/voxel_body.c
 )
 
 add_library(engine_physics STATIC ${ENGINE_PHYSICS_SOURCES})
@@ -86,7 +77,6 @@ set(ENGINE_SIM_SOURCES
     engine/sim/scene.h
     engine/sim/entity.h
     engine/sim/lighting.h
-    engine/sim/ragdoll.h
     engine/sim/ui.h
     engine/sim/ui.c
     engine/sim/voxel_object.h

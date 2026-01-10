@@ -3,7 +3,7 @@
 #include "engine/core/profile.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
-#include "engine/physics/voxel_body.h"
+#include "engine/sim/terrain_detach.h"
 #include "content/voxel_shapes.h"
 #include "content/materials.h"
 #include "content/scenes.h"
@@ -11,7 +11,6 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Pastel material palette for spawned objects */
 static const uint8_t s_pastel_materials[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
     MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE};
@@ -22,7 +21,6 @@ static uint8_t pick_pastel_material(RngState *rng)
     return s_pastel_materials[rng_range_u32(rng, (uint32_t)s_pastel_count)];
 }
 
-/* Spawn a random shape from content/shapes with a random pastel material */
 static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngState *rng)
 {
     if (g_voxel_shape_count <= 0)
@@ -35,7 +33,6 @@ static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngStat
 
     uint8_t pastel_mat = pick_pastel_material(rng);
 
-    /* Remap shape voxels to use the pastel material */
     int32_t total = shape->size_x * shape->size_y * shape->size_z;
     uint8_t *remapped = (uint8_t *)malloc((size_t)total);
     if (!remapped)
@@ -46,7 +43,6 @@ static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngStat
         remapped[i] = shape->voxels[i] ? pastel_mat : 0;
     }
 
-    /* Random spawn position within upper portion of bounds */
     float x_range = bounds.max_x - bounds.min_x - 4.0f;
     float z_range = bounds.max_z - bounds.min_z - 4.0f;
     float x = bounds.min_x + 2.0f + rng_float(rng) * x_range;
@@ -62,7 +58,6 @@ static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngStat
     free(remapped);
 }
 
-/* Create terrain floor */
 static void create_terrain_floor(VoxelVolume *vol, float floor_thickness)
 {
     Vec3 min_corner = vec3_create(vol->bounds.min_x, vol->bounds.min_y,
@@ -70,7 +65,27 @@ static void create_terrain_floor(VoxelVolume *vol, float floor_thickness)
     Vec3 max_corner = vec3_create(vol->bounds.max_x, vol->bounds.min_y + floor_thickness,
                                   vol->bounds.max_z);
 
-    volume_fill_box(vol, min_corner, max_corner, MAT_CLOUD);
+    volume_fill_box(vol, min_corner, max_corner, MAT_MINT);
+}
+
+static void create_terrain_features(VoxelVolume *vol, float floor_y)
+{
+    float cx = (vol->bounds.min_x + vol->bounds.max_x) * 0.5f;
+    float cz = (vol->bounds.min_z + vol->bounds.max_z) * 0.5f;
+    float wall_height = 4.0f;
+
+    float pillar_size = 0.5f;
+    Vec3 pillar_min = vec3_create(cx - pillar_size, floor_y, cz - pillar_size);
+    Vec3 pillar_max = vec3_create(cx + pillar_size, floor_y + wall_height, cz + pillar_size);
+    volume_fill_box(vol, pillar_min, pillar_max, MAT_CLOUD);
+
+    Vec3 front_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
+    Vec3 front_wall_max = vec3_create(vol->bounds.max_x, floor_y + wall_height, vol->bounds.min_z + 0.5f);
+    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_SKY);
+
+    Vec3 left_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
+    Vec3 left_wall_max = vec3_create(vol->bounds.min_x + 0.5f, floor_y + wall_height, vol->bounds.max_z);
+    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_SKY);
 }
 
 static void ball_pit_init(Scene *scene)
@@ -78,31 +93,24 @@ static void ball_pit_init(Scene *scene)
     BallPitData *data = (BallPitData *)scene->user_data;
     const BallPitParams *p = &data->params;
 
-    /* Get scene descriptor (single source of truth for dimensions) */
     const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
 
-    /* Create terrain volume using scene descriptor's chunk dimensions */
     Vec3 origin = vec3_create(scene->bounds.min_x, scene->bounds.min_y, scene->bounds.min_z);
     data->terrain = volume_create_dims(desc->chunks_x, desc->chunks_y, desc->chunks_z,
                                        origin, data->voxel_size);
 
-    /* Create floor from cloud-colored terrain */
     create_terrain_floor(data->terrain, 0.5f);
+    create_terrain_features(data->terrain, data->terrain->bounds.min_y + 0.5f);
+
     volume_rebuild_all_occupancy(data->terrain);
 
-    /* Create voxel object world using same bounds */
+    data->detach_ready = connectivity_work_init(&data->detach_work, data->terrain);
+
     data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
     voxel_object_world_set_terrain(data->objects, data->terrain);
 
-    /* Create particle system */
     data->particles = particle_system_create(scene->bounds);
 
-    /* DEBUG: Add a large pink cube in the center to verify rendering */
-    Vec3 cube_center = vec3_create(0.0f, 3.0f, 0.0f);
-    Vec3 cube_half = vec3_create(1.0f, 1.0f, 1.0f);
-    voxel_object_world_add_box(data->objects, cube_center, cube_half, MAT_PINK, &scene->rng);
-
-    /* Spawn initial objects */
     int32_t spawn_target = p->initial_spawns;
     const char *stress_env = getenv("PATCH_STRESS_OBJECTS");
     if (stress_env)
@@ -129,6 +137,9 @@ static void ball_pit_destroy_impl(Scene *scene)
         particle_system_destroy(data->particles);
     if (data->objects)
         voxel_object_world_destroy(data->objects);
+
+    connectivity_work_destroy(&data->detach_work);
+
     if (data->terrain)
         volume_destroy(data->terrain);
 
@@ -147,7 +158,6 @@ static void ball_pit_tick(Scene *scene)
 
     data->stats.tick_count++;
 
-    /* Spawn new shapes on timer */
     const BallPitParams *p = &data->params;
     data->spawn_timer -= dt;
     if (data->spawn_timer <= 0.0f && data->stats.spawn_count < p->max_spawns)
@@ -162,12 +172,7 @@ static void ball_pit_tick(Scene *scene)
         PROFILE_END(PROFILE_PROP_SPAWN);
     }
 
-    /* Update physics */
-    PROFILE_BEGIN(PROFILE_SIM_PHYSICS);
-    voxel_body_world_update(data->objects, dt);
-    PROFILE_END(PROFILE_SIM_PHYSICS);
 
-    /* Update particles */
     PROFILE_BEGIN(PROFILE_SIM_PARTICLES);
     particle_system_update(data->particles, dt);
     PROFILE_END(PROFILE_SIM_PARTICLES);
@@ -185,37 +190,56 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     (void)mouse_y;
     (void)right_down;
 
-    /* Left click: destroy voxels and spawn debris particles */
     if (left_down)
     {
-        VoxelObjectHit hit = voxel_object_world_raycast(data->objects,
-                                                         data->ray_origin, data->ray_dir);
-        if (hit.hit)
+        VoxelObjectHit obj_hit = {0};
+        float obj_dist = 1e30f;
+
+        bool terrain_hit = false;
+        float terrain_dist = 1e30f;
+        Vec3 terrain_hit_pos = vec3_zero();
+        Vec3 terrain_hit_normal = vec3_zero();
+        uint8_t terrain_mat = 0;
+
+        if (data->objects)
         {
-            /* Destroy voxels and collect their positions/materials */
-            #define MAX_DESTROYED 64
+            obj_hit = voxel_object_world_raycast(data->objects, data->ray_origin, data->ray_dir);
+            if (obj_hit.hit)
+            {
+                Vec3 delta = vec3_sub(obj_hit.impact_point, data->ray_origin);
+                obj_dist = vec3_length(delta);
+            }
+        }
+
+        if (data->terrain)
+        {
+            terrain_dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir,
+                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat);
+            terrain_hit = (terrain_dist >= 0.0f && terrain_mat != 0);
+        }
+
+        if (obj_hit.hit && (!terrain_hit || obj_dist <= terrain_dist))
+        {
+#define MAX_DESTROYED 64
             Vec3 destroyed_positions[MAX_DESTROYED];
             uint8_t destroyed_materials[MAX_DESTROYED];
 
-            /* Destroy radius ~1.5 voxels */
             float destroy_radius = data->objects->voxel_size * 1.5f;
             int32_t destroyed = voxel_object_destroy_at_point(
-                data->objects, hit.object_index, hit.impact_point, destroy_radius,
+                data->objects, obj_hit.object_index, obj_hit.impact_point, destroy_radius,
                 destroyed_positions, destroyed_materials, MAX_DESTROYED);
 
-            /* Spawn one particle per destroyed voxel */
             float voxel_size = data->objects->voxel_size;
             for (int32_t i = 0; i < destroyed; i++)
             {
                 Vec3 color = material_get_color(destroyed_materials[i]);
-                Vec3 dir = vec3_sub(destroyed_positions[i], hit.impact_point);
+                Vec3 dir = vec3_sub(destroyed_positions[i], obj_hit.impact_point);
                 float dist = vec3_length(dir);
                 if (dist > 0.001f)
                     dir = vec3_scale(dir, 1.0f / dist);
                 else
                     dir = vec3_create(0.0f, 1.0f, 0.0f);
 
-                /* Outward velocity with some randomness */
                 float speed = 2.0f + rng_float(&scene->rng) * 2.0f;
                 Vec3 velocity = vec3_scale(dir, speed);
                 velocity.y += 1.0f;
@@ -224,7 +248,76 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
                                     destroyed_positions[i], velocity, color,
                                     voxel_size * 0.4f);
             }
-            #undef MAX_DESTROYED
+#undef MAX_DESTROYED
+        }
+
+        if (terrain_hit && (!obj_hit.hit || terrain_dist < obj_dist) && data->terrain)
+        {
+            float destroy_radius = data->terrain->voxel_size * 2.0f;
+
+#define MAX_TERRAIN_DESTROYED 64
+            Vec3 destroyed_positions[MAX_TERRAIN_DESTROYED];
+            Vec3 destroyed_colors[MAX_TERRAIN_DESTROYED];
+            int32_t destroyed_count = 0;
+
+            volume_edit_begin(data->terrain);
+            for (float dx = -destroy_radius; dx <= destroy_radius; dx += data->terrain->voxel_size)
+            {
+                for (float dy = -destroy_radius; dy <= destroy_radius; dy += data->terrain->voxel_size)
+                {
+                    for (float dz = -destroy_radius; dz <= destroy_radius; dz += data->terrain->voxel_size)
+                    {
+                        Vec3 pos = vec3_create(terrain_hit_pos.x + dx,
+                                               terrain_hit_pos.y + dy,
+                                               terrain_hit_pos.z + dz);
+                        float dist_sq = dx * dx + dy * dy + dz * dz;
+                        if (dist_sq <= destroy_radius * destroy_radius)
+                        {
+                            uint8_t mat = volume_get_at(data->terrain, pos);
+                            if (mat != 0)
+                            {
+                                volume_edit_set(data->terrain, pos, 0);
+
+                                if (destroyed_count < MAX_TERRAIN_DESTROYED)
+                                {
+                                    destroyed_positions[destroyed_count] = pos;
+                                    destroyed_colors[destroyed_count] = material_get_color(mat);
+                                    destroyed_count++;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            volume_edit_end(data->terrain);
+
+            for (int32_t i = 0; i < destroyed_count; i++)
+            {
+                Vec3 dir = vec3_sub(destroyed_positions[i], terrain_hit_pos);
+                float d = vec3_length(dir);
+                if (d > 0.001f)
+                    dir = vec3_scale(dir, 1.0f / d);
+                else
+                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                float speed = 2.0f + rng_float(&scene->rng) * 2.0f;
+                Vec3 velocity = vec3_scale(dir, speed);
+                velocity.y += 1.0f;
+
+                particle_system_add(data->particles, &scene->rng,
+                                    destroyed_positions[i], velocity, destroyed_colors[i],
+                                    data->terrain->voxel_size * 0.4f);
+            }
+#undef MAX_TERRAIN_DESTROYED
+
+            if (data->detach_ready && data->objects)
+            {
+                TerrainDetachConfig cfg = terrain_detach_config_default();
+                terrain_detach_process(data->terrain, data->objects,
+                                       &cfg, &data->detach_work,
+                                       terrain_hit_pos, &scene->rng,
+                                       NULL);
+            }
         }
     }
 }

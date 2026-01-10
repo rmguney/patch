@@ -11,75 +11,56 @@ extern "C"
 {
 #endif
 
-/* Mission-scale guardrails: fixed caps for volume dimensions */
 #define VOLUME_MAX_CHUNKS_X 16
 #define VOLUME_MAX_CHUNKS_Y 8
 #define VOLUME_MAX_CHUNKS_Z 16
 #define VOLUME_MAX_CHUNKS (VOLUME_MAX_CHUNKS_X * VOLUME_MAX_CHUNKS_Y * VOLUME_MAX_CHUNKS_Z)
 
-/* Per-frame budgets for bounded work */
 #define VOLUME_MAX_DIRTY_PER_FRAME 16
 #define VOLUME_MAX_EDITS_PER_TICK 4096
 #define VOLUME_MAX_UPLOADS_PER_FRAME 16
 #define VOLUME_MAX_FRAGMENTS_PER_TICK 32
 
-/* Ring buffer size for dirty chunk tracking (avoids O(total_chunks) scan) */
 #define VOLUME_DIRTY_RING_SIZE 64
-
-/* Edit accumulator size (max unique chunks touched per edit batch) */
 #define VOLUME_EDIT_BATCH_MAX_CHUNKS 64
-
-/* Bitmap size for chunk tracking (VOLUME_MAX_CHUNKS bits = 2048 / 64 = 32 uint64_t) */
 #define VOLUME_CHUNK_BITMAP_SIZE ((VOLUME_MAX_CHUNKS + 63) / 64)
 
-    /*
-     * DirtyChunkEntry for upload queue.
-     */
     typedef struct
     {
         int32_t chunk_index;
         uint32_t dirty_frame;
     } DirtyChunkEntry;
 
-    /*
-     * VoxelVolume: manages a fixed grid of chunks.
-     */
     typedef struct
     {
-        Chunk *chunks; /* Preallocated chunk array */
+        Chunk *chunks;
         int32_t chunks_x, chunks_y, chunks_z;
         int32_t total_chunks;
 
-        Bounds3D bounds;  /* World-space bounds */
-        float voxel_size; /* Size of one voxel in world units */
+        Bounds3D bounds;
+        float voxel_size;
 
-        /* Dirty tracking for GPU upload (output queue) */
         DirtyChunkEntry dirty_queue[VOLUME_MAX_DIRTY_PER_FRAME];
         int32_t dirty_count;
         uint32_t current_frame;
 
-        /* Ring buffer for dirty chunk indices (avoids full scan) */
         int32_t dirty_ring[VOLUME_DIRTY_RING_SIZE];
-        int32_t dirty_ring_head; /* Next write position */
-        int32_t dirty_ring_tail; /* Next read position */
-        bool dirty_ring_overflow; /* True if ring overflowed, requires fallback scan */
+        int32_t dirty_ring_head;
+        int32_t dirty_ring_tail;
+        bool dirty_ring_overflow;
 
-        /* Edit accumulator for batching voxel edits */
         int32_t edit_touched_chunks[VOLUME_EDIT_BATCH_MAX_CHUNKS];
         int32_t edit_touched_count;
-        int32_t edit_count;        /* Total edits in current batch */
-        bool edit_batch_active;    /* True between edit_begin/edit_end */
+        int32_t edit_count;
+        bool edit_batch_active;
 
-        /* Bitmap for O(1) edit touched chunk deduplication */
         uint64_t edit_touched_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
 
-        /* Last completed edit batch (for connectivity analysis after edit_end) */
         int32_t last_edit_chunks[VOLUME_EDIT_BATCH_MAX_CHUNKS];
         int32_t last_edit_count;
 
-        /* Bitmap for O(1) dirty chunk tracking (used during overflow recovery) */
         uint64_t dirty_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
-        int32_t dirty_bitmap_scan_pos; /* Resume position for incremental scanning */
+        int32_t dirty_bitmap_scan_pos;
 
         int32_t total_solid_voxels;
         int32_t active_chunks;
@@ -104,9 +85,23 @@ extern "C"
 
         float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
 
-        *cx = (int32_t)(local_x / chunk_world_size);
-        *cy = (int32_t)(local_y / chunk_world_size);
-        *cz = (int32_t)(local_z / chunk_world_size);
+        float fx = local_x / chunk_world_size;
+        float fy = local_y / chunk_world_size;
+        float fz = local_z / chunk_world_size;
+
+        int32_t ix = (int32_t)fx;
+        int32_t iy = (int32_t)fy;
+        int32_t iz = (int32_t)fz;
+        if ((float)ix > fx)
+            ix--;
+        if ((float)iy > fy)
+            iy--;
+        if ((float)iz > fz)
+            iz--;
+
+        *cx = ix;
+        *cy = iy;
+        *cz = iz;
     }
 
     static inline void volume_world_to_local(const VoxelVolume *vol, Vec3 pos,
@@ -119,17 +114,45 @@ extern "C"
 
         float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
 
-        *cx = (int32_t)(local_x / chunk_world_size);
-        *cy = (int32_t)(local_y / chunk_world_size);
-        *cz = (int32_t)(local_z / chunk_world_size);
+        float fx = local_x / chunk_world_size;
+        float fy = local_y / chunk_world_size;
+        float fz = local_z / chunk_world_size;
+
+        int32_t ix = (int32_t)fx;
+        int32_t iy = (int32_t)fy;
+        int32_t iz = (int32_t)fz;
+        if ((float)ix > fx)
+            ix--;
+        if ((float)iy > fy)
+            iy--;
+        if ((float)iz > fz)
+            iz--;
+
+        *cx = ix;
+        *cy = iy;
+        *cz = iz;
 
         float chunk_base_x = (*cx) * chunk_world_size;
         float chunk_base_y = (*cy) * chunk_world_size;
         float chunk_base_z = (*cz) * chunk_world_size;
 
-        *lx = (int32_t)((local_x - chunk_base_x) / vol->voxel_size);
-        *ly = (int32_t)((local_y - chunk_base_y) / vol->voxel_size);
-        *lz = (int32_t)((local_z - chunk_base_z) / vol->voxel_size);
+        float flx = (local_x - chunk_base_x) / vol->voxel_size;
+        float fly = (local_y - chunk_base_y) / vol->voxel_size;
+        float flz = (local_z - chunk_base_z) / vol->voxel_size;
+
+        int32_t ilx = (int32_t)flx;
+        int32_t ily = (int32_t)fly;
+        int32_t ilz = (int32_t)flz;
+        if ((float)ilx > flx)
+            ilx--;
+        if ((float)ily > fly)
+            ily--;
+        if ((float)ilz > flz)
+            ilz--;
+
+        *lx = ilx;
+        *ly = ily;
+        *lz = ilz;
     }
 
     static inline Vec3 volume_voxel_to_world(const VoxelVolume *vol,
@@ -189,20 +212,15 @@ extern "C"
     float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist,
                          Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material);
 
-    /* Edit accumulator API - batches edits and rebuilds occupancy once at end */
     void volume_edit_begin(VoxelVolume *vol);
     void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material);
     int32_t volume_edit_end(VoxelVolume *vol);
 
-    /* Fast ray occupancy check - returns true if ray might hit occupied voxels */
     bool volume_ray_hits_any_occupancy(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist);
 
-    /* Shadow volume packing for RT sparse tracing */
-    /* Each byte stores 2x2x2 voxel occupancy (8 bits), half-res from full volume */
     void volume_pack_shadow_volume(const VoxelVolume *vol, uint8_t *out_packed,
                                    uint32_t *out_width, uint32_t *out_height, uint32_t *out_depth);
 
-    /* Generate mip levels via OR reduction (each mip halves resolution) */
     void volume_generate_shadow_mips(const uint8_t *mip0, uint32_t w, uint32_t h, uint32_t d,
                                      uint8_t *mip1, uint8_t *mip2);
 

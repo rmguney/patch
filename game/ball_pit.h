@@ -3,6 +3,7 @@
 
 #include "engine/sim/scene.h"
 #include "engine/voxel/volume.h"
+#include "engine/voxel/connectivity.h"
 #include "engine/sim/voxel_object.h"
 #include "engine/physics/particles.h"
 
@@ -40,6 +41,10 @@ extern "C"
         VoxelVolume *terrain;
         VoxelObjectWorld *objects;
         ParticleSystem *particles;
+
+        /* Terrain detachment (floating islands -> voxel objects) */
+        ConnectivityWorkBuffer detach_work;
+        bool detach_ready;
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);

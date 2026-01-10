@@ -32,8 +32,7 @@ typedef enum
     APP_ACTION_SETTING_SPAWN_INTERVAL,
     APP_ACTION_SETTING_SPAWN_BATCH,
     APP_ACTION_SETTING_MAX_SPAWNS,
-    APP_ACTION_SETTING_VOXEL_SIZE,
-    APP_ACTION_SETTING_BALL_SIZE
+    APP_ACTION_SETTING_VOXEL_SIZE
 } AppAction;
 
 typedef struct
@@ -43,7 +42,6 @@ typedef struct
     int32_t spawn_batch;
     int32_t max_spawns;
     int32_t voxel_size_mm;
-    int32_t ball_size_mm;
 } AppSettings;
 
 typedef struct

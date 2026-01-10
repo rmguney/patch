@@ -119,7 +119,6 @@ namespace patch
             return false;
         }
 
-        /* Create lighting UBO for deferred lighting shader */
         VkDeviceSize ubo_size = sizeof(ShadowUniforms);
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
@@ -304,11 +303,8 @@ namespace patch
         prev_view_matrix_ = view_matrix_;
         prev_projection_matrix_ = projection_matrix_;
 
-        /* Update frustum from view-projection matrix */
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         frustum_ = frustum_from_view_proj(view_proj);
-
-        /* Update camera forward direction from view matrix */
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
 
         vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
@@ -366,7 +362,7 @@ namespace patch
         }
 
         VkClearValue clear_values[2];
-        clear_values[0].color = {{0.68f, 0.85f, 0.92f, 1.0f}};
+        clear_values[0].color = {{0.75f, 0.80f, 0.95f, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo render_pass_info{};
@@ -645,8 +641,6 @@ namespace patch
 
         Vec3 vol_min = vec3_create(vol->bounds.min_x, vol->bounds.min_y, vol->bounds.min_z);
         Bounds3D chunk_bounds = chunk_world_bounds(cx, cy, cz, vol_min, vol->voxel_size);
-
-        /* Test against frustum */
         FrustumResult result = frustum_test_aabb(&frustum_, chunk_bounds);
         return result != FRUSTUM_OUTSIDE;
     }

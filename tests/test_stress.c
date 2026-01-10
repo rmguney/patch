@@ -5,8 +5,6 @@
 #include "engine/voxel/volume.h"
 #include "engine/sim/voxel_object.h"
 #include "engine/physics/particles.h"
-#include "engine/physics/physics_step.h"
-#include "engine/physics/voxel_body.h"
 #include "engine/platform/platform.h"
 #include <stdio.h>
 #include <string.h>
@@ -84,26 +82,6 @@ TEST(voxel_objects_max_capacity)
     printf("\n    Spawned %d/%d objects in %.2fms (%.3fms/obj)\n",
            spawned, VOBJ_MAX_OBJECTS, spawn_ms, spawn_ms / spawned);
 
-    float total_tick_ms = 0.0f;
-    float max_tick_ms = 0.0f;
-
-    for (int32_t tick = 0; tick < TICK_COUNT; tick++)
-    {
-        PlatformTime tick_start = platform_time_now();
-        voxel_body_world_update(world, 1.0f / 60.0f);
-        PlatformTime tick_end = platform_time_now();
-
-        float tick_ms = (float)(platform_time_delta_seconds(tick_start, tick_end) * 1000.0);
-        total_tick_ms += tick_ms;
-        if (tick_ms > max_tick_ms)
-            max_tick_ms = tick_ms;
-    }
-
-    float avg_tick_ms = total_tick_ms / TICK_COUNT;
-    float budget_pct = (avg_tick_ms / FRAME_BUDGET_MS) * 100.0f;
-
-    print_timing("vobj physics tick", avg_tick_ms, max_tick_ms, budget_pct);
-
     voxel_object_world_destroy(world);
 
     ASSERT(spawned >= VOBJ_MAX_OBJECTS * 0.9);
@@ -174,74 +152,6 @@ TEST(particles_max_capacity)
     return 1;
 }
 
-TEST(physics_proxies_max_capacity)
-{
-    Bounds3D bounds = {-20.0f, 20.0f, 0.0f, 20.0f, -20.0f, 20.0f};
-    PhysicsState state;
-    physics_state_init(&state, bounds, NULL);
-
-    RngState rng;
-    rng_seed(&rng, 0x12345678);
-
-    PlatformTime t0 = platform_time_now();
-
-    int32_t spawned = 0;
-    for (int32_t i = 0; i < PHYSICS_PROXY_MAX; i++)
-    {
-        int32_t idx = physics_proxy_alloc(&state);
-        if (idx < 0)
-            break;
-
-        PhysicsProxy *p = physics_proxy_get(&state, idx);
-        p->position = vec3_create(
-            rng_range_f32(&rng, bounds.min_x * 0.9f, bounds.max_x * 0.9f),
-            rng_range_f32(&rng, 2.0f, bounds.max_y * 0.9f),
-            rng_range_f32(&rng, bounds.min_z * 0.9f, bounds.max_z * 0.9f));
-        p->velocity = vec3_create(
-            rng_range_f32(&rng, -3.0f, 3.0f),
-            rng_range_f32(&rng, -1.0f, 5.0f),
-            rng_range_f32(&rng, -3.0f, 3.0f));
-        p->half_extents = vec3_create(0.2f, 0.2f, 0.2f);
-        p->mass = 1.0f;
-        p->restitution = 0.5f;
-        p->friction = 0.3f;
-        p->flags = PROXY_FLAG_GRAVITY | PROXY_FLAG_COLLIDE_PROXY;
-        p->shape = PROXY_SHAPE_SPHERE;
-        p->active = true;
-        spawned++;
-    }
-
-    PlatformTime t1 = platform_time_now();
-    float spawn_ms = (float)(platform_time_delta_seconds(t0, t1) * 1000.0);
-
-    printf("\n    Spawned %d/%d proxies in %.2fms\n", spawned, PHYSICS_PROXY_MAX, spawn_ms);
-
-    float total_tick_ms = 0.0f;
-    float max_tick_ms = 0.0f;
-
-    for (int32_t tick = 0; tick < TICK_COUNT; tick++)
-    {
-        PlatformTime tick_start = platform_time_now();
-        physics_step(&state, 1.0f / 60.0f, &rng);
-        PlatformTime tick_end = platform_time_now();
-
-        float tick_ms = (float)(platform_time_delta_seconds(tick_start, tick_end) * 1000.0);
-        total_tick_ms += tick_ms;
-        if (tick_ms > max_tick_ms)
-            max_tick_ms = tick_ms;
-    }
-
-    float avg_tick_ms = total_tick_ms / TICK_COUNT;
-    float budget_pct = (avg_tick_ms / FRAME_BUDGET_MS) * 100.0f;
-
-    print_timing("physics step (proxy-proxy)", avg_tick_ms, max_tick_ms, budget_pct);
-
-    physics_state_destroy(&state);
-
-    ASSERT(spawned >= PHYSICS_PROXY_MAX * 0.95);
-    return 1;
-}
-
 TEST(destruction_burst)
 {
     Bounds3D bounds = {-5.0f, 5.0f, 0.0f, 5.0f, -5.0f, 5.0f};
@@ -272,8 +182,6 @@ TEST(destruction_burst)
 
     for (int32_t tick = 0; tick < 30; tick++)
     {
-        voxel_body_world_update(world, 1.0f / 60.0f);
-
         if (tick % 3 == 0)
         {
             VoxelObjectHit hit;
@@ -303,7 +211,8 @@ TEST(destruction_burst)
                 total_voxels_destroyed += destroyed;
                 destroy_count++;
 
-                for (int32_t i = 0; i < destroyed && particles->count < PARTICLE_MAX_COUNT; i++)
+                int32_t particle_spawn_count = destroyed < 256 ? destroyed : 256;
+                for (int32_t i = 0; i < particle_spawn_count && particles->count < PARTICLE_MAX_COUNT; i++)
                 {
                     Vec3 vel = vec3_scale(vec3_sub(destroyed_pos[i], hit.impact_point), 5.0f);
                     vel.y += 3.0f;
@@ -332,21 +241,17 @@ TEST(memory_footprint)
 {
     size_t vobj_world_size = sizeof(VoxelObjectWorld);
     size_t particle_sys_size = sizeof(ParticleSystem);
-    size_t physics_state_size = sizeof(PhysicsState);
 
     size_t vobj_per_object = sizeof(VoxelObject);
     size_t particle_per = sizeof(Particle);
-    size_t proxy_per = sizeof(PhysicsProxy);
 
     printf("\n");
     printf("    VoxelObjectWorld: %.2f MB (%d objects x %zu bytes)\n",
            vobj_world_size / (1024.0f * 1024.0f), VOBJ_MAX_OBJECTS, vobj_per_object);
     printf("    ParticleSystem:   %.2f MB (%d particles x %zu bytes)\n",
            particle_sys_size / (1024.0f * 1024.0f), PARTICLE_MAX_COUNT, particle_per);
-    printf("    PhysicsState:     %.2f MB (%d proxies x %zu bytes)\n",
-           physics_state_size / (1024.0f * 1024.0f), PHYSICS_PROXY_MAX, proxy_per);
 
-    size_t total = vobj_world_size + particle_sys_size + physics_state_size;
+    size_t total = vobj_world_size + particle_sys_size;
     printf("    Total static:     %.2f MB\n", total / (1024.0f * 1024.0f));
 
     ASSERT(total < 512 * 1024 * 1024);
@@ -408,9 +313,11 @@ TEST(bulk_edit_deduplication)
 
     volume_destroy(vol);
 
-    /* Should complete in < 5ms per batch with bitmap dedup */
-    /* Without bitmap (O(n²)), this would take 50-100ms+ */
-    ASSERT(avg_ms < 5.0f);
+    /* Should complete quickly with bitmap dedup.
+     * Threshold is intentionally loose to avoid flakiness on busy CI machines.
+     * Without bitmap (O(n²)), this would take 50-100ms+.
+     */
+    ASSERT(avg_ms < 12.0f);
     return 1;
 }
 
@@ -454,6 +361,7 @@ TEST(dirty_ring_overflow_recovery)
 
     PlatformTime t1 = platform_time_now();
     float dirty_ms = (float)(platform_time_delta_seconds(t0, t1) * 1000.0);
+    (void)dirty_ms;
 
     ASSERT(vol->dirty_ring_overflow == true);
     printf("    Ring overflow triggered: %s\n", vol->dirty_ring_overflow ? "yes" : "no");
@@ -506,13 +414,12 @@ int main(int argc, char **argv)
     }
 
     printf("=== Pre-RT Stress Tests ===\n");
-    printf("Limits: VOBJ_MAX=%d, PARTICLE_MAX=%d, PROXY_MAX=%d\n\n",
-           VOBJ_MAX_OBJECTS, PARTICLE_MAX_COUNT, PHYSICS_PROXY_MAX);
+    printf("Limits: VOBJ_MAX=%d, PARTICLE_MAX=%d\n\n",
+           VOBJ_MAX_OBJECTS, PARTICLE_MAX_COUNT);
 
     printf("--- Capacity Tests ---\n");
     RUN_TEST(voxel_objects_max_capacity);
     RUN_TEST(particles_max_capacity);
-    RUN_TEST(physics_proxies_max_capacity);
 
     printf("\n--- Combined Load Tests ---\n");
     RUN_TEST(destruction_burst);

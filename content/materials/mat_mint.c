@@ -1,5 +1,5 @@
 /*
- * mat_mint.c - Decorative mint (emissive)
+ * mat_mint.c - Decorative mint
  */
 #include "content/materials.h"
 
@@ -11,7 +11,7 @@ const MaterialDescriptor g_mat_mint = {
     .hardness = 0.3f,
     .friction = 0.5f,
     .restitution = 0.3f,
-    .emissive = 0.15f,
+    .emissive = 0.0f,
     .roughness = 0.55f,
     .blast_resistance = 0.2f,
     .burn_rate = 0.0f,

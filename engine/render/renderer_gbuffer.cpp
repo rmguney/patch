@@ -7,10 +7,10 @@ namespace patch
 {
 
     static const VkFormat GBUFFER_FORMATS[Renderer::GBUFFER_COUNT] = {
-        VK_FORMAT_R8G8B8A8_UNORM,           // Albedo
-        VK_FORMAT_A2B10G10R10_UNORM_PACK32, // Normal (10-bit precision)
-        VK_FORMAT_R8G8B8A8_UNORM,           // Material (roughness, metallic, emissive, flags)
-        VK_FORMAT_R32_SFLOAT                // Linear depth
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_R32_SFLOAT
     };
 
     bool Renderer::create_gbuffer_resources()
@@ -1480,7 +1480,7 @@ namespace patch
             return;
 
         VkClearValue clear_values[2]{};
-        clear_values[0].color = {{0.68f, 0.85f, 0.92f, 1.0f}};
+        clear_values[0].color = {{0.75f, 0.80f, 0.95f, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};

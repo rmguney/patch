@@ -37,16 +37,6 @@ extern "C"
 
     typedef struct
     {
-        Vec3 position;
-        Vec3 velocity;
-        Vec3 color;
-        float radius;
-        float mass;
-        bool fragmented;
-    } Ball;
-
-    typedef struct
-    {
         float min_x, max_x;
         float min_y, max_y;
         float min_z, max_z;

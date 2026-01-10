@@ -1,5 +1,5 @@
 /*
- * mat_cyan.c - Decorative cyan (emissive)
+ * mat_cyan.c - Decorative cyan
  */
 #include "content/materials.h"
 
@@ -11,7 +11,7 @@ const MaterialDescriptor g_mat_cyan = {
     .hardness = 0.3f,
     .friction = 0.5f,
     .restitution = 0.3f,
-    .emissive = 0.2f,
+    .emissive = 0.0f,
     .roughness = 0.5f,
     .blast_resistance = 0.2f,
     .burn_rate = 0.0f,

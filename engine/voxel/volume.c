@@ -219,6 +219,9 @@ void volume_set_at(VoxelVolume *vol, Vec3 pos, uint8_t material)
         chunk_set(chunk, lx, ly, lz, material);
         chunk->dirty_frame = vol->current_frame;
 
+        /* Ensure renderer sees this change even if chunk_set already marked DIRTY */
+        volume_push_dirty_ring(vol, idx);
+
         if (old_mat == MATERIAL_EMPTY && material != MATERIAL_EMPTY)
         {
             vol->total_solid_voxels++;
@@ -852,10 +855,14 @@ int32_t volume_edit_end(VoxelVolume *vol)
 
         chunk_rebuild_occupancy(chunk);
 
-        /* Mark dirty for GPU upload */
+        /* Ensure GPU upload scheduling for edit batches.
+           chunk_set() marks ACTIVE->DIRTY but does not set dirty_frame or enqueue. */
         if (chunk->state == CHUNK_STATE_ACTIVE)
         {
             chunk->state = CHUNK_STATE_DIRTY;
+        }
+        if (chunk->state == CHUNK_STATE_DIRTY)
+        {
             chunk->dirty_frame = vol->current_frame;
             volume_push_dirty_ring(vol, chunk_idx);
         }
