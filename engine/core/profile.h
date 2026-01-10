@@ -25,7 +25,7 @@ typedef enum
     /* Frame-level */
     PROFILE_FRAME_TOTAL,
 
-    /* Simulation phases */
+    /* Simulation phases (physics/collision reserved for future use) */
     PROFILE_SIM_TICK,
     PROFILE_SIM_PHYSICS,
     PROFILE_SIM_COLLISION,

@@ -2,10 +2,6 @@
 
 Raymarched voxel engine with deterministic simulation and destruction. This project serves as an R&D testbed for proprietary game and simulation concepts.
 
-- **Simulation:** C11, data-oriented, chunked voxel volumes
-- **Orchestration/render/platform:** C++20 (Vulkan renderer + Win32 window/input)
-- **No third-party dependencies:** all engine code is self-contained
-
 ## Sample scenes
 
 *Can be found in `.github/legacy/`, kept for demonstration purposes since the engine itself doesn't have a dedicated content pipeline.*

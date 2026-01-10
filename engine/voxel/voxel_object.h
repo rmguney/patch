@@ -1,9 +1,8 @@
-#ifndef PATCH_SIM_VOXEL_OBJECT_H
-#define PATCH_SIM_VOXEL_OBJECT_H
+#ifndef PATCH_VOXEL_OBJECT_H
+#define PATCH_VOXEL_OBJECT_H
 
 #include "engine/core/types.h"
 #include "engine/core/math.h"
-#include "engine/core/rng.h"
 #include "engine/voxel/volume.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -25,22 +24,16 @@ extern "C"
     typedef struct VoxelObject
     {
         Vec3 position;
-        Vec3 velocity;
         Quat orientation;
-        Vec3 angular_velocity;
-
-        Vec3 center_of_mass_offset;
-        Vec3 shape_half_extents;
-        float radius;
-        float mass;
-        float inv_mass;
 
         VObjVoxel voxels[VOBJ_TOTAL_VOXELS];
         float voxel_size;
         int32_t voxel_count;
 
+        float radius;
+        Vec3 shape_half_extents;
+
         bool active;
-        bool bounds_dirty;
     } VoxelObject;
 
     typedef struct
@@ -82,26 +75,22 @@ extern "C"
     void voxel_object_world_set_terrain(VoxelObjectWorld *world, VoxelVolume *terrain);
 
     int32_t voxel_object_world_add_sphere(VoxelObjectWorld *world, Vec3 position,
-                                          float radius, uint8_t material, RngState *rng);
+                                          float radius, uint8_t material);
     int32_t voxel_object_world_add_box(VoxelObjectWorld *world, Vec3 position,
-                                       Vec3 half_extents, uint8_t material, RngState *rng);
-
-    VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, Vec3 dir);
-
-    int32_t voxel_object_destroy_at_point(VoxelObjectWorld *world, int32_t obj_index,
-                                          Vec3 impact_point, float destroy_radius,
-                                          Vec3 *out_positions, uint8_t *out_materials,
-                                          int32_t max_output);
-
+                                       Vec3 half_extents, uint8_t material);
     int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
                                                const uint8_t *voxels,
                                                int32_t size_x, int32_t size_y, int32_t size_z,
-                                               Vec3 origin, float voxel_size,
-                                               Vec3 initial_velocity,
-                                               RngState *rng);
+                                               Vec3 origin, float voxel_size);
+
+    VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, Vec3 dir);
+
+    void voxel_object_recalc_shape(VoxelObject *obj);
+
+    int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* PATCH_SIM_VOXEL_OBJECT_H */
+#endif /* PATCH_VOXEL_OBJECT_H */

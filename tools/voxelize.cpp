@@ -346,34 +346,6 @@ static void voxelize(const Mesh &mesh, VoxelGrid &grid, int resolution, uint8_t 
 }
 
 /*
- * Compute center of mass for the voxel grid.
- */
-static Vec3 compute_center_of_mass(const VoxelGrid &grid)
-{
-    Vec3 sum(0, 0, 0);
-    int count = 0;
-
-    for (int z = 0; z < grid.size_z; z++)
-    {
-        for (int y = 0; y < grid.size_y; y++)
-        {
-            for (int x = 0; x < grid.size_x; x++)
-            {
-                if (grid.at(x, y, z) != 0)
-                {
-                    sum = sum + Vec3(x + 0.5f, y + 0.5f, z + 0.5f);
-                    count++;
-                }
-            }
-        }
-    }
-
-    if (count > 0)
-        return sum * (1.0f / count);
-    return Vec3(grid.size_x * 0.5f, grid.size_y * 0.5f, grid.size_z * 0.5f);
-}
-
-/*
  * Generate C source code for the voxel shape.
  */
 static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
@@ -393,8 +365,6 @@ static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
         if (grid.voxels[i] != 0)
             solid_count++;
     }
-
-    Vec3 com = compute_center_of_mass(grid);
 
     /* Create valid C identifier from name */
     std::string c_name = shape_name;
@@ -437,9 +407,6 @@ static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
     fprintf(f, "    .size_z = %d,\n", grid.size_z);
     fprintf(f, "    .voxels = k_%s_voxels,\n", c_name.c_str());
     fprintf(f, "    .solid_count = %d,\n", solid_count);
-    fprintf(f, "    .center_of_mass_x = %.3ff,\n", com.x);
-    fprintf(f, "    .center_of_mass_y = %.3ff,\n", com.y);
-    fprintf(f, "    .center_of_mass_z = %.3ff,\n", com.z);
     fprintf(f, "};\n");
 
     fclose(f);

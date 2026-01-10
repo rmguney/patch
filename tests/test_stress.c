@@ -3,7 +3,8 @@
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
-#include "engine/sim/voxel_object.h"
+#include "engine/voxel/voxel_object.h"
+#include "engine/sim/detach.h"
 #include "engine/physics/particles.h"
 #include "engine/platform/platform.h"
 #include <stdio.h>
@@ -71,7 +72,7 @@ TEST(voxel_objects_max_capacity)
         float z = rng_range_f32(&rng, bounds.min_z * 0.8f, bounds.max_z * 0.8f);
         float radius = rng_range_f32(&rng, 0.2f, 0.4f);
 
-        int32_t idx = voxel_object_world_add_sphere(world, vec3_create(x, y, z), radius, 1, &rng);
+        int32_t idx = voxel_object_world_add_sphere(world, vec3_create(x, y, z), radius, 1);
         if (idx >= 0)
             spawned++;
     }
@@ -168,7 +169,7 @@ TEST(destruction_burst)
         float x = rng_range_f32(&rng, bounds.min_x * 0.7f, bounds.max_x * 0.7f);
         float y = rng_range_f32(&rng, 0.5f, bounds.max_y * 0.7f);
         float z = rng_range_f32(&rng, bounds.min_z * 0.7f, bounds.max_z * 0.7f);
-        voxel_object_world_add_sphere(world, vec3_create(x, y, z), 0.4f, 1, &rng);
+        voxel_object_world_add_sphere(world, vec3_create(x, y, z), 0.4f, 1);
     }
 
     printf("\n    Simulating destruction burst on %d objects...\n", num_objects);
@@ -202,7 +203,7 @@ TEST(destruction_burst)
             {
                 PlatformTime t0 = platform_time_now();
 
-                int32_t destroyed = voxel_object_destroy_at_point(
+                int32_t destroyed = detach_object_at_point(
                     world, hit.object_index, hit.impact_point, 0.3f,
                     destroyed_pos, destroyed_mat, 256);
 

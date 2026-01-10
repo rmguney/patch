@@ -40,6 +40,8 @@ set(ENGINE_VOXEL_SOURCES
     engine/voxel/volume.c
     engine/voxel/connectivity.h
     engine/voxel/connectivity.c
+    engine/voxel/voxel_object.h
+    engine/voxel/voxel_object.c
 )
 
 add_library(engine_voxel STATIC ${ENGINE_VOXEL_SOURCES})
@@ -79,10 +81,8 @@ set(ENGINE_SIM_SOURCES
     engine/sim/lighting.h
     engine/sim/ui.h
     engine/sim/ui.c
-    engine/sim/voxel_object.h
-    engine/sim/voxel_object.c
-    engine/sim/terrain_detach.h
-    engine/sim/terrain_detach.c
+    engine/sim/detach.h
+    engine/sim/detach.c
 )
 
 add_library(engine_sim STATIC ${ENGINE_SIM_SOURCES})

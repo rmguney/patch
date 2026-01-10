@@ -38,7 +38,7 @@ extern "C"
         const char *name;  /* Display name (for debug/tools only) */
         uint8_t r, g, b;   /* Base RGB color */
         uint8_t flags;     /* MaterialFlags */
-        float density;     /* Mass per unit volume */
+        float density;     /* Reserved for physics: mass per voxel unit */
         float hardness;    /* Resistance to damage (0-1), affects break time */
         float friction;    /* Surface friction coefficient */
         float restitution; /* Bounciness (0-1) */

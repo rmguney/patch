@@ -36,7 +36,4 @@ const VoxelShape g_shape_cube = {
     .size_z = 4,
     .voxels = k_cube_voxels,
     .solid_count = 64,
-    .center_of_mass_x = 2.0f,
-    .center_of_mass_y = 2.0f,
-    .center_of_mass_z = 2.0f,
 };

@@ -29,7 +29,4 @@ const VoxelShape g_shape_sword = {
     .size_z = 1,
     .voxels = k_sword_voxels,
     .solid_count = 24,
-    .center_of_mass_x = 1.0f,
-    .center_of_mass_y = 6.0f,
-    .center_of_mass_z = 0.5f,
 };

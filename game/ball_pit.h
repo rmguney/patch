@@ -4,7 +4,7 @@
 #include "engine/sim/scene.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/connectivity.h"
-#include "engine/sim/voxel_object.h"
+#include "engine/voxel/voxel_object.h"
 #include "engine/physics/particles.h"
 
 #ifdef __cplusplus

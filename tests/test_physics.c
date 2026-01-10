@@ -1,7 +1,8 @@
 #include "engine/core/types.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
-#include "engine/sim/voxel_object.h"
+#include "engine/voxel/voxel_object.h"
+#include "engine/sim/detach.h"
 #include "engine/voxel/volume.h"
 #include "engine/platform/platform.h"
 #include "content/materials.h"
@@ -48,128 +49,6 @@ static int g_tests_passed = 0;
         }                                                                     \
     } while (0)
 
-TEST(quat_identity_unit)
-{
-    Quat q = quat_identity();
-    ASSERT_NEAR(q.x, 0.0f, K_EPSILON);
-    ASSERT_NEAR(q.y, 0.0f, K_EPSILON);
-    ASSERT_NEAR(q.z, 0.0f, K_EPSILON);
-    ASSERT_NEAR(q.w, 1.0f, K_EPSILON);
-    ASSERT_NEAR(quat_length(q), 1.0f, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_normalize_unit)
-{
-    Quat q = quat_create(1.0f, 2.0f, 3.0f, 4.0f);
-    q = quat_normalize(q);
-    ASSERT_NEAR(quat_length(q), 1.0f, K_EPSILON);
-
-    Quat q2 = quat_create(0.1f, 0.2f, 0.3f, 0.4f);
-    q2 = quat_normalize(q2);
-    ASSERT_NEAR(quat_length(q2), 1.0f, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_from_axis_angle_unit)
-{
-    Vec3 axis = vec3_create(0.0f, 1.0f, 0.0f);
-    Quat q = quat_from_axis_angle(axis, K_PI * 0.5f);
-    ASSERT_NEAR(quat_length(q), 1.0f, K_EPSILON);
-
-    float expected_sin = sinf(K_PI * 0.25f);
-    float expected_cos = cosf(K_PI * 0.25f);
-    ASSERT_NEAR(q.x, 0.0f, K_EPSILON);
-    ASSERT_NEAR(q.y, expected_sin, K_EPSILON);
-    ASSERT_NEAR(q.z, 0.0f, K_EPSILON);
-    ASSERT_NEAR(q.w, expected_cos, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_multiply_identity)
-{
-    Vec3 axis = vec3_create(1.0f, 0.0f, 0.0f);
-    Quat q = quat_from_axis_angle(axis, 0.5f);
-    Quat id = quat_identity();
-
-    Quat r1 = quat_multiply(q, id);
-    ASSERT_NEAR(r1.x, q.x, K_EPSILON);
-    ASSERT_NEAR(r1.y, q.y, K_EPSILON);
-    ASSERT_NEAR(r1.z, q.z, K_EPSILON);
-    ASSERT_NEAR(r1.w, q.w, K_EPSILON);
-
-    Quat r2 = quat_multiply(id, q);
-    ASSERT_NEAR(r2.x, q.x, K_EPSILON);
-    ASSERT_NEAR(r2.y, q.y, K_EPSILON);
-    ASSERT_NEAR(r2.z, q.z, K_EPSILON);
-    ASSERT_NEAR(r2.w, q.w, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_multiply_composition)
-{
-    Vec3 axis_y = vec3_create(0.0f, 1.0f, 0.0f);
-    Quat q1 = quat_from_axis_angle(axis_y, K_PI * 0.5f);
-    Quat q2 = quat_from_axis_angle(axis_y, K_PI * 0.5f);
-    Quat combined = quat_multiply(q1, q2);
-    Quat expected = quat_from_axis_angle(axis_y, K_PI);
-
-    ASSERT_NEAR(fabsf(combined.x) - fabsf(expected.x), 0.0f, K_EPSILON);
-    ASSERT_NEAR(fabsf(combined.y) - fabsf(expected.y), 0.0f, K_EPSILON);
-    ASSERT_NEAR(fabsf(combined.z) - fabsf(expected.z), 0.0f, K_EPSILON);
-    ASSERT_NEAR(fabsf(combined.w) - fabsf(expected.w), 0.0f, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_integrate_unit)
-{
-    Quat q = quat_identity();
-    Vec3 angular_velocity = vec3_create(0.0f, 1.0f, 0.0f);
-    float dt = 0.01f;
-
-    for (int i = 0; i < 100; i++)
-    {
-        quat_integrate(&q, angular_velocity, dt);
-    }
-
-    ASSERT_NEAR(quat_length(q), 1.0f, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_to_mat3_identity)
-{
-    Quat q = quat_identity();
-    float m[9];
-    quat_to_mat3(q, m);
-
-    ASSERT_NEAR(m[0], 1.0f, K_EPSILON);
-    ASSERT_NEAR(m[1], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[2], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[3], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[4], 1.0f, K_EPSILON);
-    ASSERT_NEAR(m[5], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[6], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[7], 0.0f, K_EPSILON);
-    ASSERT_NEAR(m[8], 1.0f, K_EPSILON);
-    return 1;
-}
-
-TEST(quat_to_mat3_rotation)
-{
-    Vec3 axis = vec3_create(0.0f, 1.0f, 0.0f);
-    Quat q = quat_from_axis_angle(axis, K_PI * 0.5f);
-    float m[9];
-    quat_to_mat3(q, m);
-
-    Vec3 input = vec3_create(1.0f, 0.0f, 0.0f);
-    Vec3 result = mat3_transform_vec3(m, input);
-
-    ASSERT_NEAR(result.x, 0.0f, K_EPSILON);
-    ASSERT_NEAR(result.y, 0.0f, K_EPSILON);
-    ASSERT_NEAR(result.z, -1.0f, K_EPSILON);
-    return 1;
-}
-
 TEST(mat3_multiply_identity)
 {
     float id[9], a[9], out[9];
@@ -209,26 +88,23 @@ TEST(mat3_transpose_unit)
     return 1;
 }
 
-TEST(center_of_mass_symmetric)
+TEST(shape_half_extents_symmetric)
 {
     Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
     VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
     ASSERT(world != NULL);
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
     int32_t idx = voxel_object_world_add_box(world, vec3_create(0.0f, 10.0f, 0.0f),
-                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE, &rng);
+                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(idx >= 0);
     VoxelObject *obj = &world->objects[idx];
 
-    printf("(com=%.3f,%.3f,%.3f) ", obj->center_of_mass_offset.x,
-           obj->center_of_mass_offset.y, obj->center_of_mass_offset.z);
+    printf("(half_extents=%.3f,%.3f,%.3f) ", obj->shape_half_extents.x,
+           obj->shape_half_extents.y, obj->shape_half_extents.z);
 
-    ASSERT(fabsf(obj->center_of_mass_offset.x) < 0.01f);
-    ASSERT(fabsf(obj->center_of_mass_offset.y) < 0.01f);
-    ASSERT(fabsf(obj->center_of_mass_offset.z) < 0.01f);
+    /* Symmetric box should have roughly equal half extents */
+    ASSERT(fabsf(obj->shape_half_extents.x - obj->shape_half_extents.y) < 0.1f);
+    ASSERT(fabsf(obj->shape_half_extents.y - obj->shape_half_extents.z) < 0.1f);
 
     voxel_object_world_destroy(world);
     return 1;
@@ -240,11 +116,8 @@ TEST(bounding_sphere_accuracy)
     VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
     ASSERT(world != NULL);
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
     int32_t idx = voxel_object_world_add_box(world, vec3_create(0.0f, 10.0f, 0.0f),
-                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE, &rng);
+                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(idx >= 0);
     VoxelObject *obj = &world->objects[idx];
 
@@ -272,11 +145,8 @@ static int32_t create_dumbbell_object(VoxelObjectWorld *world, Vec3 position, ui
     memset(obj, 0, sizeof(VoxelObject));
 
     obj->position = position;
-    obj->velocity = vec3_zero();
     obj->orientation = quat_identity();
-    obj->angular_velocity = vec3_zero();
     obj->active = true;
-    obj->bounds_dirty = true;
     obj->voxel_size = world->voxel_size;
     obj->voxel_count = 0;
 
@@ -306,39 +176,7 @@ static int32_t create_dumbbell_object(VoxelObjectWorld *world, Vec3 position, ui
         }
     }
 
-    obj->mass = (float)obj->voxel_count * 1.0f;
-    if (obj->mass > 0.0f)
-        obj->inv_mass = 1.0f / obj->mass;
-
-    Vec3 com = vec3_zero();
-    Vec3 min_v = vec3_create(1e10f, 1e10f, 1e10f);
-    Vec3 max_v = vec3_create(-1e10f, -1e10f, -1e10f);
-
-    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
-    {
-        if (obj->voxels[i].material != 0)
-        {
-            int32_t vx, vy, vz;
-            vobj_coords(i, &vx, &vy, &vz);
-            float wx = ((float)vx - half_grid + 0.5f) * obj->voxel_size;
-            float wy = ((float)vy - half_grid + 0.5f) * obj->voxel_size;
-            float wz = ((float)vz - half_grid + 0.5f) * obj->voxel_size;
-            com = vec3_add(com, vec3_create(wx, wy, wz));
-            if (wx < min_v.x) min_v.x = wx;
-            if (wy < min_v.y) min_v.y = wy;
-            if (wz < min_v.z) min_v.z = wz;
-            if (wx > max_v.x) max_v.x = wx;
-            if (wy > max_v.y) max_v.y = wy;
-            if (wz > max_v.z) max_v.z = wz;
-        }
-    }
-    if (obj->voxel_count > 0)
-        com = vec3_scale(com, 1.0f / (float)obj->voxel_count);
-
-    obj->center_of_mass_offset = com;
-    obj->shape_half_extents = vec3_scale(vec3_sub(max_v, min_v), 0.5f);
-    obj->radius = vec3_length(obj->shape_half_extents);
-
+    voxel_object_recalc_shape(obj);
     return slot;
 }
 
@@ -364,7 +202,7 @@ TEST(object_split_creates_fragments)
     Vec3 destroyed_pos[64];
     uint8_t destroyed_mat[64];
 
-    int32_t destroyed = voxel_object_destroy_at_point(world, obj_idx, bridge_point, 0.5f,
+    int32_t destroyed = detach_object_at_point(world, obj_idx, bridge_point, 0.5f,
                                                        destroyed_pos, destroyed_mat, 64);
 
     printf("(destroyed %d voxels, now %d objects) ", destroyed, world->object_count);
@@ -387,8 +225,9 @@ TEST(object_split_creates_fragments)
     return 1;
 }
 
-TEST(object_split_separation_impulse)
+TEST(object_split_dumbbell)
 {
+    /* Verify a dumbbell-shaped object splits when bridge is destroyed */
     Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
     VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
     ASSERT(world != NULL);
@@ -397,19 +236,16 @@ TEST(object_split_separation_impulse)
     ASSERT(obj_idx >= 0);
 
     Vec3 bridge_point = vec3_create(0.0f, 20.0f, 0.0f);
-    voxel_object_destroy_at_point(world, obj_idx, bridge_point, 0.5f, NULL, NULL, 0);
+    detach_object_at_point(world, obj_idx, bridge_point, 0.5f, NULL, NULL, 0);
 
+    /* Should split into 2 separate objects */
     ASSERT(world->object_count >= 2);
 
-    Vec3 vel0 = world->objects[0].velocity;
-    Vec3 vel1 = world->objects[1].velocity;
-
-    Vec3 vel_diff = vec3_sub(vel0, vel1);
-    float vel_diff_mag = vec3_length(vel_diff);
-
-    printf("(vel_diff=%.3f) ", vel_diff_mag);
-
-    ASSERT(vel_diff_mag > 0.1f);
+    /* Both fragments should be active with voxels */
+    ASSERT(world->objects[0].active);
+    ASSERT(world->objects[1].active);
+    ASSERT(world->objects[0].voxel_count > 0);
+    ASSERT(world->objects[1].voxel_count > 0);
 
     voxel_object_world_destroy(world);
     return 1;
@@ -421,11 +257,8 @@ TEST(object_raycast_hit)
     VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
     ASSERT(world != NULL);
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
     int32_t obj_idx = voxel_object_world_add_box(world, vec3_create(0.0f, 5.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE, &rng);
+                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(obj_idx >= 0);
 
     Vec3 origin = vec3_create(0.0f, 20.0f, 0.0f);
@@ -449,11 +282,8 @@ TEST(object_raycast_miss)
     VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
     ASSERT(world != NULL);
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
     voxel_object_world_add_box(world, vec3_create(0.0f, 5.0f, 0.0f),
-                               vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE, &rng);
+                               vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
 
     Vec3 origin = vec3_create(10.0f, 20.0f, 0.0f);
     Vec3 dir = vec3_create(0.0f, 1.0f, 0.0f);
@@ -470,25 +300,17 @@ int main(void)
 {
     platform_time_init();
 
-    printf("=== Quaternion Math Tests ===\n");
-    RUN_TEST(quat_identity_unit);
-    RUN_TEST(quat_normalize_unit);
-    RUN_TEST(quat_from_axis_angle_unit);
-    RUN_TEST(quat_multiply_identity);
-    RUN_TEST(quat_multiply_composition);
-    RUN_TEST(quat_integrate_unit);
-    RUN_TEST(quat_to_mat3_identity);
-    RUN_TEST(quat_to_mat3_rotation);
+    printf("=== Matrix Math Tests ===\n");
     RUN_TEST(mat3_multiply_identity);
     RUN_TEST(mat3_transpose_unit);
 
     printf("\n=== Voxel Object Shape Tests ===\n");
-    RUN_TEST(center_of_mass_symmetric);
+    RUN_TEST(shape_half_extents_symmetric);
     RUN_TEST(bounding_sphere_accuracy);
 
     printf("\n=== Object Fragmentation Tests ===\n");
     RUN_TEST(object_split_creates_fragments);
-    RUN_TEST(object_split_separation_impulse);
+    RUN_TEST(object_split_dumbbell);
 
     printf("\n=== Object Raycast Tests ===\n");
     RUN_TEST(object_raycast_hit);

@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include <math.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -94,6 +95,9 @@ extern "C"
         {
             return vec3_scale(v, 1.0f / len);
         }
+#ifndef NDEBUG
+        fprintf(stderr, "WARNING: vec3_normalize called with near-zero vector\n");
+#endif
         return v;
     }
 
@@ -226,6 +230,8 @@ extern "C"
             m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z);
     }
 
+    /* Inverse for rigid transforms (rotation + translation only); used by camera/rendering.
+       Physics may need general mat4_inverse if using non-rigid transforms. */
     static inline Mat4 mat4_inverse_rigid(Mat4 m)
     {
         Mat4 inv = mat4_identity();
@@ -303,6 +309,8 @@ extern "C"
             out[i] = tmp[i];
     }
 
+    /* Quaternion utilities for orientation storage and rotation matrices.
+       Physics may extend with quat_from_axis_angle, quat_integrate, slerp. */
     static inline Quat quat_identity(void)
     {
         Quat q;
@@ -320,18 +328,6 @@ extern "C"
         q.y = y;
         q.z = z;
         q.w = w;
-        return q;
-    }
-
-    static inline Quat quat_from_axis_angle(Vec3 axis, float radians)
-    {
-        float half_angle = radians * 0.5f;
-        float s = sinf(half_angle);
-        Quat q;
-        q.x = axis.x * s;
-        q.y = axis.y * s;
-        q.z = axis.z * s;
-        q.w = cosf(half_angle);
         return q;
     }
 
@@ -367,19 +363,6 @@ extern "C"
             q.w *= inv;
         }
         return q;
-    }
-
-    static inline void quat_integrate(Quat *q, Vec3 w, float dt)
-    {
-        float omega = vec3_length(w);
-        float angle = omega * dt;
-        if (angle < 0.0001f)
-            return;
-
-        Vec3 axis = vec3_scale(w, 1.0f / omega);
-        Quat delta = quat_from_axis_angle(axis, angle);
-        *q = quat_multiply(delta, *q);
-        *q = quat_normalize(*q);
     }
 
     static inline void quat_to_mat3(Quat q, float m[9])

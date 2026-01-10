@@ -27,13 +27,10 @@ typedef struct
     int32_t size_z;
     const uint8_t *voxels;      /* Flat array [size_x * size_y * size_z] */
     int32_t solid_count;        /* Number of non-empty voxels */
-    float center_of_mass_x;     /* Precomputed center of mass */
-    float center_of_mass_y;
-    float center_of_mass_z;
 } VoxelShape;
 
 /* Compile-time layout validation */
-_Static_assert(sizeof(VoxelShape) == 48 || sizeof(VoxelShape) == 56,
+_Static_assert(sizeof(VoxelShape) == 32 || sizeof(VoxelShape) == 40,
                "VoxelShape size changed - verify cross-platform layout");
 
 /* Maximum number of registered shapes */

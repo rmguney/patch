@@ -46,7 +46,4 @@ const VoxelShape g_shape_sphere = {
     .size_z = 5,
     .voxels = k_sphere_voxels,
     .solid_count = 57,
-    .center_of_mass_x = 2.5f,
-    .center_of_mass_y = 2.5f,
-    .center_of_mass_z = 2.5f,
 };

@@ -1,10 +1,9 @@
 #include "engine/core/types.h"
 #include "engine/core/math.h"
-#include "engine/core/rng.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/connectivity.h"
-#include "engine/sim/voxel_object.h"
-#include "engine/sim/terrain_detach.h"
+#include "engine/voxel/voxel_object.h"
+#include "engine/sim/detach.h"
 #include "content/materials.h"
 #include <stdio.h>
 #include <string.h>
@@ -41,7 +40,7 @@ static int g_tests_passed = 0;
 
 TEST(default_config)
 {
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
     ASSERT(cfg.enabled == true);
     ASSERT(cfg.max_islands_per_tick > 0);
     ASSERT(cfg.max_voxels_per_island > 0);
@@ -70,14 +69,11 @@ TEST(no_detach_when_disabled)
     volume_edit_end(vol);
 
     /* Disabled config */
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
     cfg.enabled = false;
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
-    TerrainDetachResult result;
-    terrain_detach_process(vol, obj_world, &cfg, &work, vec3_zero(), &rng, &result);
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
 
     /* Nothing should be spawned */
     ASSERT(result.bodies_spawned == 0);
@@ -142,7 +138,7 @@ TEST(floating_island_becomes_object)
 TEST(floating_island_spawns_object)
 {
     /*
-     * Positive test: Verify terrain_detach_process actually spawns a VoxelObject
+     * Positive test: Verify detach_terrain_process actually spawns a VoxelObject
      * when a floating island meets size requirements.
      */
     Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
@@ -166,15 +162,12 @@ TEST(floating_island_spawns_object)
     Vec3 check_pos = {1.0f, 11.0f, 1.0f};
     ASSERT(volume_get_at(vol, check_pos) == MAT_STONE);
 
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
     ASSERT(cfg.enabled == true);
     ASSERT(cfg.min_voxels_per_island <= 8);
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
-    TerrainDetachResult result;
-    terrain_detach_process(vol, obj_world, &cfg, &work, vec3_zero(), &rng, &result);
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
 
     /* Floating island should be spawned as an object */
     ASSERT(result.bodies_spawned >= 1);
@@ -212,13 +205,10 @@ TEST(anchored_island_stays)
     volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
     volume_edit_end(vol);
 
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
-    TerrainDetachResult result;
-    terrain_detach_process(vol, obj_world, &cfg, &work, vec3_zero(), &rng, &result);
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
 
     /* Anchored island should NOT become an object */
     ASSERT(result.bodies_spawned == 0);
@@ -252,14 +242,11 @@ TEST(small_islands_deleted)
     volume_edit_set(vol, vec3_create(1.5f, 10.5f, 0.5f), MAT_STONE);
     volume_edit_end(vol);
 
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
     cfg.min_voxels_per_island = 10; /* Set high threshold */
 
-    RngState rng;
-    rng_seed(&rng, 12345);
-
-    TerrainDetachResult result;
-    terrain_detach_process(vol, obj_world, &cfg, &work, vec3_zero(), &rng, &result);
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
 
     /* Small island should be deleted, not converted */
     ASSERT(result.bodies_spawned == 0);
@@ -300,15 +287,11 @@ TEST(determinism)
     volume_fill_box(vol2, min_corner, max_corner, MAT_WOOD);
     volume_edit_end(vol2);
 
-    TerrainDetachConfig cfg = terrain_detach_config_default();
+    DetachConfig cfg = detach_config_default();
 
-    RngState rng1, rng2;
-    rng_seed(&rng1, 12345);
-    rng_seed(&rng2, 12345);
-
-    TerrainDetachResult result1, result2;
-    terrain_detach_process(vol1, obj_world1, &cfg, &work1, vec3_zero(), &rng1, &result1);
-    terrain_detach_process(vol2, obj_world2, &cfg, &work2, vec3_zero(), &rng2, &result2);
+    DetachResult result1, result2;
+    detach_terrain_process(vol1, obj_world1, &cfg, &work1, &result1);
+    detach_terrain_process(vol2, obj_world2, &cfg, &work2, &result2);
 
     /* Results must be identical */
     ASSERT(result1.islands_processed == result2.islands_processed);

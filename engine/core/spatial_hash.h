@@ -10,15 +10,15 @@ extern "C" {
 #endif
 
 /*
- * Spatial Hash Grid for O(n) broadphase collision detection
+ * Spatial Hash Grid for O(n) neighbor queries.
+ * Currently used by particle system only for particle-particle collision.
  *
  * Usage:
  *   1. spatial_hash_clear() at start of each frame
  *   2. spatial_hash_insert() for each object
- *   3. spatial_hash_query() or spatial_hash_for_each_pair() for collision pairs
+ *   3. spatial_hash_query() or spatial_hash_for_each_pair() for pairs
  *
  * Cell size should be ~2x the largest object radius for best performance.
- * Objects spanning multiple cells are inserted into all overlapping cells.
  */
 
 #define SPATIAL_HASH_MAX_ENTRIES 262144

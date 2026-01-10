@@ -1,6 +1,12 @@
 #ifndef PATCH_CORE_PARTICLES_H
 #define PATCH_CORE_PARTICLES_H
 
+/*
+ * Visual-only particle system for debris and effects.
+ * Lightweight: simple gravity, floor bounce, particle-particle collision.
+ * NOT integrated with rigid body physics - purely cosmetic.
+ */
+
 #include "engine/core/types.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"

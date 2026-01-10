@@ -6,7 +6,7 @@
 #include "engine/core/math.h"
 #include "engine/physics/particles.h"
 #include "engine/voxel/volume.h"
-#include "engine/sim/voxel_object.h"
+#include "engine/voxel/voxel_object.h"
 #include "engine/render/draw_list.h"
 #include "engine/platform/window.h"
 #include <cstdint>

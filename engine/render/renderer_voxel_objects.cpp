@@ -645,16 +645,8 @@ namespace patch
             float rot_mat[9];
             quat_to_mat3(obj->orientation, rot_mat);
 
-            /*
-             * Simulation/physics use a pivot that keeps the center-of-mass stable under rotation:
-             *   pivot = position + center_of_mass_offset
-             *   world = pivot + R * (local - center_of_mass_offset)
-             * Rearranged for a standard affine transform with local origin at grid center:
-             *   world = (position + com - R*com) + R*local
-             */
-            const Vec3 com = obj->center_of_mass_offset;
-            const Vec3 r_com = mat3_transform_vec3(rot_mat, com);
-            const Vec3 translation = vec3_add(obj->position, vec3_sub(com, r_com));
+            /* Position is the object center; no center-of-mass offset. */
+            const Vec3 translation = obj->position;
 
             /*
              * IMPORTANT:

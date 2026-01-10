@@ -1,8 +1,5 @@
-/* keeping this just in case for future alloc-free paths
- * connectivity analysis work buffers
- * physics contact pair lists
- * particle spawn batches
- * any per-frame scratch data
+/* Arena allocator for alloc-free per-frame scratch data.
+ * Use cases: connectivity work buffers, particle spawn batches.
  */
 
 #ifndef PATCH_CORE_ARENA_H

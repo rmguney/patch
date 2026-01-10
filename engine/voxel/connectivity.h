@@ -32,8 +32,8 @@ typedef struct
     int32_t voxel_max_x, voxel_max_y, voxel_max_z;
 
     int32_t voxel_count;
-    Vec3 center_of_mass;
-    float total_mass;
+    Vec3 center_of_mass;  /* Used by detach for spawn position */
+    float total_mass;     /* Voxel count as mass; physics may recompute with density */
 
     AnchorType anchor;
     int32_t island_id;

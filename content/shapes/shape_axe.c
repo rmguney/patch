@@ -26,7 +26,4 @@ const VoxelShape g_shape_axe = {
     .size_z = 1,
     .voxels = k_axe_voxels,
     .solid_count = 13,
-    .center_of_mass_x = 1.0f,
-    .center_of_mass_y = 5.0f,
-    .center_of_mass_z = 0.5f,
 };

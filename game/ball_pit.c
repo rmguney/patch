@@ -3,7 +3,7 @@
 #include "engine/core/profile.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
-#include "engine/sim/terrain_detach.h"
+#include "engine/sim/detach.h"
 #include "content/voxel_shapes.h"
 #include "content/materials.h"
 #include "content/scenes.h"
@@ -50,11 +50,10 @@ static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngStat
     float z = bounds.min_z + 2.0f + rng_float(rng) * z_range;
 
     Vec3 origin = vec3_create(x, y, z);
-    Vec3 velocity = vec3_zero();
 
     voxel_object_world_add_from_voxels(world, remapped,
                                        shape->size_x, shape->size_y, shape->size_z,
-                                       origin, world->voxel_size, velocity, rng);
+                                       origin, world->voxel_size);
     free(remapped);
 }
 
@@ -225,7 +224,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             uint8_t destroyed_materials[MAX_DESTROYED];
 
             float destroy_radius = data->objects->voxel_size * 1.5f;
-            int32_t destroyed = voxel_object_destroy_at_point(
+            int32_t destroyed = detach_object_at_point(
                 data->objects, obj_hit.object_index, obj_hit.impact_point, destroy_radius,
                 destroyed_positions, destroyed_materials, MAX_DESTROYED);
 
@@ -312,10 +311,9 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
 
             if (data->detach_ready && data->objects)
             {
-                TerrainDetachConfig cfg = terrain_detach_config_default();
-                terrain_detach_process(data->terrain, data->objects,
+                DetachConfig cfg = detach_config_default();
+                detach_terrain_process(data->terrain, data->objects,
                                        &cfg, &data->detach_work,
-                                       terrain_hit_pos, &scene->rng,
                                        NULL);
             }
         }
