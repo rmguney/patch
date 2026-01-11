@@ -1,0 +1,468 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+/* Push constants - same layout as fragment shader for compatibility */
+layout(push_constant) uniform Constants {
+    mat4 inv_view;
+    mat4 inv_projection;
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float chunk_size;
+    vec3 camera_pos;
+    float pad1;
+    ivec3 grid_size;
+    int total_chunks;
+    ivec3 chunks_dim;
+    int frame_count;
+    int rt_quality;
+    int debug_mode;
+    int is_orthographic;
+    int max_steps;
+    float near_plane;
+    float far_plane;
+    int object_count;
+    int reserved[5];
+} pc;
+
+/* Global parameters required by data_terrain.glsl */
+ivec3 pc_grid_size;
+ivec3 pc_chunks_dim;
+int pc_total_chunks;
+
+/* Terrain data bindings (set 0) */
+layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
+    uint voxel_data[];
+};
+
+layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
+    uvec4 chunk_headers[];
+};
+
+layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
+    vec4 materials[512];
+};
+
+layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
+    mat4 prev_view_proj;
+};
+
+/* Voxel object data bindings (set 1) */
+struct VoxelObjectGPU {
+    mat4 world_to_local;
+    mat4 local_to_world;
+    vec4 bounds_min;    /* xyz: min, w: voxel_size */
+    vec4 bounds_max;    /* xyz: max, w: grid_size */
+    vec4 position;      /* xyz: world pos, w: active flag */
+    uint atlas_slice;
+    uint material_base;
+    uint flags;
+    uint pad;
+};
+
+layout(SET_BINDING(1, 0)) uniform usampler3D vobj_atlas;
+
+layout(std430, SET_BINDING(1, 1)) readonly buffer ObjectMetadata {
+    VoxelObjectGPU objects[];
+};
+
+/* G-buffer output images (set 2) */
+layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
+layout(rgb10_a2, SET_BINDING(2, 1)) writeonly uniform image2D out_normal;
+layout(rgba8, SET_BINDING(2, 2)) writeonly uniform image2D out_material;
+layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
+
+/* Constants */
+const int CHUNK_SIZE = 32;
+const int REGION_SIZE = 8;
+const int CHUNK_UINT_COUNT = 8192;
+const int DEFAULT_MAX_STEPS = 512;
+const int VOBJ_MAX_STEPS = 48;
+
+vec2 intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max) {
+    vec3 inv_rd = 1.0 / rd;
+    vec3 t0 = (box_min - ro) * inv_rd;
+    vec3 t1 = (box_max - ro) * inv_rd;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float enter = max(max(tmin.x, tmin.y), tmin.z);
+    float exit = min(min(tmax.x, tmax.y), tmax.z);
+    return vec2(enter, exit);
+}
+
+vec3 world_to_grid(vec3 world_pos) {
+    return (world_pos - pc.bounds_min) / pc.voxel_size;
+}
+
+bool chunk_has_any(int chunk_idx) {
+    if (chunk_idx < 0 || chunk_idx >= pc.total_chunks) return false;
+    return (chunk_headers[chunk_idx].z & 0xFFu) != 0u;
+}
+
+uvec2 chunk_get_level0(int chunk_idx) {
+    return chunk_headers[chunk_idx].xy;
+}
+
+bool region_occupied(int chunk_idx, ivec3 region) {
+    uvec2 level0 = chunk_get_level0(chunk_idx);
+    int bit = region.x + region.y * 4 + region.z * 16;
+    if (bit < 32) {
+        return (level0.x & (1u << bit)) != 0u;
+    } else {
+        return (level0.y & (1u << (bit - 32))) != 0u;
+    }
+}
+
+uint get_material(ivec3 p) {
+    if (p.x < 0 || p.x >= pc.grid_size.x ||
+        p.y < 0 || p.y >= pc.grid_size.y ||
+        p.z < 0 || p.z >= pc.grid_size.z) {
+        return 0u;
+    }
+
+    ivec3 chunk_pos = p / CHUNK_SIZE;
+    int chunk_idx = chunk_pos.x + chunk_pos.y * pc.chunks_dim.x +
+                    chunk_pos.z * pc.chunks_dim.x * pc.chunks_dim.y;
+
+    ivec3 local = p - chunk_pos * CHUNK_SIZE;
+    int local_idx = local.x + local.y * CHUNK_SIZE + local.z * CHUNK_SIZE * CHUNK_SIZE;
+
+    int chunk_data_offset = chunk_idx * CHUNK_UINT_COUNT;
+    int uint_idx = local_idx / 4;
+    int byte_idx = local_idx % 4;
+
+    uint packed = voxel_data[chunk_data_offset + uint_idx];
+    return (packed >> (byte_idx * 8)) & 0xFFu;
+}
+
+vec3 get_material_color(uint material_id) {
+    return materials[material_id * 2u].rgb;
+}
+
+float get_material_emissive(uint material_id) {
+    return materials[material_id * 2u].a;
+}
+
+float get_material_roughness(uint material_id) {
+    return materials[material_id * 2u + 1u].r;
+}
+
+float get_material_metallic(uint material_id) {
+    return materials[material_id * 2u + 1u].g;
+}
+
+struct HitInfo {
+    bool hit;
+    vec3 pos;
+    vec3 normal;
+    vec3 color;
+    float t;
+    uint material_id;
+    float emissive;
+    float roughness;
+    float metallic;
+    bvec3 step_mask;
+};
+
+HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
+    HitInfo info;
+    info.hit = false;
+    info.t = 1e10;
+    info.step_mask = bvec3(false, true, false);
+
+    vec2 box_hit = intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
+    if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
+        return info;
+    }
+
+    float t_start = max(box_hit.x, 0.001);
+    vec3 start_pos = ro + rd * t_start;
+    vec3 grid_pos = world_to_grid(start_pos);
+    grid_pos = clamp(grid_pos, vec3(0.0), vec3(pc.grid_size) - 0.001);
+
+    ivec3 map_pos = ivec3(floor(grid_pos));
+    vec3 delta_dist = abs(1.0 / rd);
+    ivec3 step_dir = ivec3(sign(rd));
+    vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
+
+    ivec3 last_chunk = ivec3(-1000);
+    ivec3 last_region = ivec3(-1000);
+    bool chunk_empty = false;
+    bool region_empty = false;
+    int current_chunk_idx = -1;
+
+    /* Compute initial entry face */
+    bvec3 last_mask;
+    if (box_hit.x > 0.0) {
+        vec3 inv_rd = 1.0 / rd;
+        vec3 t0 = (pc.bounds_min - ro) * inv_rd;
+        vec3 t1 = (pc.bounds_max - ro) * inv_rd;
+        vec3 tmin = min(t0, t1);
+        float max_tmin = max(max(tmin.x, tmin.y), tmin.z);
+        last_mask = bvec3(
+            abs(tmin.x - max_tmin) < 0.0001,
+            abs(tmin.y - max_tmin) < 0.0001,
+            abs(tmin.z - max_tmin) < 0.0001
+        );
+    } else {
+        vec3 frac_pos = fract(grid_pos);
+        vec3 dist_to_face = mix(frac_pos, 1.0 - frac_pos, greaterThan(rd, vec3(0.0)));
+        float min_dist = min(min(dist_to_face.x, dist_to_face.y), dist_to_face.z);
+        last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
+    }
+
+    int step_count = (pc.max_steps > 0) ? pc.max_steps : DEFAULT_MAX_STEPS;
+
+    for (int i = 0; i < step_count; i++) {
+        if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
+            map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
+            map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
+            break;
+        }
+
+        /* Level 2: Chunk occupancy */
+        ivec3 current_chunk = map_pos / CHUNK_SIZE;
+        if (current_chunk != last_chunk) {
+            last_chunk = current_chunk;
+            current_chunk_idx = current_chunk.x + current_chunk.y * pc.chunks_dim.x +
+                               current_chunk.z * pc.chunks_dim.x * pc.chunks_dim.y;
+            chunk_empty = !chunk_has_any(current_chunk_idx);
+            last_region = ivec3(-1000);
+        }
+
+        if (chunk_empty) {
+            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+            last_mask = mask;
+            side_dist += vec3(mask) * delta_dist;
+            map_pos += ivec3(mask) * step_dir;
+            continue;
+        }
+
+        /* Level 1: Region occupancy (8x8x8) */
+        ivec3 local_pos = map_pos - current_chunk * CHUNK_SIZE;
+        ivec3 current_region = local_pos / REGION_SIZE;
+        if (current_region != last_region) {
+            last_region = current_region;
+            region_empty = !region_occupied(current_chunk_idx, current_region);
+        }
+
+        if (region_empty) {
+            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+            last_mask = mask;
+            side_dist += vec3(mask) * delta_dist;
+            map_pos += ivec3(mask) * step_dir;
+            continue;
+        }
+
+        /* Level 0: Per-voxel check */
+        uint mat = get_material(map_pos);
+        if (mat != 0u) {
+            info.hit = true;
+            info.material_id = mat;
+            info.color = get_material_color(mat);
+            info.emissive = get_material_emissive(mat);
+            info.roughness = get_material_roughness(mat);
+            info.metallic = get_material_metallic(mat);
+            info.step_mask = last_mask;
+
+            vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
+            vec3 voxel_max = voxel_min + pc.voxel_size;
+            vec2 voxel_hit = intersect_aabb(ro, rd, voxel_min, voxel_max);
+            info.t = voxel_hit.x;
+            info.pos = ro + rd * info.t;
+
+            info.normal = vec3(0.0);
+            if (last_mask.x) {
+                info.normal.x = -sign(rd.x);
+            } else if (last_mask.y) {
+                info.normal.y = -sign(rd.y);
+            } else {
+                info.normal.z = -sign(rd.z);
+            }
+
+            return info;
+        }
+
+        bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+        last_mask = mask;
+        side_dist += vec3(mask) * delta_dist;
+        map_pos += ivec3(mask) * step_dir;
+    }
+
+    return info;
+}
+
+HitInfo raymarch_voxel_object(int obj_idx, vec3 world_origin, vec3 world_dir) {
+    HitInfo info;
+    info.hit = false;
+    info.t = 1e10;
+
+    VoxelObjectGPU obj = objects[obj_idx];
+
+    /* Check if active */
+    if (obj.position.w <= 0.0) {
+        return info;
+    }
+
+    /* Transform to local space */
+    vec3 local_origin = (obj.world_to_local * vec4(world_origin, 1.0)).xyz;
+    vec3 local_dir = normalize((obj.world_to_local * vec4(world_dir, 0.0)).xyz);
+
+    float voxel_size = obj.bounds_min.w;
+    float grid_size = obj.bounds_max.w;
+    float half_extent = obj.bounds_max.x;
+
+    vec3 grid_min = vec3(0.0);
+    vec3 grid_max = vec3(grid_size);
+
+    vec3 local_pos_grid = (local_origin + vec3(half_extent)) / voxel_size;
+    vec3 local_dir_grid = local_dir / voxel_size;
+
+    vec2 box_t = intersect_aabb(local_pos_grid, local_dir_grid, grid_min, grid_max);
+    if (box_t.x > box_t.y || box_t.y < 0.0) {
+        return info;
+    }
+
+    float t_start = max(box_t.x, 0.001);
+    vec3 start_pos = local_pos_grid + local_dir_grid * t_start;
+
+    ivec3 map_pos = ivec3(floor(start_pos));
+    map_pos = clamp(map_pos, ivec3(0), ivec3(int(grid_size) - 1));
+
+    vec3 inv_dir = 1.0 / (abs(local_dir_grid) + vec3(0.0001));
+    ivec3 step_dir = ivec3(sign(local_dir_grid));
+    vec3 dir_sign = sign(local_dir_grid);
+    vec3 step_sign = step(vec3(0.0), dir_sign);
+    vec3 side_dist = inv_dir * (step_sign + dir_sign * (vec3(map_pos) - start_pos));
+
+    uint atlas_z_base = obj.atlas_slice * uint(grid_size);
+
+    for (int i = 0; i < VOBJ_MAX_STEPS; i++) {
+        if (map_pos.x < 0 || map_pos.x >= int(grid_size) ||
+            map_pos.y < 0 || map_pos.y >= int(grid_size) ||
+            map_pos.z < 0 || map_pos.z >= int(grid_size)) {
+            break;
+        }
+
+        ivec3 texel = ivec3(map_pos.x, map_pos.y, int(atlas_z_base) + map_pos.z);
+        uint mat = texelFetch(vobj_atlas, texel, 0).r;
+
+        if (mat != 0u) {
+            vec3 voxel_min_local = (vec3(map_pos) - vec3(grid_size * 0.5)) * voxel_size;
+            vec3 voxel_max_local = voxel_min_local + vec3(voxel_size);
+
+            vec2 voxel_t = intersect_aabb(local_origin, local_dir, voxel_min_local, voxel_max_local);
+            float hit_t_local = max(voxel_t.x, 0.0);
+            vec3 hit_local = local_origin + local_dir * hit_t_local;
+
+            vec3 voxel_center = voxel_min_local + vec3(voxel_size * 0.5);
+            vec3 rel = hit_local - voxel_center;
+            vec3 abs_rel = abs(rel);
+            float max_comp = max(max(abs_rel.x, abs_rel.y), abs_rel.z);
+
+            vec3 local_normal;
+            if (abs_rel.x >= max_comp - 0.0001) {
+                local_normal = vec3(sign(rel.x), 0.0, 0.0);
+            } else if (abs_rel.y >= max_comp - 0.0001) {
+                local_normal = vec3(0.0, sign(rel.y), 0.0);
+            } else {
+                local_normal = vec3(0.0, 0.0, sign(rel.z));
+            }
+
+            vec3 hit_world = (obj.local_to_world * vec4(hit_local, 1.0)).xyz;
+            vec3 world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
+
+            info.hit = true;
+            info.material_id = mat;
+            info.pos = hit_world;
+            info.normal = world_normal;
+            info.t = length(hit_world - world_origin);
+            info.color = get_material_color(mat);
+            info.emissive = get_material_emissive(mat);
+            info.roughness = get_material_roughness(mat);
+            info.metallic = get_material_metallic(mat);
+
+            return info;
+        }
+
+        bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+        side_dist += vec3(mask) * inv_dir;
+        map_pos += ivec3(mask) * step_dir;
+    }
+
+    return info;
+}
+
+void generate_ray(ivec2 pixel, ivec2 screen_size, out vec3 ray_origin, out vec3 ray_dir) {
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(screen_size);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    if (pc.is_orthographic != 0) {
+        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
+        vec4 near_view = pc.inv_projection * near_clip;
+        vec4 far_view = pc.inv_projection * far_clip;
+        vec3 near_world = (pc.inv_view * vec4(near_view.xyz, 1.0)).xyz;
+        vec3 far_world = (pc.inv_view * vec4(far_view.xyz, 1.0)).xyz;
+        ray_origin = near_world;
+        ray_dir = normalize(far_world - near_world);
+    } else {
+        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
+        vec4 ray_view = pc.inv_projection * ray_clip;
+        ray_view.z = -1.0;
+        ray_view.w = 0.0;
+        ray_dir = normalize((pc.inv_view * ray_view).xyz);
+        ray_origin = pc.camera_pos;
+    }
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 screen_size = imageSize(out_albedo);
+
+    if (pixel.x >= screen_size.x || pixel.y >= screen_size.y) {
+        return;
+    }
+
+    vec3 ray_origin, ray_dir;
+    generate_ray(pixel, screen_size, ray_origin, ray_dir);
+
+    /* March terrain */
+    HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
+
+    /* March all voxel objects and keep closest */
+    for (int i = 0; i < pc.object_count; i++) {
+        HitInfo obj_hit = raymarch_voxel_object(i, ray_origin, ray_dir);
+        if (obj_hit.hit && obj_hit.t < best_hit.t) {
+            best_hit = obj_hit;
+        }
+    }
+
+    /* Write to G-buffer */
+    if (best_hit.hit) {
+        vec3 final_color = best_hit.color;
+
+        /* Debug mode 8: Collider visualization */
+        if (pc.debug_mode == 8) {
+            final_color = mix(final_color, vec3(0.2, 0.8, 1.0), 0.7);
+        }
+
+        imageStore(out_albedo, pixel, vec4(final_color, 1.0));
+        imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
+        imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
+        imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));
+    } else {
+        /* Sky/miss - write transparent alpha so lighting shader knows */
+        imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
+        imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
+        imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
+    }
+}

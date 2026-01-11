@@ -13,7 +13,7 @@ layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_albedo;
 layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
 layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_material;
 layout(SET_BINDING(0, 3)) uniform sampler2D gbuffer_depth;
-layout(SET_BINDING(0, 4)) uniform usampler3D shadow_volume_tex;
+layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 
 layout(push_constant) uniform Constants {
@@ -75,49 +75,6 @@ float linear_depth_to_ndc(float linear_depth, float near, float far) {
     return (far - near * far / linear_depth) / (far - near);
 }
 
-float traceShadowRayLOD(vec3 origin, vec3 dir, float max_dist, float t_jitter) {
-    ivec3 vol_size = textureSize(shadow_volume_tex, 0);
-    if (vol_size.x < 1) {
-        return 1.0;
-    }
-
-    vec3 bounds_size = pc.bounds_max - pc.bounds_min;
-    vec3 inv_bounds = 1.0 / bounds_size;
-
-    /* Simple single-LOD trace at mip 0 for accuracy */
-    float step_size = pc.voxel_size * 2.0;
-    int max_steps = int(max_dist / step_size) + 1;
-    max_steps = min(max_steps, 64);
-
-    /* Jitter starting t to break up banding patterns */
-    float t = pc.voxel_size + t_jitter * step_size;
-    for (int i = 0; i < max_steps; i++)
-    {
-        vec3 pos = origin + dir * t;
-        vec3 uvw = (pos - pc.bounds_min) * inv_bounds;
-
-        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThanEqual(uvw, vec3(1.0)))) {
-            return 1.0;
-        }
-
-        ivec3 texel = ivec3(uvw * vec3(vol_size));
-        texel = clamp(texel, ivec3(0), vol_size - 1);
-
-        uint occ = texelFetch(shadow_volume_tex, texel, 0).r;
-        if (occ != 0u) {
-            return 0.0;
-        }
-
-        t += step_size;
-    }
-
-    return 1.0;
-}
-
-float traceShadowRay(vec3 origin, vec3 dir, float max_dist, float t_jitter) {
-    return traceShadowRayLOD(origin, dir, max_dist, t_jitter);
-}
-
 void main() {
     vec4 albedo_sample = texture(gbuffer_albedo, in_uv);
 
@@ -158,9 +115,7 @@ void main() {
 
     /* DEBUG: Show shadow value only (white=lit, black=shadow) */
     if (pc.debug_mode == 12) {
-        vec3 shadow_origin = world_pos + N * pc.voxel_size * 0.5;
-        vec3 light_dir = normalize(vec3(-0.6, 0.9, 0.35));
-        float s = traceShadowRay(shadow_origin, light_dir, 30.0, 0.0);
+        float s = texture(shadow_buffer, in_uv).r;
         out_color = vec4(vec3(s), 1.0);
         return;
     }
@@ -169,35 +124,8 @@ void main() {
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
 
-    float shadow = 1.0;
-    if (pc.rt_quality > 0) {
-        vec2 noise_uv = gl_FragCoord.xy / 128.0;
-        float base_noise = texture(blue_noise_tex, noise_uv).r;
-        base_noise = fract(base_noise + float(pc.frame_count) * 0.6180339887);
-
-        /* Jitter shadow origin along normal to break up banding */
-        float origin_jitter = (base_noise - 0.5) * pc.voxel_size * 0.5;
-        vec3 shadow_origin = world_pos + N * (pc.voxel_size * 0.5 + origin_jitter);
-
-        vec3 tangent = normalize(cross(key_light_dir, vec3(0.0, 1.0, 0.01)));
-        vec3 bitangent = cross(key_light_dir, tangent);
-
-        /* Multi-sample shadow with stratified jittering */
-        int num_samples = pc.rt_quality; /* 1, 2, or 3 samples */
-        float shadow_sum = 0.0;
-        float penumbra = 0.02 + 0.02 * float(pc.rt_quality);
-
-        for (int s = 0; s < num_samples; s++) {
-            float noise = fract(base_noise + float(s) * 0.618);
-            float angle = (float(s) + noise) * 6.28318 / float(num_samples);
-            float radius = sqrt(noise) * penumbra;
-            vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
-            vec3 jittered_light = normalize(key_light_dir + jitter);
-            shadow_sum += traceShadowRay(shadow_origin, jittered_light, 30.0, noise);
-        }
-        shadow = shadow_sum / float(num_samples);
-        shadow = mix(0.35, 1.0, shadow);
-    }
+    /* Sample precomputed shadow from compute pass */
+    float shadow = texture(shadow_buffer, in_uv).r;
 
     vec3 fill_light_dir = normalize(vec3(0.45, 0.5, -0.65));
     vec3 fill_color = vec3(0.7, 0.8, 1.0);

@@ -1,94 +1,64 @@
 # Patch
 
-Raymarched voxel engine with deterministic simulation and destruction. This project serves as an R&D testbed for proprietary game and simulation concepts.
+Raymarched voxel engine with real-time destruction simulation.
 
-## Sample scenes
+## Features
 
-*Can be found in `.github/legacy/`, kept for demonstration purposes since the engine itself doesn't have a dedicated content pipeline.*
+- **Destructible voxel terrain** - Everything can be broken into pieces
+- **Soft shadows** - Smooth, natural-looking shadows that update in real-time
+- **Particle debris** - Destroyed voxels turn into physics-driven particles
+- **Voxel objects** - Independent objects that can move and rotate
+- **60 FPS target** - Optimized for smooth performance
 
-- **Ball Pit**
+## Sample Scenes (legacy scenes, under .github/legacy)
 
 ![ball pit gif](.github/readme/ballpit.gif)
-
-- **Combat**
-
-![shooter gif](.github/readme/shooter.gif)
 ![melee gif](.github/readme/melee.gif)
-
-- **Building**
-
+![shooter gif](.github/readme/shooter.gif)
 ![building gif](.github/readme/building.gif)
 
-## Tools
-
-### voxelize
-
-Build-time OBJ mesh to C voxel shape converter. Generates `VoxelShape` descriptors for `content/`.
-
-```shell
-./build/voxelize.exe input.obj output.c [--name <name>] [--resolution <n>] [--material <id>]
-```
-
-- Uses triangle-AABB overlap (Separating Axis Theorem) for conservative voxelization
-- Self-contained OBJ parser
-- Output is a C source file ready for inclusion in `content/voxel_shapes.c`
-
-## Project structure
-
-```
-patch/
-├── engine/        # Reusable engine code (no game logic)
-│   ├── core/      # Types, math, RNG, spatial hash, profiling
-│   ├── voxel/     # Chunked volumes (32³), occupancy, connectivity
-│   ├── physics/   # Voxel body physics, particles
-│   ├── sim/       # Voxel objects, terrain detach, UI
-│   ├── render/    # Vulkan renderer (read-only view of sim state)
-│   └── platform/  # Win32 window/input/time
-├── content/       # C data descriptors (materials, scenes, voxel shapes)
-├── game/          # Sample scenes + render-view builders
-├── tools/         # Build-time utilities
-├── tests/         # Automated tests (run during compile via CTest)
-├── shaders/       # GLSL shaders (compiled + embedded at build time)
-└── app/           # Thin executable wiring everything together
-```
-
-## Build
+## Quick Start
 
 ### Requirements
 
 - Windows
-- Vulkan SDK (`Vulkan::glslc` for shader compilation)
 - CMake 3.21+
-- C/C++ toolchain (MSVC recommended)
+- C/C++ compiler (MSVC recommended)
 
-### Configure + build
+### Build & Run
 
 ```shell
 cmake -B build -G Ninja
 cmake --build build
+./build/patch_samples.exe
 ```
 
-Shaders are compiled from `shaders/` and embedded as SPIR-V (no runtime file I/O).
-
-### No Vulkan SDK build
-
-If you don't have the Vulkan SDK installed, use prebuilt shaders:
+### Without Vulkan SDK (uses prebuilt shaders)
 
 ```shell
 cmake -B build -G Ninja -DPATCH_USE_PREBUILT_SHADERS=ON
 cmake --build build
 ```
 
-### Run
+## Controls
 
-```shell
-./build/patch_samples.exe
+- **Mouse** - Look around / interact
+- **F3** - Toggle performance overlay
+
+## Project Structure
+
+```
+engine/     Core engine (voxels, physics, rendering)
+content/    Materials, shapes, scene definitions
+game/       Sample game scenes
+shaders/    GPU shaders (auto-compiled at build)
+app/        Application entry point
 ```
 
-## Tests
+## Tools
 
-C-only tests integrated with CTest:
+**voxelize** - Convert 3D models to voxel shapes:
 
 ```shell
-ctest --test-dir build --output-on-failure
+./build/voxelize.exe model.obj output.c --resolution 16
 ```

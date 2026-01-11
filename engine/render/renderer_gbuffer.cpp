@@ -23,6 +23,7 @@ namespace patch
         }
         gbuffer_sampler_ = VK_NULL_HANDLE;
         gbuffer_render_pass_ = VK_NULL_HANDLE;
+        gbuffer_render_pass_load_ = VK_NULL_HANDLE;
         gbuffer_framebuffer_ = VK_NULL_HANDLE;
         gbuffer_initialized_ = false;
 
@@ -39,7 +40,7 @@ namespace patch
             image_info.format = GBUFFER_FORMATS[i];
             image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
             image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
             image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
             if (vkCreateImage(device_, &image_info, nullptr, &gbuffer_images_[i]) != VK_SUCCESS)
@@ -220,6 +221,21 @@ namespace patch
         if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_) != VK_SUCCESS)
         {
             fprintf(stderr, "Failed to create G-buffer render pass\n");
+            return false;
+        }
+
+        /* Create load render pass for post-compute (preserves compute results) */
+        for (int i = 0; i < 4; i++)
+        {
+            attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            attachments[i].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+        attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; /* Still clear depth for voxel objects */
+        attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create G-buffer load render pass\n");
             return false;
         }
 
@@ -420,12 +436,12 @@ namespace patch
             bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         }
 
-        bindings[4].binding = 4;
+        bindings[4].binding = 5; /* shadow_buffer from compute shadow pass */
         bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[4].descriptorCount = 1;
         bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        bindings[5].binding = 6;
+        bindings[5].binding = 6; /* blue_noise_tex */
         bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bindings[5].descriptorCount = 1;
         bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -597,6 +613,12 @@ namespace patch
         {
             vkDestroyRenderPass(device_, gbuffer_render_pass_, nullptr);
             gbuffer_render_pass_ = VK_NULL_HANDLE;
+        }
+
+        if (gbuffer_render_pass_load_)
+        {
+            vkDestroyRenderPass(device_, gbuffer_render_pass_load_, nullptr);
+            gbuffer_render_pass_load_ = VK_NULL_HANDLE;
         }
 
         if (gbuffer_sampler_)
@@ -877,30 +899,6 @@ namespace patch
 
         vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
         destroy_buffer(&staging);
-    }
-
-    void Renderer::update_shadow_volume_descriptor()
-    {
-        if (!shadow_volume_view_ || !deferred_lighting_descriptor_sets_[0])
-            return;
-
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-        {
-            VkDescriptorImageInfo shadow_vol_info{};
-            shadow_vol_info.sampler = shadow_volume_sampler_;
-            shadow_vol_info.imageView = shadow_volume_view_;
-            shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = deferred_lighting_descriptor_sets_[i];
-            write.dstBinding = 4;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.descriptorCount = 1;
-            write.pImageInfo = &shadow_vol_info;
-
-            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
-        }
     }
 
     bool Renderer::create_blue_noise_texture()
@@ -1325,10 +1323,10 @@ namespace patch
                 gbuffer_infos[g].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
 
-            VkDescriptorImageInfo shadow_vol_info{};
-            shadow_vol_info.sampler = shadow_volume_sampler_ ? shadow_volume_sampler_ : gbuffer_sampler_;
-            shadow_vol_info.imageView = shadow_volume_view_ ? shadow_volume_view_ : gbuffer_views_[0];
-            shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo shadow_buffer_info{};
+            shadow_buffer_info.sampler = gbuffer_sampler_;
+            shadow_buffer_info.imageView = shadow_output_view_ ? shadow_output_view_ : gbuffer_views_[0];
+            shadow_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
             VkDescriptorImageInfo blue_noise_info{};
             blue_noise_info.sampler = blue_noise_sampler_ ? blue_noise_sampler_ : gbuffer_sampler_;
@@ -1349,10 +1347,10 @@ namespace patch
 
             writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[4].dstSet = deferred_lighting_descriptor_sets_[i];
-            writes[4].dstBinding = 4;
+            writes[4].dstBinding = 5; /* shadow_buffer from compute shadow pass */
             writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[4].descriptorCount = 1;
-            writes[4].pImageInfo = &shadow_vol_info;
+            writes[4].pImageInfo = &shadow_buffer_info;
 
             writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[5].dstSet = deferred_lighting_descriptor_sets_[i];
@@ -1381,7 +1379,8 @@ namespace patch
 
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rp_info.renderPass = gbuffer_render_pass_;
+        /* Use load render pass if compute already filled the gbuffer */
+        rp_info.renderPass = gbuffer_compute_dispatched_ ? gbuffer_render_pass_load_ : gbuffer_render_pass_;
         rp_info.framebuffer = gbuffer_framebuffer_;
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = swapchain_extent_;
@@ -1406,12 +1405,42 @@ namespace patch
 
     void Renderer::end_gbuffer_pass()
     {
+        if (!gbuffer_initialized_)
+            return;
+
         vkCmdEndRenderPass(command_buffers_[current_frame_]);
+
+        /* Always dispatch shadow compute after gbuffer is complete (works with both compute and fragment terrain) */
+        if (compute_resources_initialized_ && shadow_compute_pipeline_)
+        {
+            dispatch_shadow_compute();
+        }
+        gbuffer_compute_dispatched_ = false;
+    }
+
+    void Renderer::prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles)
+    {
+        if (!gbuffer_initialized_ || !vol || !voxel_resources_initialized_)
+            return;
+
+        /* Dispatch compute terrain if enabled (must be called before begin_gbuffer_pass)
+         * Skip compute when objects/particles exist - they need hardware depth buffer which compute can't fill */
+        if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_ && !has_objects_or_particles)
+        {
+            dispatch_gbuffer_compute(vol);
+        }
     }
 
     void Renderer::render_gbuffer_terrain(const VoxelVolume *vol)
     {
-        if (!gbuffer_initialized_ || !gbuffer_pipeline_ || !vol || !voxel_resources_initialized_)
+        if (!gbuffer_initialized_ || !vol || !voxel_resources_initialized_)
+            return;
+
+        /* Skip if compute was already dispatched by prepare_gbuffer_compute */
+        if (gbuffer_compute_dispatched_)
+            return;
+
+        if (!gbuffer_pipeline_)
             return;
 
         terrain_draw_count_++;

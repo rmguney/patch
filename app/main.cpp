@@ -819,8 +819,19 @@ int patch_main(int argc, char *argv[])
                 }
             }
 
+            /* Dispatch compute terrain before render pass (if using compute path) */
+            /* Skip compute when objects/particles exist - they need hardware depth buffer */
+            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
+                                            (particles && particles->count > 0);
+            if (terrain)
+            {
+                renderer.prepare_gbuffer_compute(terrain, has_objects_or_particles);
+            }
+
+            /* Begin render pass - uses load pass if compute was dispatched */
             renderer.begin_gbuffer_pass();
 
+            /* Render terrain (fragment path only, no-op if compute was used) */
             if (terrain)
             {
                 renderer.render_gbuffer_terrain(terrain);

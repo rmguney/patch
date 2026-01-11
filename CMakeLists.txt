@@ -9,6 +9,14 @@ option(PATCH_ENABLE_ASAN "Enable address sanitizer" OFF)
 option(PATCH_USE_PREBUILT_SHADERS "Use prebuilt shader header (no Vulkan SDK required for build)" OFF)
 option(PATCH_ENABLE_PROFILING "Enable CPU/GPU profiling (F3 toggle in app)" ON)
 
+# Kill patch_samples.exe if running (allows rebuild while app accidentally left open)
+if(WIN32)
+    execute_process(
+        COMMAND taskkill /F /IM patch_samples.exe
+        OUTPUT_QUIET ERROR_QUIET
+    )
+endif()
+
 find_package(Vulkan REQUIRED)
 
 # -----------------------------------------------------------------------------
@@ -168,6 +176,7 @@ set(ENGINE_RENDER_SOURCES
     engine/render/renderer_vulkan.cpp
     engine/render/renderer_voxel.cpp
     engine/render/renderer_gbuffer.cpp
+    engine/render/renderer_raymarch.cpp
     engine/render/renderer_voxel_objects.cpp
     engine/render/renderer_particles.cpp
     engine/render/ui_font.h
@@ -367,6 +376,13 @@ else()
     file(GLOB SHADER_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert"
         "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp"
+    )
+
+    # Shader include directory for shared GLSL modules
+    set(SHADER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/include")
+    file(GLOB SHADER_INCLUDES CONFIGURE_DEPENDS
+        "${SHADER_INCLUDE_DIR}/*.glsl"
     )
 
     # Clean stale .spv files before compiling (prevents confusion from removed shaders)
@@ -386,8 +402,8 @@ else()
         set(SPV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
         add_custom_command(
             OUTPUT ${SPV_OUTPUT}
-            COMMAND Vulkan::glslc -DPATCH_VULKAN=1 --target-env=vulkan1.2 ${SHADER} -o ${SPV_OUTPUT}
-            DEPENDS ${SHADER} ${CMAKE_BINARY_DIR}/shaders/.cleaned
+            COMMAND Vulkan::glslc -DPATCH_VULKAN=1 --target-env=vulkan1.2 -I${SHADER_INCLUDE_DIR} ${SHADER} -o ${SPV_OUTPUT}
+            DEPENDS ${SHADER} ${CMAKE_BINARY_DIR}/shaders/.cleaned ${SHADER_INCLUDES}
             COMMENT "Compiling ${SHADER_NAME}"
             VERBATIM
         )
@@ -411,11 +427,22 @@ else()
     add_custom_target(Shaders DEPENDS ${SPIRV_BINARY_FILES} ${EMBEDDED_SHADER_HEADER})
     add_dependencies(engine_render Shaders)
     target_include_directories(engine_render PRIVATE ${CMAKE_BINARY_DIR}/generated)
+
+    # Auto-update prebuilt shader header after successful compilation
+    set(PREBUILT_SHADER_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/engine/render/shaders_embedded_prebuilt.h")
+    add_custom_command(TARGET Shaders POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${EMBEDDED_SHADER_HEADER}
+            ${PREBUILT_SHADER_HEADER}
+        COMMENT "Updating prebuilt shader header"
+        VERBATIM
+    )
 endif()
 
 # Make engine_render rebuild when embedded shaders change
 set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_gbuffer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_raymarch.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_particles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_voxel_objects.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_vulkan.cpp

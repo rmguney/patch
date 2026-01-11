@@ -102,6 +102,7 @@ namespace patch
         void end_frame(uint32_t image_index);
 
         /* Deferred rendering pass methods */
+        void prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles);  /* Call before begin_gbuffer_pass */
         void begin_gbuffer_pass();
         void end_gbuffer_pass();
         void render_gbuffer_terrain(const VoxelVolume *vol);
@@ -322,6 +323,42 @@ namespace patch
         VkPipeline temporal_compute_pipeline_;
         VkPipelineLayout temporal_compute_layout_;
 
+        /* Unified raymarching compute pipelines */
+        VkPipeline gbuffer_compute_pipeline_;
+        VkPipelineLayout gbuffer_compute_layout_;
+        VkDescriptorSetLayout gbuffer_compute_terrain_layout_;   /* Set 0: terrain data */
+        VkDescriptorSetLayout gbuffer_compute_vobj_layout_;      /* Set 1: voxel objects */
+        VkDescriptorSetLayout gbuffer_compute_output_layout_;    /* Set 2: G-buffer outputs */
+        VkDescriptorPool gbuffer_compute_descriptor_pool_;
+        VkDescriptorSet gbuffer_compute_terrain_sets_[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSet gbuffer_compute_vobj_sets_[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSet gbuffer_compute_output_sets_[MAX_FRAMES_IN_FLIGHT];
+
+        VkPipeline shadow_compute_pipeline_;
+        VkPipelineLayout shadow_compute_layout_;
+        VkDescriptorSetLayout shadow_compute_input_layout_;      /* Set 0: chunk headers + shadow vol */
+        VkDescriptorSetLayout shadow_compute_gbuffer_layout_;    /* Set 1: G-buffer depth/normal */
+        VkDescriptorSetLayout shadow_compute_output_layout_;     /* Set 2: shadow output */
+        VkDescriptorPool shadow_compute_descriptor_pool_;
+        VkDescriptorSet shadow_compute_input_sets_[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSet shadow_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSet shadow_compute_output_sets_[MAX_FRAMES_IN_FLIGHT];
+
+        /* Shadow output buffer for compute pass */
+        VkImage shadow_output_image_;
+        VkDeviceMemory shadow_output_memory_;
+        VkImageView shadow_output_view_;
+
+        bool compute_raymarching_enabled_ = true;  /* Use compute path when available */
+        bool compute_resources_initialized_ = false;
+        bool gbuffer_compute_dispatched_ = false;  /* Set when compute fills gbuffer this frame */
+
+    public:
+        void set_compute_raymarching_enabled(bool enabled) { compute_raymarching_enabled_ = enabled; }
+        bool is_compute_raymarching_enabled() const { return compute_raymarching_enabled_ && compute_resources_initialized_; }
+
+    private:
+
         /* History buffers for temporal accumulation (ping-pong) */
         VkImage history_images_[2];
         VkDeviceMemory history_image_memory_[2];
@@ -343,6 +380,7 @@ namespace patch
         VkImageView gbuffer_views_[GBUFFER_COUNT];
         VkSampler gbuffer_sampler_;
         VkRenderPass gbuffer_render_pass_;
+        VkRenderPass gbuffer_render_pass_load_;  /* Uses LOAD_OP_LOAD for post-compute */
         VkFramebuffer gbuffer_framebuffer_;
         VkDescriptorSetLayout gbuffer_descriptor_layout_;
         VkDescriptorPool gbuffer_descriptor_pool_;
@@ -448,7 +486,6 @@ namespace patch
         void upload_shadow_volume(const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
                                   const uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
                                   const uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2);
-        void update_shadow_volume_descriptor();
 
         bool create_blue_noise_texture();
         void destroy_blue_noise_texture();
@@ -461,6 +498,17 @@ namespace patch
         bool create_vobj_descriptor_sets();
         void upload_vobj_to_atlas(uint32_t object_index, const VoxelObject *obj);
         void upload_vobj_metadata(const VoxelObjectWorld *world);
+
+        /* Unified raymarching compute infrastructure */
+        bool init_compute_raymarching();
+        bool create_gbuffer_compute_pipeline();
+        bool create_shadow_compute_pipeline();
+        bool create_gbuffer_compute_descriptor_sets();
+        bool create_shadow_compute_descriptor_sets();
+        bool create_shadow_output_resources();
+        void destroy_compute_raymarching_resources();
+        void dispatch_gbuffer_compute(const VoxelVolume *vol);
+        void dispatch_shadow_compute();
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

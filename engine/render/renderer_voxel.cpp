@@ -245,6 +245,27 @@ namespace patch
 
             voxel_resources_initialized_ = true;
 
+            /* Initialize compute raymarching pipelines first (creates shadow_output_view_) */
+            if (!compute_resources_initialized_)
+            {
+                if (!init_compute_raymarching())
+                {
+                    fprintf(stderr, "Warning: Compute raymarching init failed, using fragment path\n");
+                }
+                else
+                {
+                    if (!create_gbuffer_compute_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: G-buffer compute descriptors failed\n");
+                    }
+                    if (!create_shadow_compute_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: Shadow compute descriptors failed\n");
+                    }
+                }
+            }
+
+            /* Create deferred descriptors after compute (needs shadow_output_view_) */
             if (!init_deferred_descriptors())
             {
                 return;
@@ -423,8 +444,6 @@ namespace patch
             upload_shadow_volume(mip0.data(), w0, h0, d0,
                                  mip1.data(), w1, h1, d1,
                                  mip2.data(), w2, h2, d2);
-
-            update_shadow_volume_descriptor();
 
             shadow_volume_last_frame_ = vol->current_frame;
         }
