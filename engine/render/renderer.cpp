@@ -645,30 +645,4 @@ namespace patch
         return result != FRUSTUM_OUTSIDE;
     }
 
-    int32_t Renderer::count_visible_chunks(const VoxelVolume *vol) const
-    {
-        if (!vol)
-            return 0;
-
-        int32_t count = 0;
-        Vec3 vol_min = vec3_create(vol->bounds.min_x, vol->bounds.min_y, vol->bounds.min_z);
-
-        for (int32_t cz = 0; cz < vol->chunks_z; cz++)
-        {
-            for (int32_t cy = 0; cy < vol->chunks_y; cy++)
-            {
-                for (int32_t cx = 0; cx < vol->chunks_x; cx++)
-                {
-                    Bounds3D chunk_bounds = chunk_world_bounds(cx, cy, cz, vol_min, vol->voxel_size);
-                    if (frustum_test_aabb(&frustum_, chunk_bounds) != FRUSTUM_OUTSIDE)
-                    {
-                        count++;
-                    }
-                }
-            }
-        }
-
-        return count;
-    }
-
 }

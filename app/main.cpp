@@ -415,7 +415,7 @@ int patch_main(int argc, char *argv[])
             materials[i].b = static_cast<float>(mat->b) / 255.0f;
             materials[i].emissive = mat->emissive;
             materials[i].roughness = mat->roughness;
-            materials[i].metallic = 0.0f;
+            materials[i].metallic = mat->metallic;
             materials[i].flags = static_cast<float>(mat->flags);
             materials[i].pad = 0.0f;
         }

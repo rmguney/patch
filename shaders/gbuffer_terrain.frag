@@ -49,105 +49,31 @@ layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
     vec4 materials[512];
 };
 
+#include "include/materials.glsl"
+#include "include/camera.glsl"
+
+/* Global parameters required by data_terrain.glsl */
+ivec3 pc_grid_size;
+ivec3 pc_chunks_dim;
+int pc_total_chunks;
+
 layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
     mat4 prev_view_proj;
 };
 
 layout(SET_BINDING(0, 4)) uniform sampler2D depth_tex;
 
-const int REGION_SIZE = 8;
-const int CHUNK_SIZE = 32;
-const int CHUNK_UINT_COUNT = 8192;
+#include "include/data_terrain.glsl"
+
 const int DEFAULT_MAX_STEPS = 512;
 
-uint get_material(ivec3 p) {
-    if (p.x < 0 || p.x >= pc.grid_size.x ||
-        p.y < 0 || p.y >= pc.grid_size.y ||
-        p.z < 0 || p.z >= pc.grid_size.z) {
-        return 0u;
-    }
-
-    ivec3 chunk_pos = p / CHUNK_SIZE;
-    int chunk_idx = chunk_pos.x + chunk_pos.y * pc.chunks_dim.x +
-                    chunk_pos.z * pc.chunks_dim.x * pc.chunks_dim.y;
-
-    ivec3 local = p - chunk_pos * CHUNK_SIZE;
-    int local_idx = local.x + local.y * CHUNK_SIZE + local.z * CHUNK_SIZE * CHUNK_SIZE;
-
-    int chunk_data_offset = chunk_idx * CHUNK_UINT_COUNT;
-    int uint_idx = local_idx / 4;
-    int byte_idx = local_idx % 4;
-
-    uint packed = voxel_data[chunk_data_offset + uint_idx];
-    return (packed >> (byte_idx * 8)) & 0xFFu;
-}
-
-bool chunk_has_any(int chunk_idx) {
-    if (chunk_idx < 0 || chunk_idx >= pc.total_chunks) return false;
-    return (chunk_headers[chunk_idx].z & 0xFFu) != 0u;
-}
-
-uvec2 chunk_get_level0(int chunk_idx) {
-    return chunk_headers[chunk_idx].xy;
-}
-
-bool region_occupied(int chunk_idx, ivec3 region) {
-    uvec2 level0 = chunk_get_level0(chunk_idx);
-    int bit = region.x + region.y * 4 + region.z * 16;
-    if (bit < 32) {
-        return (level0.x & (1u << bit)) != 0u;
-    } else {
-        return (level0.y & (1u << (bit - 32))) != 0u;
-    }
-}
-
-vec3 get_material_color(uint material_id) {
-    return materials[material_id * 2u].rgb;
-}
-
-float get_material_emissive(uint material_id) {
-    return materials[material_id * 2u].a;
-}
-
-float get_material_roughness(uint material_id) {
-    return materials[material_id * 2u + 1u].r;
-}
-
-float get_material_metallic(uint material_id) {
-    return materials[material_id * 2u + 1u].g;
-}
-
 bool is_solid(ivec3 p) {
-    return get_material(p) != 0u;
+    return sample_material(p) != 0u;
 }
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
 }
-
-vec2 intersect_aabb(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max) {
-    vec3 inv_rd = 1.0 / rd;
-    vec3 t0 = (box_min - ro) * inv_rd;
-    vec3 t1 = (box_max - ro) * inv_rd;
-    vec3 tmin = min(t0, t1);
-    vec3 tmax = max(t0, t1);
-    float enter = max(max(tmin.x, tmin.y), tmin.z);
-    float exit = min(min(tmax.x, tmax.y), tmax.z);
-    return vec2(enter, exit);
-}
-
-struct HitInfo {
-    bool hit;
-    vec3 pos;
-    vec3 normal;
-    vec3 color;
-    float t;
-    uint material_id;
-    float emissive;
-    float roughness;
-    float metallic;
-    bvec3 step_mask;
-};
 
 HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     HitInfo info;
@@ -155,7 +81,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     info.t = 1e10;
     info.step_mask = bvec3(false, true, false);
 
-    vec2 box_hit = intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
+    vec2 box_hit = hdda_intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
         return info;
     }
@@ -214,7 +140,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
             last_chunk = current_chunk;
             current_chunk_idx = current_chunk.x + current_chunk.y * pc.chunks_dim.x +
                                current_chunk.z * pc.chunks_dim.x * pc.chunks_dim.y;
-            chunk_empty = !chunk_has_any(current_chunk_idx);
+            chunk_empty = !sample_occupancy_chunk(current_chunk_idx);
             last_region = ivec3(-1000);
         }
 
@@ -230,7 +156,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
         ivec3 current_region = local_pos / REGION_SIZE;
         if (current_region != last_region) {
             last_region = current_region;
-            region_empty = !region_occupied(current_chunk_idx, current_region);
+            region_empty = !sample_occupancy_region(current_chunk_idx, current_region);
         }
 
         if (region_empty) {
@@ -241,7 +167,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
             continue;
         }
 
-        uint mat = get_material(map_pos);
+        uint mat = sample_material(map_pos);
         if (mat != 0u) {
             info.hit = true;
             info.material_id = mat;
@@ -253,7 +179,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
 
             vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
             vec3 voxel_max = voxel_min + pc.voxel_size;
-            vec2 voxel_hit = intersect_aabb(ro, rd, voxel_min, voxel_max);
+            vec2 voxel_hit = hdda_intersect_aabb(ro, rd, voxel_min, voxel_max);
             info.t = voxel_hit.x;
             info.pos = ro + rd * info.t;
 
@@ -279,36 +205,20 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     return info;
 }
 
-float linear_depth_to_ndc(float linear_depth, float near, float far) {
-    return (far - near * far / linear_depth) / (far - near);
-}
-
 void main() {
-    vec2 ndc = in_uv * 2.0 - 1.0;
+    /* Initialize globals for data_terrain.glsl */
+    pc_grid_size = pc.grid_size;
+    pc_chunks_dim = pc.chunks_dim;
+    pc_total_chunks = pc.total_chunks;
 
     vec3 ray_origin;
     vec3 ray_world;
-
-    if (pc.is_orthographic != 0) {
-        /* Orthographic: parallel rays from near plane (Vulkan NDC z is [0,1]) */
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = pc.inv_projection * near_clip;
-        vec4 far_view = pc.inv_projection * far_clip;
-        vec3 near_world = (pc.inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (pc.inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        ray_origin = near_world;
-        ray_world = normalize(far_world - near_world);
-    } else {
-        /* Perspective: rays from camera position (fast path, no clipping)
-           Note: Projection matrix already has Y-flip, no -ndc.y needed */
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = pc.inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        ray_world = normalize((pc.inv_view * ray_view).xyz);
-        ray_origin = pc.camera_pos;
-    }
+    camera_generate_ray_uv(
+        in_uv,
+        pc.inv_view, pc.inv_projection, pc.camera_pos,
+        pc.is_orthographic != 0,
+        ray_origin, ray_world
+    );
 
     /* Debug mode 2: solid magenta test pattern - shader is executing */
     if (pc.debug_mode == 2) {
@@ -322,7 +232,7 @@ void main() {
 
     /* Debug mode 1: visualize AABB intersection */
     if (pc.debug_mode == 1) {
-        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
         if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
             /* Ray misses AABB - red */
             out_albedo = vec4(1.0, 0.0, 0.0, 1.0);
@@ -330,7 +240,7 @@ void main() {
             /* Ray hits AABB - green (check if any chunks have data) */
             bool any_active = false;
             for (int i = 0; i < pc.total_chunks && !any_active; i++) {
-                if (chunk_has_any(i)) any_active = true;
+                if (sample_occupancy_chunk(i)) any_active = true;
             }
             if (any_active) {
                 out_albedo = vec4(0.0, 1.0, 0.0, 1.0);  /* Green: AABB hit, chunks have data */
@@ -347,7 +257,7 @@ void main() {
 
     /* Debug mode 3: show entry point and grid coords */
     if (pc.debug_mode == 3) {
-        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
         if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
             out_albedo = vec4(1.0, 0.0, 0.0, 1.0);
         } else {
@@ -367,7 +277,7 @@ void main() {
 
     /* Debug mode 4: sample a specific voxel and show its material */
     if (pc.debug_mode == 4) {
-        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
         if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
             out_albedo = vec4(0.5, 0.0, 0.0, 1.0);
         } else {
@@ -375,7 +285,7 @@ void main() {
             vec3 start_pos = ray_origin + ray_world * t_start;
             vec3 grid_pos = world_to_grid(start_pos);
             ivec3 voxel = ivec3(floor(grid_pos));
-            uint mat = get_material(voxel);
+            uint mat = sample_material(voxel);
             if (mat != 0u) {
                 out_albedo = vec4(0.0, 1.0, 0.0, 1.0);  /* Green: found solid */
             } else {
@@ -397,9 +307,9 @@ void main() {
            B = chunk 0 has_any flag
            All three should be bright for a properly filled floor.
         */
-        uint mat_corner = get_material(ivec3(0, 0, 0));
-        uint mat_center = get_material(ivec3(pc.grid_size.x / 2, 0, pc.grid_size.z / 2));
-        bool chunk0_has_any = chunk_has_any(0);
+        uint mat_corner = sample_material(ivec3(0, 0, 0));
+        uint mat_center = sample_material(ivec3(pc.grid_size.x / 2, 0, pc.grid_size.z / 2));
+        bool chunk0_has_any = sample_occupancy_chunk(0);
 
         out_albedo = vec4(
             (mat_corner != 0u) ? 1.0 : 0.0,   /* R: corner voxel solid */
@@ -416,7 +326,7 @@ void main() {
 
     /* Debug mode 6: brute force raymarch (no hierarchical skip) */
     if (pc.debug_mode == 6) {
-        vec2 box_hit = intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
+        vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_world, pc.bounds_min, pc.bounds_max);
         if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
             out_albedo = vec4(0.3, 0.0, 0.0, 1.0);
         } else {
@@ -436,7 +346,7 @@ void main() {
                     map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
                     break;
                 }
-                uint mat = get_material(map_pos);
+                uint mat = sample_material(map_pos);
                 if (mat != 0u) {
                     found = true;
                     break;
@@ -490,5 +400,5 @@ void main() {
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
     out_linear_depth = hit.t;
 
-    gl_FragDepth = clamp(linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
 }

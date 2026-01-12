@@ -159,7 +159,12 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, frame_count) == 204);
     ASSERT(offsetof(VoxelPushConstants, rt_quality) == 208);
     ASSERT(offsetof(VoxelPushConstants, debug_mode) == 212);
-    ASSERT(offsetof(VoxelPushConstants, reserved) == 216);
+    ASSERT(offsetof(VoxelPushConstants, is_orthographic) == 216);
+    ASSERT(offsetof(VoxelPushConstants, max_steps) == 220);
+    ASSERT(offsetof(VoxelPushConstants, near_plane) == 224);
+    ASSERT(offsetof(VoxelPushConstants, far_plane) == 228);
+    ASSERT(offsetof(VoxelPushConstants, object_count) == 232);
+    ASSERT(offsetof(VoxelPushConstants, reserved) == 236);
     return 1;
 }
 

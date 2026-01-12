@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "voxel_push_constants.h"
 #include "shaders_embedded.h"
 #include <cstring>
 #include <cstdio>
@@ -1467,29 +1468,7 @@ namespace patch
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
         Mat4 inv_proj = mat4_inverse(projection_matrix_);
 
-        struct alignas(16) GBufferPushConstants
-        {
-            Mat4 inv_view;
-            Mat4 inv_projection;
-            float bounds_min[3];
-            float voxel_size;
-            float bounds_max[3];
-            float chunk_size;
-            float camera_pos[3];
-            float pad1;
-            int32_t grid_size[3];
-            int32_t total_chunks;
-            int32_t chunks_dim[3];
-            int32_t frame_count;
-            int32_t rt_quality;
-            int32_t debug_mode;
-            int32_t is_orthographic;
-            int32_t max_steps;
-            float near_plane;
-            float far_plane;
-            int32_t reserved[6];
-        } pc;
-
+        VoxelPushConstants pc{};
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.bounds_min[0] = vol->bounds.min_x;
@@ -1518,7 +1497,7 @@ namespace patch
         pc.max_steps = 512;
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
-        memset(pc.reserved, 0, sizeof(pc.reserved));
+        pc.object_count = 0;
 
         vkCmdPushConstants(command_buffers_[current_frame_], gbuffer_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1565,29 +1544,7 @@ namespace patch
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
         Mat4 inv_proj = mat4_inverse(projection_matrix_);
 
-        struct alignas(16) LightingPushConstants
-        {
-            Mat4 inv_view;
-            Mat4 inv_projection;
-            float bounds_min[3];
-            float voxel_size;
-            float bounds_max[3];
-            float chunk_size;
-            float cam_pos[3];
-            float pad1;
-            int32_t grid_size[3];
-            int32_t total_chunks;
-            int32_t chunks_dim[3];
-            int32_t frame_count;
-            int32_t rt_quality;
-            int32_t debug_mode;
-            int32_t is_orthographic;
-            int32_t max_steps;
-            float near_plane;
-            float far_plane;
-            int32_t reserved[6];
-        } pc;
-
+        VoxelPushConstants pc{};
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.near_plane = 0.1f;
@@ -1600,9 +1557,9 @@ namespace patch
         pc.bounds_max[1] = deferred_bounds_max_[1];
         pc.bounds_max[2] = deferred_bounds_max_[2];
         pc.chunk_size = static_cast<float>(CHUNK_SIZE);
-        pc.cam_pos[0] = camera_position_.x;
-        pc.cam_pos[1] = camera_position_.y;
-        pc.cam_pos[2] = camera_position_.z;
+        pc.camera_pos[0] = camera_position_.x;
+        pc.camera_pos[1] = camera_position_.y;
+        pc.camera_pos[2] = camera_position_.z;
         pc.pad1 = 0.0f;
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
@@ -1616,7 +1573,7 @@ namespace patch
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
-        memset(pc.reserved, 0, sizeof(pc.reserved));
+        pc.object_count = 0;
 
         vkCmdPushConstants(command_buffers_[current_frame_], deferred_lighting_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

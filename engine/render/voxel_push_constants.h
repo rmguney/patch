@@ -39,7 +39,12 @@ struct VoxelPushConstants
     int32_t frame_count;
     int32_t rt_quality;
     int32_t debug_mode;
-    int32_t reserved[10];
+    int32_t is_orthographic;
+    int32_t max_steps;
+    float near_plane;
+    float far_plane;
+    int32_t object_count;
+    int32_t reserved[5];
 };
 
 /*

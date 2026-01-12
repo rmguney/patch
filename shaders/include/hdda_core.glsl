@@ -22,8 +22,6 @@ DDAState hdda_init(vec3 grid_pos, vec3 ray_dir) {
     state.map_pos = ivec3(floor(grid_pos));
     state.delta_dist = abs(1.0 / ray_dir);
     state.step_dir = ivec3(sign(ray_dir));
-
-    /* Standard DDA side_dist initialization */
     state.side_dist = (sign(ray_dir) * (vec3(state.map_pos) - grid_pos) +
                        sign(ray_dir) * 0.5 + 0.5) * state.delta_dist;
 
@@ -108,7 +106,10 @@ bvec3 hdda_entry_face_mask(vec3 ro, vec3 rd, vec3 box_min, vec3 box_max) {
  *   uint sample_material(ivec3 global_pos);
  *
  * Parameters are passed to avoid global state dependencies.
+ *
+ * Only compiled when HDDA_TERRAIN_ENABLED is defined (by data_terrain.glsl).
  */
+#ifdef HDDA_TERRAIN_ENABLED
 HitInfo hdda_march_terrain(
     vec3 ray_origin,
     vec3 ray_dir,
@@ -124,19 +125,16 @@ HitInfo hdda_march_terrain(
     info.hit = false;
     info.t = 1e10;
 
-    /* AABB intersection */
     vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_dir, bounds_min, bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
         return info;
     }
 
-    /* Convert to grid space */
     float t_start = max(box_hit.x, 0.001);
     vec3 start_world = ray_origin + ray_dir * t_start;
     vec3 grid_pos = (start_world - bounds_min) / voxel_size;
     grid_pos = clamp(grid_pos, vec3(0.0), vec3(grid_size) - 0.001);
 
-    /* Initialize DDA */
     DDAState dda = hdda_init(grid_pos, ray_dir);
 
     /* Compute initial entry face for correct first normal */
@@ -149,14 +147,12 @@ HitInfo hdda_march_terrain(
         dda.last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
     }
 
-    /* Cached hierarchy state */
     ivec3 last_chunk = ivec3(-1000);
     ivec3 last_region = ivec3(-1000);
     bool chunk_empty = false;
     bool region_empty = false;
     int current_chunk_idx = -1;
 
-    /* Main DDA loop */
     for (int i = 0; i < max_steps; i++) {
         if (!hdda_in_bounds(dda.map_pos, grid_size)) {
             break;
@@ -197,7 +193,6 @@ HitInfo hdda_march_terrain(
             info.material_id = mat;
             info.voxel_coord = dda.map_pos;
 
-            /* Compute precise hit point via voxel AABB intersection */
             vec3 voxel_min = bounds_min + vec3(dda.map_pos) * voxel_size;
             vec3 voxel_max = voxel_min + voxel_size;
             vec2 voxel_hit = hdda_intersect_aabb(ray_origin, ray_dir, voxel_min, voxel_max);
@@ -213,57 +208,6 @@ HitInfo hdda_march_terrain(
 
     return info;
 }
-
-/*
- * Simple DDA march without hierarchy (for voxel objects, etc.)
- * Uses single grid with no chunk/region structure.
- */
-HitInfo hdda_march_simple(
-    vec3 grid_origin,
-    vec3 grid_dir,
-    ivec3 grid_size,
-    int max_steps
-) {
-    HitInfo info;
-    info.hit = false;
-    info.t = 1e10;
-
-    /* AABB intersection in grid space */
-    vec2 box_hit = hdda_intersect_aabb(grid_origin, grid_dir, vec3(0.0), vec3(grid_size));
-    if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
-        return info;
-    }
-
-    float t_start = max(box_hit.x, 0.001);
-    vec3 start_pos = grid_origin + grid_dir * t_start;
-
-    /* Initialize DDA */
-    DDAState dda = hdda_init(start_pos, grid_dir);
-    dda.map_pos = clamp(dda.map_pos, ivec3(0), grid_size - 1);
-
-    /* Avoid division by zero */
-    vec3 safe_dir = abs(grid_dir) + vec3(0.0001);
-    dda.delta_dist = 1.0 / safe_dir;
-
-    /* Main DDA loop */
-    for (int i = 0; i < max_steps; i++) {
-        if (!hdda_in_bounds(dda.map_pos, grid_size)) {
-            break;
-        }
-
-        uint mat = sample_material_simple(dda.map_pos);
-        if (mat != 0u) {
-            info.hit = true;
-            info.material_id = mat;
-            info.voxel_coord = dda.map_pos;
-            info.normal = hdda_compute_normal(dda.last_mask, grid_dir);
-            return info;
-        }
-
-        hdda_step(dda);
-    }
-
-    return info;
-}
+#endif /* HDDA_TERRAIN_ENABLED */
 
 #endif /* HDDA_CORE_GLSL */

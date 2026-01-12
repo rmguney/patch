@@ -2,27 +2,34 @@
 #define DATA_VOXOBJ_GLSL
 
 #include "hdda_types.glsl"
+#include "hdda_core.glsl"
 
-struct VoxelObjectGPU {
-    mat4 world_to_local;    /* Transform ray to object space */
-    mat4 local_to_world;    /* Transform hit back to world */
-    vec4 bounds_min;        /* Local AABB min (xyz), voxel_size (w) */
-    vec4 bounds_max;        /* Local AABB max (xyz), grid_size (w) */
-    vec4 position;          /* World position (xyz), active flag (w) */
-    uint atlas_slice;       /* Z-slice in 3D atlas */
-    uint material_base;     /* Base material offset */
-    uint flags;             /* Object flags */
-    uint pad;
-};
-
-layout(set = 1, binding = 0) uniform usampler3D vobj_atlas;
-
-layout(std430, set = 1, binding = 1) readonly buffer VoxelObjectMetadata {
-    VoxelObjectGPU vobj_objects[];
-};
+/*
+ * data_voxobj.glsl - Voxel object data access functions
+ *
+ * REQUIREMENTS: The including shader must define (before including this file):
+ * 1. VoxelObjectGPU struct:
+ *    struct VoxelObjectGPU {
+ *        mat4 world_to_local;
+ *        mat4 local_to_world;
+ *        vec4 bounds_min;    // xyz: min, w: voxel_size
+ *        vec4 bounds_max;    // xyz: max, w: grid_size
+ *        vec4 position;      // xyz: world pos, w: active flag
+ *        uint atlas_slice;
+ *        uint material_base;
+ *        uint flags;
+ *        uint pad;
+ *    };
+ *
+ * 2. Buffer bindings:
+ *    uniform usampler3D vobj_atlas;
+ *    buffer { VoxelObjectGPU objects[]; };
+ *
+ * 3. Include materials.glsl before this file (for get_material_* functions)
+ */
 
 uint sample_vobj_material(int object_idx, ivec3 local_pos, int grid_size) {
-    VoxelObjectGPU obj = vobj_objects[object_idx];
+    VoxelObjectGPU obj = objects[object_idx];
     uint atlas_z_base = obj.atlas_slice * uint(grid_size);
     ivec3 texel = ivec3(local_pos.x, local_pos.y, int(atlas_z_base) + local_pos.z);
     return texelFetch(vobj_atlas, texel, 0).r;
@@ -35,7 +42,7 @@ void vobj_transform_ray(
     out vec3 local_origin,
     out vec3 local_dir
 ) {
-    VoxelObjectGPU obj = vobj_objects[object_idx];
+    VoxelObjectGPU obj = objects[object_idx];
     local_origin = (obj.world_to_local * vec4(world_origin, 1.0)).xyz;
     local_dir = normalize((obj.world_to_local * vec4(world_dir, 0.0)).xyz);
 }
@@ -47,29 +54,29 @@ void vobj_transform_hit(
     out vec3 world_pos,
     out vec3 world_normal
 ) {
-    VoxelObjectGPU obj = vobj_objects[object_idx];
+    VoxelObjectGPU obj = objects[object_idx];
     world_pos = (obj.local_to_world * vec4(local_pos, 1.0)).xyz;
     world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
 }
 
 float vobj_get_voxel_size(int object_idx) {
-    return vobj_objects[object_idx].bounds_min.w;
+    return objects[object_idx].bounds_min.w;
 }
 
 float vobj_get_grid_size(int object_idx) {
-    return vobj_objects[object_idx].bounds_max.w;
+    return objects[object_idx].bounds_max.w;
 }
 
 float vobj_get_half_extent(int object_idx) {
-    return vobj_objects[object_idx].bounds_max.x;
+    return objects[object_idx].bounds_max.x;
 }
 
 bool vobj_is_active(int object_idx) {
-    return vobj_objects[object_idx].position.w > 0.0;
+    return objects[object_idx].position.w > 0.0;
 }
 
 vec3 vobj_get_world_position(int object_idx) {
-    return vobj_objects[object_idx].position.xyz;
+    return objects[object_idx].position.xyz;
 }
 
 HitInfo vobj_march_object(
@@ -82,7 +89,12 @@ HitInfo vobj_march_object(
     info.hit = false;
     info.t = 1e10;
 
-    VoxelObjectGPU obj = vobj_objects[object_idx];
+    VoxelObjectGPU obj = objects[object_idx];
+
+    /* Skip inactive objects */
+    if (obj.position.w <= 0.0) {
+        return info;
+    }
 
     vec3 local_origin = (obj.world_to_local * vec4(world_origin, 1.0)).xyz;
     vec3 local_dir = normalize((obj.world_to_local * vec4(world_dir, 0.0)).xyz);
@@ -91,30 +103,28 @@ HitInfo vobj_march_object(
     float grid_size = obj.bounds_max.w;
     float half_extent = obj.bounds_max.x;
 
-    vec3 grid_min = vec3(0.0);
-    vec3 grid_max = vec3(grid_size);
+    vec3 local_min = vec3(-half_extent);
+    vec3 local_max = vec3(half_extent);
 
-    vec3 local_pos_grid = (local_origin + vec3(half_extent)) / voxel_size;
-    vec3 local_dir_grid = local_dir / voxel_size;
-
-    vec2 box_t = hdda_intersect_aabb(local_pos_grid, local_dir_grid, grid_min, grid_max);
+    vec2 box_t = hdda_intersect_aabb(local_origin, local_dir, local_min, local_max);
     if (box_t.x > box_t.y || box_t.y < 0.0) {
         return info;
     }
 
     float t_start = max(box_t.x, 0.001);
-    vec3 start_pos = local_pos_grid + local_dir_grid * t_start;
+    vec3 start_local = local_origin + local_dir * t_start;
+    vec3 grid_pos = (start_local + vec3(half_extent)) / voxel_size;
+    grid_pos = clamp(grid_pos, vec3(0.0), vec3(grid_size) - 0.001);
 
-    ivec3 map_pos = ivec3(floor(start_pos));
-    map_pos = clamp(map_pos, ivec3(0), ivec3(int(grid_size) - 1));
+    ivec3 map_pos = ivec3(floor(grid_pos));
 
-    vec3 inv_dir = 1.0 / (abs(local_dir_grid) + vec3(0.0001));
-    ivec3 step_dir = ivec3(sign(local_dir_grid));
-    vec3 dir_sign = sign(local_dir_grid);
-    vec3 step_sign = step(vec3(0.0), dir_sign);
-    vec3 side_dist = inv_dir * (step_sign + dir_sign * (vec3(map_pos) - start_pos));
+    /* DDA setup - match terrain formula exactly */
+    vec3 delta_dist = abs(vec3(voxel_size) / local_dir);
+    ivec3 step_dir = ivec3(sign(local_dir));
+    vec3 side_dist = (sign(local_dir) * (vec3(map_pos) - grid_pos) + sign(local_dir) * 0.5 + 0.5) * delta_dist;
 
     uint atlas_z_base = obj.atlas_slice * uint(grid_size);
+    bvec3 last_mask = bvec3(false, true, false);
 
     for (int i = 0; i < max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= int(grid_size) ||
@@ -132,37 +142,32 @@ HitInfo vobj_march_object(
 
             vec2 voxel_t = hdda_intersect_aabb(local_origin, local_dir, voxel_min_local, voxel_max_local);
             float hit_t_local = max(voxel_t.x, 0.0);
-            vec3 hit_local = local_origin + local_dir * hit_t_local;
 
-            vec3 voxel_center = voxel_min_local + vec3(voxel_size * 0.5);
-            vec3 rel = hit_local - voxel_center;
-            vec3 abs_rel = abs(rel);
-            float max_comp = max(max(abs_rel.x, abs_rel.y), abs_rel.z);
+            /* Normal from DDA step mask - matches terrain for consistency */
+            vec3 local_normal = hdda_compute_normal(last_mask, local_dir);
 
-            vec3 local_normal;
-            if (abs_rel.x >= max_comp - 0.0001) {
-                local_normal = vec3(sign(rel.x), 0.0, 0.0);
-            } else if (abs_rel.y >= max_comp - 0.0001) {
-                local_normal = vec3(0.0, sign(rel.y), 0.0);
-            } else {
-                local_normal = vec3(0.0, 0.0, sign(rel.z));
-            }
-
-            vec3 hit_world = (obj.local_to_world * vec4(hit_local, 1.0)).xyz;
+            /* World position via ray equation - rotation preserves distances */
+            vec3 hit_world = world_origin + world_dir * hit_t_local;
             vec3 world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
 
             info.hit = true;
             info.material_id = mat;
             info.pos = hit_world;
             info.normal = world_normal;
-            info.t = length(hit_world - world_origin);
+            info.t = hit_t_local;
             info.voxel_coord = map_pos;
+            info.step_mask = last_mask;
+            info.color = get_material_color(mat);
+            info.emissive = get_material_emissive(mat);
+            info.roughness = get_material_roughness(mat);
+            info.metallic = get_material_metallic(mat);
 
             return info;
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-        side_dist += vec3(mask) * inv_dir;
+        last_mask = mask;
+        side_dist += vec3(mask) * delta_dist;
         map_pos += ivec3(mask) * step_dir;
     }
 

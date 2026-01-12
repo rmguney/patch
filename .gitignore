@@ -10,6 +10,7 @@ build/
 *.obj
 *.o
 nul
+*cwd
 
 # IDE/Editor directories
 .github/*
@@ -37,6 +38,7 @@ Thumbs.db
 # Internal documentation
 *.md
 *.csv
+*.png
 
 # Exceptions
 !/README.md

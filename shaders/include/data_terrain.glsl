@@ -1,32 +1,36 @@
 #ifndef DATA_TERRAIN_GLSL
 #define DATA_TERRAIN_GLSL
 
+/* Enable terrain-specific HDDA functions in hdda_core.glsl */
+#define HDDA_TERRAIN_ENABLED
+
 #include "hdda_types.glsl"
 
-/* Terrain data bindings - must match descriptor set layout */
-layout(std430, set = 0, binding = 0) readonly buffer TerrainVoxelBuffer {
-    uint terrain_voxel_data[];
-};
-
-layout(std430, set = 0, binding = 1) readonly buffer TerrainChunkHeaders {
-    uvec4 terrain_chunk_headers[];
-};
-
-/* Terrain parameters from push constants - user must define these globals:
- *   ivec3 pc_grid_size
- *   ivec3 pc_chunks_dim
- *   int pc_total_chunks
+/*
+ * data_terrain.glsl - Terrain voxel data access functions
+ *
+ * REQUIREMENTS: The including shader must define:
+ * 1. Buffer bindings (before including this file):
+ *    layout(std430, set = 0, binding = 0) readonly buffer VoxelBuffer { uint voxel_data[]; };
+ *    layout(std430, set = 0, binding = 1) readonly buffer ChunkHeaders { uvec4 chunk_headers[]; };
+ *
+ * 2. Global variables for grid parameters:
+ *    ivec3 pc_grid_size;
+ *    ivec3 pc_chunks_dim;
+ *    int pc_total_chunks;
+ *
+ * These can be initialized from push constants in main().
  */
 
 /* Check if chunk has any solid voxels (level 2 hierarchy) */
 bool sample_occupancy_chunk(int chunk_idx) {
     if (chunk_idx < 0 || chunk_idx >= pc_total_chunks) return false;
-    return (terrain_chunk_headers[chunk_idx].z & 0xFFu) != 0u;
+    return (chunk_headers[chunk_idx].z & 0xFFu) != 0u;
 }
 
 /* Get level0 occupancy bitmask for chunk */
 uvec2 terrain_get_level0(int chunk_idx) {
-    return terrain_chunk_headers[chunk_idx].xy;
+    return chunk_headers[chunk_idx].xy;
 }
 
 /* Check if 8x8x8 region is occupied (level 1 hierarchy) */
@@ -59,8 +63,11 @@ uint sample_material(ivec3 p) {
     int uint_idx = local_idx / 4;
     int byte_idx = local_idx % 4;
 
-    uint packed = terrain_voxel_data[chunk_data_offset + uint_idx];
+    uint packed = voxel_data[chunk_data_offset + uint_idx];
     return (packed >> (byte_idx * 8)) & 0xFFu;
 }
+
+/* Include HDDA core after callback functions are defined */
+#include "hdda_core.glsl"
 
 #endif /* DATA_TERRAIN_GLSL */

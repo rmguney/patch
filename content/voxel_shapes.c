@@ -35,22 +35,20 @@
 #include "voxel_shapes.h"
 
 /* Extern declarations for shapes defined in content/shapes/ */
-extern const VoxelShape g_shape_cube;
 extern const VoxelShape g_shape_sphere;
-extern const VoxelShape g_shape_sword;
-extern const VoxelShape g_shape_axe;
+extern const VoxelShape g_shape_cube;
+extern const VoxelShape g_shape_gary;
 
 /*
  * Global shape registration table.
  * Order must match SHAPE_* constants in voxel_shapes.h.
  */
 const VoxelShape *const g_voxel_shapes[VOXEL_SHAPE_MAX_COUNT] = {
-    &g_shape_cube,   /* SHAPE_CUBE = 0 */
-    &g_shape_sphere, /* SHAPE_SPHERE = 1 */
-    &g_shape_sword,  /* SHAPE_SWORD = 2 */
-    &g_shape_axe,    /* SHAPE_AXE = 3 */
+    &g_shape_sphere, /* SHAPE_SPHERE = 0 */
+    &g_shape_cube,   /* shape_cube = 1 */
+    &g_shape_gary,   /* SHAPE_GARY = 2 */
 };
 
-const int32_t g_voxel_shape_count = 4;
+const int32_t g_voxel_shape_count = 3;
 
-_Static_assert(SHAPE_AXE + 1 == 4, "Shape count must match g_voxel_shape_count");
+_Static_assert(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");

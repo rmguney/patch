@@ -6,6 +6,9 @@
 #define SET_BINDING(set_, binding_) binding = binding_
 #endif
 
+#include "include/camera.glsl"
+#include "include/hdda_core.glsl"
+
 layout(location = 0) in vec3 in_world_pos;
 layout(location = 1) in vec3 in_ray_origin;
 layout(location = 2) in flat int in_particle_index;
@@ -33,22 +36,6 @@ layout(push_constant) uniform Constants {
     float far_plane;
     int pad2;
 } pc;
-
-// Ray-box intersection for axis-aligned cube
-// Returns vec2(t_near, t_far) or vec2(-1) if no hit
-vec2 intersect_box(vec3 ray_origin, vec3 ray_dir, vec3 box_min, vec3 box_max) {
-    vec3 inv_dir = 1.0 / ray_dir;
-    vec3 t0 = (box_min - ray_origin) * inv_dir;
-    vec3 t1 = (box_max - ray_origin) * inv_dir;
-    vec3 tmin = min(t0, t1);
-    vec3 tmax = max(t0, t1);
-    float t_near = max(max(tmin.x, tmin.y), tmin.z);
-    float t_far = min(min(tmax.x, tmax.y), tmax.z);
-    if (t_near > t_far || t_far < 0.0) {
-        return vec2(-1.0);
-    }
-    return vec2(t_near, t_far);
-}
 
 // Get box face normal from hit point
 vec3 box_normal(vec3 hit_point, vec3 box_min, vec3 box_max) {
@@ -79,9 +66,9 @@ void main() {
 
     vec3 ray_dir = normalize(in_world_pos - in_ray_origin);
 
-    vec2 t_hit = intersect_box(in_ray_origin, ray_dir, box_min, box_max);
+    vec2 t_hit = hdda_intersect_aabb(in_ray_origin, ray_dir, box_min, box_max);
 
-    if (t_hit.x < 0.0) {
+    if (t_hit.x > t_hit.y || t_hit.y < 0.0) {
         discard;
     }
 
@@ -96,5 +83,5 @@ void main() {
     out_material = vec4(0.8, 0.0, 0.0, 0.0);  // roughness=0.8, metallic=0, emissive=0
     out_linear_depth = linear_depth;
 
-    gl_FragDepth = (pc.far_plane - pc.near_plane * pc.far_plane / linear_depth) / (pc.far_plane - pc.near_plane);
+    gl_FragDepth = camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane);
 }

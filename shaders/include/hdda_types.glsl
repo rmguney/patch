@@ -8,6 +8,11 @@ struct HitInfo {
     float t;            /* Ray parameter at hit */
     uint material_id;   /* Material ID (0 = empty) */
     ivec3 voxel_coord;  /* Grid coordinate of hit voxel */
+    vec3 color;         /* Resolved material color */
+    float emissive;     /* Emissive intensity */
+    float roughness;    /* Surface roughness */
+    float metallic;     /* Metallic factor */
+    bvec3 step_mask;    /* DDA step mask for normal computation */
 };
 
 struct RayConfig {
@@ -30,7 +35,5 @@ const int CHUNK_SIZE = 32;          /* Voxels per chunk dimension */
 const int REGION_SIZE = 8;          /* Voxels per region dimension (8x8x8) */
 const int REGIONS_PER_CHUNK = 4;    /* Regions per chunk dimension (4x4x4 = 64 regions) */
 const int CHUNK_UINT_COUNT = 8192;  /* uint32s per chunk for voxel data (32768 voxels / 4) */
-
-const uint MATERIAL_STRIDE = 2u;    /* 2 vec4s per material entry */
 
 #endif /* HDDA_TYPES_GLSL */

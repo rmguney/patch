@@ -38,29 +38,7 @@ layout(push_constant) uniform Constants {
     int reserved[6];
 } pc;
 
-vec3 reconstruct_world_pos(vec2 uv, float depth) {
-    vec2 ndc = uv * 2.0 - 1.0;
-
-    if (pc.is_orthographic != 0) {
-        /* Orthographic: ray origin varies per pixel, direction is constant */
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = pc.inv_projection * near_clip;
-        vec4 far_view = pc.inv_projection * far_clip;
-        vec3 near_world = (pc.inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (pc.inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        vec3 ray_dir = normalize(far_world - near_world);
-        return near_world + ray_dir * depth;
-    } else {
-        /* Perspective: match terrain shader's ray computation exactly */
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = pc.inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        vec3 ray_world = normalize((pc.inv_view * ray_view).xyz);
-        return pc.cam_pos + ray_world * depth;
-    }
-}
+#include "include/camera.glsl"
 
 vec3 aces_tonemap(vec3 x) {
     const float a = 2.51;
@@ -69,10 +47,6 @@ vec3 aces_tonemap(vec3 x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
-float linear_depth_to_ndc(float linear_depth, float near, float far) {
-    return (far - near * far / linear_depth) / (far - near);
 }
 
 void main() {
@@ -88,13 +62,17 @@ void main() {
     vec3 normal = texture(gbuffer_normal, in_uv).rgb * 2.0 - 1.0;
     vec4 material = texture(gbuffer_material, in_uv);
     float linear_depth = texture(gbuffer_depth, in_uv).r;
-    gl_FragDepth = linear_depth_to_ndc(max(linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
+    gl_FragDepth = camera_linear_depth_to_ndc(max(linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
 
     float roughness = material.r;
     float metallic = material.g;
     float emissive = material.b;
 
-    vec3 world_pos = reconstruct_world_pos(in_uv, linear_depth);
+    vec3 world_pos = camera_reconstruct_world_pos(
+        in_uv, linear_depth,
+        pc.inv_view, pc.inv_projection, pc.cam_pos,
+        pc.is_orthographic != 0
+    );
     vec3 N = normalize(normal);
     vec3 V = normalize(pc.cam_pos - world_pos);
 

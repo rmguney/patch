@@ -169,10 +169,8 @@ namespace patch
         /* Frustum culling utilities */
         bool is_chunk_visible(int32_t cx, int32_t cy, int32_t cz,
                               const VoxelVolume *vol) const;
-        int32_t count_visible_chunks(const VoxelVolume *vol) const;
         int get_rt_quality() const { return rt_quality_; }
         void set_rt_quality(int level);
-        void dispatch_temporal_resolve();
 
     private:
         enum class ProjectionMode

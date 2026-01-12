@@ -21,6 +21,34 @@ static uint8_t pick_pastel_material(RngState *rng)
     return s_pastel_materials[rng_range_u32(rng, (uint32_t)s_pastel_count)];
 }
 
+static void spawn_gary_on_floor(VoxelObjectWorld *world, Bounds3D bounds, float floor_y)
+{
+    const VoxelShape *gary = voxel_shape_get(SHAPE_GARY);
+    if (!gary)
+        return;
+
+    int32_t total = gary->size_x * gary->size_y * gary->size_z;
+    uint8_t *voxels = (uint8_t *)malloc((size_t)total);
+    if (!voxels)
+        return;
+
+    memcpy(voxels, gary->voxels, (size_t)total);
+
+    float cx = (bounds.min_x + bounds.max_x) * 0.5f;
+    float cz = (bounds.min_z + bounds.max_z) * 0.5f;
+    float x = cx + 3.0f;
+    float y = floor_y;
+    float z = cz + 3.0f;
+
+    Vec3 origin = vec3_create(x, y, z);
+
+    voxel_object_world_add_from_voxels(world, voxels,
+                                       gary->size_x, gary->size_y, gary->size_z,
+                                       origin, world->voxel_size);
+
+    free(voxels);
+}
+
 static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngState *rng)
 {
     if (g_voxel_shape_count <= 0)
@@ -107,6 +135,9 @@ static void ball_pit_init(Scene *scene)
 
     data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
     voxel_object_world_set_terrain(data->objects, data->terrain);
+
+    float floor_y = data->terrain->bounds.min_y + 0.5f;
+    spawn_gary_on_floor(data->objects, scene->bounds, floor_y);
 
     data->particles = particle_system_create(scene->bounds);
 
