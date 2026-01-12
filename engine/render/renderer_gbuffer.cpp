@@ -1411,8 +1411,8 @@ namespace patch
 
         vkCmdEndRenderPass(command_buffers_[current_frame_]);
 
-        /* Always dispatch shadow compute after gbuffer is complete (works with both compute and fragment terrain) */
-        if (compute_resources_initialized_ && shadow_compute_pipeline_)
+        /* Dispatch shadow compute after gbuffer is complete (skip if no chunks to process) */
+        if (compute_resources_initialized_ && shadow_compute_pipeline_ && deferred_total_chunks_ > 0)
         {
             dispatch_shadow_compute();
         }
@@ -1512,7 +1512,7 @@ namespace patch
             return;
 
         VkClearValue clear_values[2]{};
-        clear_values[0].color = {{0.75f, 0.80f, 0.95f, 1.0f}};
+        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}};  /* Light pastel baby blue */
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};

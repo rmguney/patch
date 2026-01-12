@@ -18,8 +18,10 @@ extern "C"
 #endif
 
 #define PARTICLE_MAX_COUNT 65536
+#define PARTICLE_MAX_UPDATES_PER_TICK 16384
+#define PARTICLE_YOUNG_AGE_THRESHOLD 1.0f
 #define PARTICLE_SETTLE_VELOCITY 0.15f
-#define PARTICLE_LIFETIME_MAX 8.0f
+/* No PARTICLE_LIFETIME_MAX - particles are removed via circular buffer when spawning at capacity */
 
     typedef struct
     {
@@ -49,6 +51,9 @@ extern "C"
 
         bool enable_particle_collision;
         SpatialHashGrid collision_grid;
+
+        int32_t update_cursor;  /* Round-robin cursor for budgeted updates */
+        int32_t active_count;   /* Tracked count to avoid O(n) scans */
     } ParticleSystem;
 
     ParticleSystem *particle_system_create(Bounds3D bounds);

@@ -211,6 +211,20 @@ namespace patch
                 destroy_buffer(&voxel_temporal_ubo_[i]);
             }
 
+            /* Unmap and destroy staging buffers */
+            if (staging_voxels_mapped_)
+            {
+                vkUnmapMemory(device_, staging_voxels_buffer_.memory);
+                staging_voxels_mapped_ = nullptr;
+            }
+            if (staging_headers_mapped_)
+            {
+                vkUnmapMemory(device_, staging_headers_buffer_.memory);
+                staging_headers_mapped_ = nullptr;
+            }
+            destroy_buffer(&staging_voxels_buffer_);
+            destroy_buffer(&staging_headers_buffer_);
+
             if (voxel_descriptor_pool_)
                 vkDestroyDescriptorPool(device_, voxel_descriptor_pool_, nullptr);
             if (voxel_descriptor_layout_)
@@ -364,7 +378,7 @@ namespace patch
         }
 
         VkClearValue clear_values[2];
-        clear_values[0].color = {{0.75f, 0.80f, 0.95f, 1.0f}};
+        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}};  /* Light pastel baby blue */
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo render_pass_info{};

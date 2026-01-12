@@ -36,9 +36,11 @@ extern "C"
         bool active;
         bool shape_dirty;        /* Deferred recalc flag */
         uint8_t occupancy_mask;  /* 8 regions of 8³ voxels each */
+        int32_t next_free;       /* Free-list chain (-1 = end or not free) */
+        int32_t next_dirty;      /* Dirty-list chain (-1 = end or not dirty) */
     } VoxelObject;
 
-#define VOBJ_SPLIT_QUEUE_SIZE 64
+#define VOBJ_SPLIT_QUEUE_SIZE 256
 #define VOBJ_MAX_SPLITS_PER_TICK 4
 #define VOBJ_MAX_RECALCS_PER_TICK 8
 
@@ -51,6 +53,13 @@ extern "C"
         float voxel_size;
 
         VoxelVolume *terrain;
+
+        /* Free-list for O(1) allocation */
+        int32_t first_free_slot;
+
+        /* Dirty-list for O(1) recalc lookup */
+        int32_t first_dirty;
+        int32_t dirty_count;
 
         /* Deferred split work queue */
         int32_t split_queue[VOBJ_SPLIT_QUEUE_SIZE];
@@ -98,6 +107,8 @@ extern "C"
 
     void voxel_object_recalc_shape(VoxelObject *obj);
     void voxel_object_mark_dirty(VoxelObject *obj);
+    void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index);
+    void voxel_object_world_free_slot(VoxelObjectWorld *world, int32_t slot);
 
     int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world);
 

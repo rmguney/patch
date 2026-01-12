@@ -228,6 +228,40 @@ namespace patch
             }
         }
 
+        /* Query available present modes */
+        uint32_t present_mode_count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_, &present_mode_count, nullptr);
+        std::vector<VkPresentModeKHR> present_modes(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device_, surface_, &present_mode_count, present_modes.data());
+
+        /* Check available modes */
+        bool has_mailbox = false, has_immediate = false;
+        for (auto mode : present_modes)
+        {
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) has_mailbox = true;
+            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) has_immediate = true;
+        }
+
+        /* Select based on preference (default: Mailbox for uncapped FPS without tearing) */
+        VkPresentModeKHR selected_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        if (present_mode_ == PresentMode::Mailbox && has_mailbox)
+        {
+            selected_present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+        else if (present_mode_ == PresentMode::Immediate && has_immediate)
+        {
+            selected_present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+        else if (present_mode_ != PresentMode::VSync && has_mailbox)
+        {
+            selected_present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+
+        printf("  Present mode: %s\n",
+               selected_present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX (uncapped)" :
+               selected_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE (uncapped)" :
+               "FIFO (vsync)");
+
         swapchain_format_ = surface_format.format;
         swapchain_extent_ = capabilities.currentExtent;
 
@@ -267,7 +301,7 @@ namespace patch
 
         create_info.preTransform = capabilities.currentTransform;
         create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        create_info.presentMode = selected_present_mode;
         create_info.clipped = VK_TRUE;
 
         VkResult result = vkCreateSwapchainKHR(device_, &create_info, nullptr, &swapchain_);

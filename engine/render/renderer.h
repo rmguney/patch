@@ -172,6 +172,15 @@ namespace patch
         int get_rt_quality() const { return rt_quality_; }
         void set_rt_quality(int level);
 
+    public:
+        enum class PresentMode
+        {
+            VSync,
+            Mailbox,
+            Immediate
+        };
+        PresentMode get_present_mode() const { return present_mode_; }
+
     private:
         enum class ProjectionMode
         {
@@ -286,6 +295,7 @@ namespace patch
         float ortho_half_width_;
         float ortho_half_height_;
         ProjectionMode projection_mode_;
+        PresentMode present_mode_ = PresentMode::Mailbox;  /* Default: uncapped FPS */
         float perspective_fov_y_degrees_;
         float perspective_near_;
         float perspective_far_;
@@ -308,6 +318,12 @@ namespace patch
         VulkanBuffer voxel_headers_buffer_;                     /* SSBO: chunk occupancy headers */
         VulkanBuffer voxel_material_buffer_;                    /* UBO: material palette */
         VulkanBuffer voxel_temporal_ubo_[MAX_FRAMES_IN_FLIGHT]; /* UBO: prev_view_proj */
+
+        /* Persistent staging buffers for chunk uploads (avoids per-frame allocation) */
+        VulkanBuffer staging_voxels_buffer_;
+        VulkanBuffer staging_headers_buffer_;
+        void *staging_voxels_mapped_ = nullptr;
+        void *staging_headers_mapped_ = nullptr;
 
         int32_t voxel_total_chunks_ = 0;
         bool voxel_resources_initialized_ = false;

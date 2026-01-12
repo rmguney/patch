@@ -6,12 +6,13 @@
 
 int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world)
 {
-    for (int32_t i = 0; i < world->object_count; i++)
+    /* O(1) allocation via free-list */
+    if (world->first_free_slot >= 0)
     {
-        if (!world->objects[i].active)
-        {
-            return i;
-        }
+        int32_t slot = world->first_free_slot;
+        world->first_free_slot = world->objects[slot].next_free;
+        world->objects[slot].next_free = -1;
+        return slot;
     }
     if (world->object_count >= VOBJ_MAX_OBJECTS)
         return -1;
@@ -74,16 +75,19 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     com_y *= inv_count;
     com_z *= inv_count;
 
-    /* Radius: use bounding box corners instead of per-voxel corners */
+    /* Radius: calculate from GRID CENTER (which corresponds to obj->position) to corners.
+     * This is critical for split objects where voxels may be off-center in the grid.
+     * The raycast bounding sphere test uses obj->position, not COM. */
+    float grid_center = (float)VOBJ_GRID_SIZE * 0.5f;
     float max_dist_sq = 0.0f;
     for (int32_t c = 0; c < 8; c++)
     {
         float cx = ((c & 1) ? (float)max_x + 1.0f : (float)min_x);
         float cy = ((c & 2) ? (float)max_y + 1.0f : (float)min_y);
         float cz = ((c & 4) ? (float)max_z + 1.0f : (float)min_z);
-        float dx = (cx - com_x) * obj->voxel_size;
-        float dy = (cy - com_y) * obj->voxel_size;
-        float dz = (cz - com_z) * obj->voxel_size;
+        float dx = (cx - grid_center) * obj->voxel_size;
+        float dy = (cy - grid_center) * obj->voxel_size;
+        float dz = (cz - grid_center) * obj->voxel_size;
         float dist_sq = dx * dx + dy * dy + dz * dz;
         if (dist_sq > max_dist_sq)
             max_dist_sq = dist_sq;
@@ -97,6 +101,32 @@ void voxel_object_mark_dirty(VoxelObject *obj)
     obj->shape_dirty = true;
 }
 
+void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index)
+{
+    if (!world || obj_index < 0 || obj_index >= world->object_count)
+        return;
+
+    VoxelObject *obj = &world->objects[obj_index];
+    if (obj->shape_dirty)
+        return;  /* Already in dirty list */
+
+    obj->shape_dirty = true;
+    obj->next_dirty = world->first_dirty;
+    world->first_dirty = obj_index;
+    world->dirty_count++;
+}
+
+void voxel_object_world_free_slot(VoxelObjectWorld *world, int32_t slot)
+{
+    if (!world || slot < 0 || slot >= world->object_count)
+        return;
+
+    VoxelObject *obj = &world->objects[slot];
+    obj->active = false;
+    obj->next_free = world->first_free_slot;
+    world->first_free_slot = slot;
+}
+
 VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
 {
     VoxelObjectWorld *world = (VoxelObjectWorld *)calloc(1, sizeof(VoxelObjectWorld));
@@ -107,6 +137,9 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     world->voxel_size = voxel_size;
     world->object_count = 0;
     world->terrain = NULL;
+    world->first_free_slot = -1;
+    world->first_dirty = -1;
+    world->dirty_count = 0;
 
     return world;
 }
@@ -433,15 +466,44 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 
     PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
 
+    /* O(1) dirty lookup via dirty-list */
     int32_t processed = 0;
-    for (int32_t i = 0; i < world->object_count && processed < VOBJ_MAX_RECALCS_PER_TICK; i++)
+    int32_t prev_idx = -1;
+    int32_t curr_idx = world->first_dirty;
+
+    while (curr_idx >= 0 && processed < VOBJ_MAX_RECALCS_PER_TICK)
     {
-        VoxelObject *obj = &world->objects[i];
+        VoxelObject *obj = &world->objects[curr_idx];
+        int32_t next_idx = obj->next_dirty;
+
         if (obj->active && obj->shape_dirty)
         {
             voxel_object_recalc_shape(obj);
+            obj->next_dirty = -1;
+            world->dirty_count--;
+
+            /* Remove from list */
+            if (prev_idx < 0)
+                world->first_dirty = next_idx;
+            else
+                world->objects[prev_idx].next_dirty = next_idx;
+
             processed++;
         }
+        else
+        {
+            /* Skip inactive objects, remove from dirty list */
+            obj->shape_dirty = false;
+            obj->next_dirty = -1;
+            world->dirty_count--;
+
+            if (prev_idx < 0)
+                world->first_dirty = next_idx;
+            else
+                world->objects[prev_idx].next_dirty = next_idx;
+        }
+
+        curr_idx = next_idx;
     }
 
     PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
@@ -538,7 +600,7 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     new_obj->orientation = obj->orientation;
     new_obj->voxel_size = obj->voxel_size;
     new_obj->active = true;
-    new_obj->shape_dirty = true;
+    new_obj->shape_dirty = false;  /* Will be marked via dirty-list later */
     new_obj->voxel_count = 0;
 
     for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
@@ -555,7 +617,9 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     int32_t new_obj_idx = world->object_count;
     world->object_count++;
 
-    obj->shape_dirty = true;
+    /* Mark both objects dirty via the dirty-list (not just shape_dirty flag) */
+    voxel_object_world_mark_dirty(world, obj_index);
+    voxel_object_world_mark_dirty(world, new_obj_idx);
 
     /* Queue both for further splitting */
     voxel_object_world_queue_split(world, obj_index);

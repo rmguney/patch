@@ -421,13 +421,25 @@ int patch_main(int argc, char *argv[])
     }
 
     {
+        /* Convert sRGB colors to linear space for correct lighting calculations.
+         * Material RGB values are defined in sRGB (what color pickers use).
+         * The shader performs lighting in linear space then applies gamma correction. */
+        auto srgb_to_linear = [](float srgb) -> float {
+            if (srgb <= 0.04045f)
+                return srgb / 12.92f;
+            return powf((srgb + 0.055f) / 1.055f, 2.4f);
+        };
+
         MaterialEntry materials[MATERIAL_MAX_COUNT];
         for (int32_t i = 0; i < g_material_count; i++)
         {
             const MaterialDescriptor *mat = material_get(static_cast<uint8_t>(i));
-            materials[i].r = static_cast<float>(mat->r) / 255.0f;
-            materials[i].g = static_cast<float>(mat->g) / 255.0f;
-            materials[i].b = static_cast<float>(mat->b) / 255.0f;
+            float r_srgb = static_cast<float>(mat->r) / 255.0f;
+            float g_srgb = static_cast<float>(mat->g) / 255.0f;
+            float b_srgb = static_cast<float>(mat->b) / 255.0f;
+            materials[i].r = srgb_to_linear(r_srgb);
+            materials[i].g = srgb_to_linear(g_srgb);
+            materials[i].b = srgb_to_linear(b_srgb);
             materials[i].emissive = mat->emissive;
             materials[i].roughness = mat->roughness;
             materials[i].metallic = mat->metallic;
@@ -501,9 +513,9 @@ int patch_main(int argc, char *argv[])
     /* DEBUG: Free camera state */
     bool free_camera_active = false;
     bool free_camera_mouse_captured = false;
-    Vec3 free_camera_pos = vec3_create(20.0f, 20.0f, 20.0f);
+    Vec3 free_camera_pos = vec3_create(20.0f, 12.0f, 20.0f);
     float free_camera_yaw = -135.0f;  /* degrees, looking toward origin */
-    float free_camera_pitch = -30.0f; /* degrees */
+    float free_camera_pitch = -30.0f; /* degrees, isometric view */
     float last_mouse_x = 0.0f;
     float last_mouse_y = 0.0f;
 
@@ -789,9 +801,11 @@ int patch_main(int argc, char *argv[])
         }
         else if (active_scene && current_scene == ActiveScene::BallPit)
         {
+            /* Target lower in Y to center on actual content (floor + objects) rather than geometric center */
+            float content_y = active_scene->bounds.min_y + 2.0f;
             Vec3 center = vec3_create(
                 (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
-                (active_scene->bounds.min_y + active_scene->bounds.max_y) * 0.5f,
+                content_y,
                 (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
 
             renderer.set_view_angle_at(45.0f, 40.0f, center, dt);

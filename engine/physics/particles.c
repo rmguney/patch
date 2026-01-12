@@ -30,6 +30,7 @@ void particle_system_destroy(ParticleSystem* sys) {
 void particle_system_clear(ParticleSystem* sys) {
     sys->count = 0;
     sys->next_slot = 0;
+    sys->active_count = 0;
 }
 
 Particle* particle_system_add_slot(ParticleSystem* sys) {
@@ -43,6 +44,10 @@ Particle* particle_system_add_slot(ParticleSystem* sys) {
 
 int32_t particle_system_add(ParticleSystem* sys, RngState *rng, Vec3 position, Vec3 velocity, Vec3 color, float radius) {
     Particle* p = particle_system_add_slot(sys);
+    /* active_count tracking:
+     * - If slot was inactive, we're adding a new particle: increment
+     * - If slot was active (at capacity, overwriting oldest): no change */
+    if (!p->active) sys->active_count++;
     p->position = position;
     p->velocity = velocity;
     p->rotation = vec3_zero();
@@ -92,52 +97,36 @@ static void resolve_particle_collision(Particle* a, Particle* b, float restituti
     b->velocity = vec3_sub(b->velocity, impulse);
 }
 
-static void compact_inactive_particles(ParticleSystem* sys) {
-    /* Compact array by removing inactive particles */
-    int32_t write = 0;
-    for (int32_t read = 0; read < sys->count; read++) {
-        if (sys->particles[read].active) {
-            if (write != read) {
-                sys->particles[write] = sys->particles[read];
-            }
-            write++;
-        }
-    }
-    sys->count = write;
-    sys->next_slot = write % PARTICLE_MAX_COUNT;
-}
-
 void particle_system_update(ParticleSystem* sys, float dt) {
-    /* Compact periodically when many particles are inactive */
-    int32_t active_count = 0;
-    for (int32_t i = 0; i < sys->count; i++) {
-        if (sys->particles[i].active) active_count++;
-    }
-    if (sys->count > 100 && active_count < sys->count / 2) {
-        compact_inactive_particles(sys);
-    }
+    /* No compaction needed - circular buffer overwrites oldest particles when at capacity */
 
     /* Safe max velocity to prevent tunneling (based on typical particle radius) */
     float max_velocity = 0.03f / dt;
     if (max_velocity < 10.0f) max_velocity = 10.0f;
     if (max_velocity > 30.0f) max_velocity = 30.0f;
 
+    /* Update lifetime for age tracking (used for young particle priority).
+     * No auto-expiration - particles are removed via circular buffer when at capacity. */
     for (int32_t i = 0; i < sys->count; i++) {
         Particle* p = &sys->particles[i];
         if (!p->active) continue;
-
-        /* Track lifetime and remove old particles */
         p->lifetime += dt;
-        if (p->lifetime >= PARTICLE_LIFETIME_MAX) {
-            p->active = false;
-            continue;
-        }
+    }
 
-        if (p->settled) continue;
+    /* Age-prioritized budgeted physics update:
+     * Pass 1: Always update young particles (fast-moving, need frequent updates)
+     * Pass 2: Use remaining budget for older particles (round-robin) */
+    int32_t budget = PARTICLE_MAX_UPDATES_PER_TICK;
+    int32_t processed = 0;
+
+    /* Pass 1: Young particles always get priority (unbounded - they're time-limited) */
+    for (int32_t i = 0; i < sys->count; i++) {
+        Particle* p = &sys->particles[i];
+        if (!p->active || p->settled) continue;
+        if (p->lifetime > PARTICLE_YOUNG_AGE_THRESHOLD) continue;
 
         p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
 
-        /* Clamp velocity to prevent tunneling */
         float speed_sq = vec3_length_sq(p->velocity);
         if (speed_sq > max_velocity * max_velocity) {
             float speed = sqrtf(speed_sq);
@@ -158,7 +147,47 @@ void particle_system_update(ParticleSystem* sys, float dt) {
         p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
 
         resolve_particle_boundary(p, &sys->bounds, sys->restitution);
+        /* No processed++ here - young particles are unbounded (time-limited to ~1s) */
     }
+
+    /* Pass 2: Older particles with remaining budget (round-robin) */
+    int32_t cursor = sys->update_cursor;
+    int32_t checked = 0;
+    while (processed < budget && checked < sys->count) {
+        if (cursor >= sys->count) cursor = 0;
+
+        Particle* p = &sys->particles[cursor];
+        cursor++;
+        checked++;
+
+        /* Skip inactive, settled, or young (already processed) */
+        if (!p->active || p->settled || p->lifetime <= PARTICLE_YOUNG_AGE_THRESHOLD) continue;
+
+        p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
+
+        float speed_sq = vec3_length_sq(p->velocity);
+        if (speed_sq > max_velocity * max_velocity) {
+            float speed = sqrtf(speed_sq);
+            p->velocity = vec3_scale(p->velocity, max_velocity / speed);
+        }
+
+        p->velocity = vec3_scale(p->velocity, sys->damping);
+
+        float floor_dist = p->position.y - p->radius - sys->bounds.min_y;
+        if (floor_dist < 0.05f) {
+            p->velocity.x *= sys->floor_friction;
+            p->velocity.z *= sys->floor_friction;
+            p->angular_velocity = vec3_scale(p->angular_velocity, 0.9f);
+        }
+
+        p->position = vec3_add(p->position, vec3_scale(p->velocity, dt));
+        p->rotation = vec3_add(p->rotation, vec3_scale(p->angular_velocity, dt));
+        p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
+
+        resolve_particle_boundary(p, &sys->bounds, sys->restitution);
+        processed++;
+    }
+    sys->update_cursor = cursor;
 
     /* Spatial hash collision: O(n) average */
     if (sys->enable_particle_collision) {
@@ -207,7 +236,7 @@ int32_t particle_system_spawn_explosion(ParticleSystem* sys, RngState *rng, Vec3
                                          Vec3 color, int32_t count, float force) {
     int32_t spawned = 0;
 
-    for (int32_t i = 0; i < count && sys->count < PARTICLE_MAX_COUNT; i++) {
+    for (int32_t i = 0; i < count; i++) {
         float theta = rng_float(rng) * 2.0f * K_PI;
         float phi = rng_float(rng) * K_PI;
         float r = rng_float(rng) * radius * 0.8f;
@@ -232,16 +261,23 @@ int32_t particle_system_spawn_explosion(ParticleSystem* sys, RngState *rng, Vec3
         particle_color.y = clampf(particle_color.y, 0.0f, 1.0f);
         particle_color.z = clampf(particle_color.z, 0.0f, 1.0f);
 
-        Particle* p = &sys->particles[sys->count];
+        /* Use circular buffer - overwrites oldest when at capacity */
+        Particle* p = particle_system_add_slot(sys);
+        if (!p->active) sys->active_count++;
         p->position = vec3_add(center, offset);
         p->velocity = vel;
+        p->rotation = vec3_zero();
+        p->angular_velocity = vec3_create(
+            rng_signed_half(rng) * 20.0f,
+            rng_signed_half(rng) * 20.0f,
+            rng_signed_half(rng) * 20.0f
+        );
         p->color = particle_color;
         p->radius = 0.04f + rng_float(rng) * 0.03f;
         p->lifetime = 0.0f;
         p->active = true;
         p->settled = false;
 
-        sys->count++;
         spawned++;
     }
 
@@ -260,7 +296,7 @@ int32_t particle_system_spawn_at_impact(ParticleSystem* sys, RngState *rng, Vec3
         impact_dir = vec3_create(0.0f, 1.0f, 0.0f);
     }
 
-    for (int32_t i = 0; i < count && sys->count < PARTICLE_MAX_COUNT; i++) {
+    for (int32_t i = 0; i < count; i++) {
         float spread_theta = rng_signed_half(rng) * K_PI * 0.8f;
         float spread_phi = rng_float(rng) * 2.0f * K_PI;
         float r = rng_float(rng) * ball_radius * 0.3f;
@@ -287,16 +323,22 @@ int32_t particle_system_spawn_at_impact(ParticleSystem* sys, RngState *rng, Vec3
         particle_color.y = clampf(particle_color.y, 0.0f, 1.0f);
         particle_color.z = clampf(particle_color.z, 0.0f, 1.0f);
 
-        Particle* p = &sys->particles[sys->count];
+        /* Use circular buffer - overwrites oldest when at capacity */
+        Particle* p = particle_system_add_slot(sys);
+        if (!p->active) sys->active_count++;
         p->position = vec3_add(impact_point, offset);
         p->velocity = vel;
+        p->rotation = vec3_zero();
+        p->angular_velocity = vec3_create(
+            rng_signed_half(rng) * 20.0f,
+            rng_signed_half(rng) * 20.0f,
+            rng_signed_half(rng) * 20.0f
+        );
         p->color = particle_color;
         p->radius = 0.03f + rng_float(rng) * 0.04f;
         p->lifetime = 0.0f;
         p->active = true;
         p->settled = false;
-
-        sys->count++;
         spawned++;
     }
 
@@ -324,6 +366,7 @@ void particle_system_remove_settled(ParticleSystem* sys) {
         }
     }
     sys->count = write;
+    sys->active_count = write;  /* All remaining are active non-settled */
 }
 
 bool particle_system_pickup_nearest(ParticleSystem* sys, Vec3 position, float max_dist, Vec3* out_color) {
@@ -360,9 +403,10 @@ bool particle_system_pickup_nearest(ParticleSystem* sys, Vec3 position, float ma
     }
     
     if (nearest_idx < 0) return false;
-    
+
     *out_color = sys->particles[nearest_idx].color;
     sys->particles[nearest_idx].active = false;
-    
+    sys->active_count--;
+
     return true;
 }

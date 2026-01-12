@@ -92,7 +92,7 @@ static void create_terrain_floor(VoxelVolume *vol, float floor_thickness)
     Vec3 max_corner = vec3_create(vol->bounds.max_x, vol->bounds.min_y + floor_thickness,
                                   vol->bounds.max_z);
 
-    volume_fill_box(vol, min_corner, max_corner, MAT_MINT);
+    volume_fill_box(vol, min_corner, max_corner, MAT_WHITE);
 }
 
 static void create_terrain_features(VoxelVolume *vol, float floor_y)
@@ -104,15 +104,15 @@ static void create_terrain_features(VoxelVolume *vol, float floor_y)
     float pillar_size = 0.5f;
     Vec3 pillar_min = vec3_create(cx - pillar_size, floor_y, cz - pillar_size);
     Vec3 pillar_max = vec3_create(cx + pillar_size, floor_y + wall_height, cz + pillar_size);
-    volume_fill_box(vol, pillar_min, pillar_max, MAT_CLOUD);
+    volume_fill_box(vol, pillar_min, pillar_max, MAT_YELLOW);
 
     Vec3 front_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
     Vec3 front_wall_max = vec3_create(vol->bounds.max_x, floor_y + wall_height, vol->bounds.min_z + 0.5f);
-    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_SKY);
+    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_PINK);
 
     Vec3 left_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
     Vec3 left_wall_max = vec3_create(vol->bounds.min_x + 0.5f, floor_y + wall_height, vol->bounds.max_z);
-    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_SKY);
+    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_MINT);
 }
 
 static void ball_pit_init(Scene *scene)

@@ -153,7 +153,7 @@ void main() {
     vec3 emissive_color = albedo * emissive * 2.0;
     color += emissive_color;
 
-    float exposure = 0.7;
+    float exposure = 1.0;
     color *= exposure;
 
     color = aces_tonemap(color);

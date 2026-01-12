@@ -226,6 +226,8 @@ _Static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <=
 #define MAT_CLOUD 21
 #define MAT_ROSE 22
 #define MAT_ORANGE 23
+#define MAT_WHITE 24
+#define MAT_YELLOW 25
 
 #ifdef __cplusplus
 }

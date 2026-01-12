@@ -100,19 +100,27 @@ static const int32_t NEIGHBOR_OFFSETS[6][3] = {
 static inline int32_t pack_voxel_pos(int32_t cx, int32_t cy, int32_t cz,
                                      int32_t lx, int32_t ly, int32_t lz)
 {
-    return (cx << 23) | (cy << 19) | (cz << 15) | (lx << 10) | (ly << 5) | lz;
+    /* Bit layout (32 bits total):
+     * cx: bits 26-31 (6 bits, 0-63)
+     * cy: bits 21-25 (5 bits, 0-31)
+     * cz: bits 15-20 (6 bits, 0-63)
+     * lx: bits 10-14 (5 bits, 0-31)
+     * ly: bits 5-9  (5 bits, 0-31)
+     * lz: bits 0-4  (5 bits, 0-31)
+     */
+    return (cx << 26) | (cy << 21) | (cz << 15) | (lx << 10) | (ly << 5) | lz;
 }
 
 static inline void unpack_voxel_pos(int32_t packed,
                                     int32_t *cx, int32_t *cy, int32_t *cz,
                                     int32_t *lx, int32_t *ly, int32_t *lz)
 {
-    *cx = (packed >> 23) & 0xF;
-    *cy = (packed >> 19) & 0xF;
-    *cz = (packed >> 15) & 0xF;
-    *lx = (packed >> 10) & 0x1F;
-    *ly = (packed >> 5) & 0x1F;
-    *lz = packed & 0x1F;
+    *cx = (packed >> 26) & 0x3F;  /* 6 bits */
+    *cy = (packed >> 21) & 0x1F;  /* 5 bits */
+    *cz = (packed >> 15) & 0x3F;  /* 6 bits */
+    *lx = (packed >> 10) & 0x1F;  /* 5 bits */
+    *ly = (packed >> 5) & 0x1F;   /* 5 bits */
+    *lz = packed & 0x1F;          /* 5 bits */
 }
 
 static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *work,

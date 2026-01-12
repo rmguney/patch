@@ -119,6 +119,24 @@ namespace patch
                           &voxel_temporal_ubo_[i]);
         }
 
+        /* Create persistent staging buffers for chunk uploads (avoids per-frame allocation) */
+        VkDeviceSize staging_voxel_size = static_cast<VkDeviceSize>(VOLUME_MAX_DIRTY_PER_FRAME) * GPU_CHUNK_DATA_SIZE;
+        VkDeviceSize staging_header_size = static_cast<VkDeviceSize>(VOLUME_MAX_DIRTY_PER_FRAME) * sizeof(GPUChunkHeader);
+
+        create_buffer(staging_voxel_size,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &staging_voxels_buffer_);
+
+        create_buffer(staging_header_size,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &staging_headers_buffer_);
+
+        /* Persistently map staging buffers */
+        vkMapMemory(device_, staging_voxels_buffer_.memory, 0, staging_voxel_size, 0, &staging_voxels_mapped_);
+        vkMapMemory(device_, staging_headers_buffer_.memory, 0, staging_header_size, 0, &staging_headers_mapped_);
+
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             VkDescriptorBufferInfo voxel_buffer_info{};
@@ -563,31 +581,14 @@ namespace patch
             pending_destroy_count_ = write_idx;
         }
 
-        VkDeviceSize staging_voxel_size = static_cast<VkDeviceSize>(dirty_count) * GPU_CHUNK_DATA_SIZE;
-        VkDeviceSize staging_header_size = static_cast<VkDeviceSize>(dirty_count) * sizeof(GPUChunkHeader);
-
-        VulkanBuffer staging_voxels{};
-        create_buffer(staging_voxel_size,
-                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      &staging_voxels);
-
-        VulkanBuffer staging_headers{};
-        create_buffer(staging_header_size,
-                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      &staging_headers);
+        /* Use persistent staging buffers (already mapped at init) */
+        uint8_t *voxel_mapped = static_cast<uint8_t *>(staging_voxels_mapped_);
+        GPUChunkHeader *headers_mapped = static_cast<GPUChunkHeader *>(staging_headers_mapped_);
 
         std::vector<VkBufferCopy> voxel_copies;
         std::vector<VkBufferCopy> header_copies;
         voxel_copies.reserve(dirty_count);
         header_copies.reserve(dirty_count);
-
-        uint8_t *voxel_mapped = nullptr;
-        vkMapMemory(device_, staging_voxels.memory, 0, staging_voxel_size, 0, reinterpret_cast<void **>(&voxel_mapped));
-
-        GPUChunkHeader *headers_mapped = nullptr;
-        vkMapMemory(device_, staging_headers.memory, 0, staging_header_size, 0, reinterpret_cast<void **>(&headers_mapped));
 
         for (int32_t staging_idx = 0; staging_idx < dirty_count; staging_idx++)
         {
@@ -613,8 +614,7 @@ namespace patch
             header_copies.push_back(header_copy);
         }
 
-        vkUnmapMemory(device_, staging_voxels.memory);
-        vkUnmapMemory(device_, staging_headers.memory);
+        /* No unmap needed - persistent buffers stay mapped */
 
         vkResetCommandBuffer(upload_cmd_, 0);
 
@@ -625,13 +625,13 @@ namespace patch
 
         if (!voxel_copies.empty())
         {
-            vkCmdCopyBuffer(upload_cmd_, staging_voxels.buffer, voxel_data_buffer_.buffer,
+            vkCmdCopyBuffer(upload_cmd_, staging_voxels_buffer_.buffer, voxel_data_buffer_.buffer,
                             static_cast<uint32_t>(voxel_copies.size()), voxel_copies.data());
         }
 
         if (!header_copies.empty())
         {
-            vkCmdCopyBuffer(upload_cmd_, staging_headers.buffer, voxel_headers_buffer_.buffer,
+            vkCmdCopyBuffer(upload_cmd_, staging_headers_buffer_.buffer, voxel_headers_buffer_.buffer,
                             static_cast<uint32_t>(header_copies.size()), header_copies.data());
         }
 
@@ -654,8 +654,7 @@ namespace patch
 
         vkQueueSubmit(graphics_queue_, 1, &submit_info, VK_NULL_HANDLE);
 
-        pending_destroys_[pending_destroy_count_++] = {staging_voxels, signal_value};
-        pending_destroys_[pending_destroy_count_++] = {staging_headers, signal_value};
+        /* No deferred destroy needed - persistent buffers are reused */
 
         int32_t copy_count = dirty_count;
         if (copy_count > max_indices)

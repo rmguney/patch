@@ -5,7 +5,9 @@
 
 const MaterialDescriptor g_mat_pink = {
     .name = "pink",
-    .r = 242, .g = 140, .b = 166,
+    .r = 255,
+    .g = 197,
+    .b = 211,
     .flags = MAT_FLAG_SOLID | MAT_FLAG_BREAKABLE,
     .density = 1.0f,
     .hardness = 0.3f,

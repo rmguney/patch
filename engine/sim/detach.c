@@ -74,7 +74,7 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
     else
     {
         /* Defer shape recalc and island splitting to per-frame budget */
-        voxel_object_mark_dirty(obj);
+        voxel_object_world_mark_dirty(world, obj_index);
         voxel_object_world_queue_split(world, obj_index);
     }
 
@@ -106,13 +106,16 @@ void detach_terrain_process(VoxelVolume *vol,
 
     float anchor_y = vol->bounds.min_y + config->anchor_y_offset;
     ConnectivityResult conn_result;
+
+    /* Always use dirty-only path to avoid full volume scan (500K+ ops risk) */
     if (vol->last_edit_count > 0)
     {
         connectivity_analyze_dirty(vol, anchor_y, 0, work, &conn_result);
     }
     else
     {
-        connectivity_analyze_volume(vol, anchor_y, 0, work, &conn_result);
+        /* No edits - skip connectivity analysis entirely */
+        memset(&conn_result, 0, sizeof(ConnectivityResult));
     }
 
     int32_t processed = 0;
