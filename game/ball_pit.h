@@ -45,6 +45,7 @@ extern "C"
         /* Terrain detachment (floating islands -> voxel objects) */
         ConnectivityWorkBuffer detach_work;
         bool detach_ready;
+        bool pending_connectivity;  /* Run connectivity on next frame when not destroying */
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);

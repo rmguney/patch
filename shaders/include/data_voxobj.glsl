@@ -18,7 +18,7 @@
  *        uint atlas_slice;
  *        uint material_base;
  *        uint flags;
- *        uint pad;
+ *        uint occupancy_mask; // 8-bit region occupancy (2×2×2 regions of 8³)
  *    };
  *
  * 2. Buffer bindings:
@@ -116,37 +116,47 @@ HitInfo vobj_march_object(
     vec3 grid_pos = (start_local + vec3(half_extent)) / voxel_size;
     grid_pos = clamp(grid_pos, vec3(0.0), vec3(grid_size) - 0.001);
 
-    ivec3 map_pos = ivec3(floor(grid_pos));
-
-    /* DDA setup - match terrain formula exactly */
-    vec3 delta_dist = abs(vec3(voxel_size) / local_dir);
-    ivec3 step_dir = ivec3(sign(local_dir));
-    vec3 side_dist = (sign(local_dir) * (vec3(map_pos) - grid_pos) + sign(local_dir) * 0.5 + 0.5) * delta_dist;
+    /* Initialize DDA state (manual init due to world-space ray direction) */
+    DDAState dda;
+    dda.map_pos = ivec3(floor(grid_pos));
+    dda.delta_dist = abs(vec3(voxel_size) / local_dir);
+    dda.step_dir = ivec3(sign(local_dir));
+    dda.side_dist = (sign(local_dir) * (vec3(dda.map_pos) - grid_pos) +
+                     sign(local_dir) * 0.5 + 0.5) * dda.delta_dist;
+    dda.last_mask = bvec3(false, true, false);
 
     uint atlas_z_base = obj.atlas_slice * uint(grid_size);
-    bvec3 last_mask = bvec3(false, true, false);
+    uint occupancy = obj.occupancy_mask;
+    ivec3 grid_size_i = ivec3(int(grid_size));
+    ivec3 last_region = ivec3(-1);
 
     for (int i = 0; i < max_steps; i++) {
-        if (map_pos.x < 0 || map_pos.x >= int(grid_size) ||
-            map_pos.y < 0 || map_pos.y >= int(grid_size) ||
-            map_pos.z < 0 || map_pos.z >= int(grid_size)) {
+        if (!hdda_in_bounds(dda.map_pos, grid_size_i)) {
             break;
         }
 
-        ivec3 texel = ivec3(map_pos.x, map_pos.y, int(atlas_z_base) + map_pos.z);
+        /* Region occupancy check (2×2×2 regions of 8³ voxels) */
+        ivec3 region = dda.map_pos / 8;
+        if (region != last_region) {
+            last_region = region;
+            int region_idx = region.x + region.y * 2 + region.z * 4;
+            if ((occupancy & (1u << region_idx)) == 0u) {
+                hdda_step(dda);
+                continue;
+            }
+        }
+
+        ivec3 texel = ivec3(dda.map_pos.x, dda.map_pos.y, int(atlas_z_base) + dda.map_pos.z);
         uint mat = texelFetch(vobj_atlas, texel, 0).r;
 
         if (mat != 0u) {
-            vec3 voxel_min_local = (vec3(map_pos) - vec3(grid_size * 0.5)) * voxel_size;
+            vec3 voxel_min_local = (vec3(dda.map_pos) - vec3(grid_size * 0.5)) * voxel_size;
             vec3 voxel_max_local = voxel_min_local + vec3(voxel_size);
 
             vec2 voxel_t = hdda_intersect_aabb(local_origin, local_dir, voxel_min_local, voxel_max_local);
             float hit_t_local = max(voxel_t.x, 0.0);
 
-            /* Normal from DDA step mask - matches terrain for consistency */
-            vec3 local_normal = hdda_compute_normal(last_mask, local_dir);
-
-            /* World position via ray equation - rotation preserves distances */
+            vec3 local_normal = hdda_compute_normal(dda.last_mask, local_dir);
             vec3 hit_world = world_origin + world_dir * hit_t_local;
             vec3 world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
 
@@ -155,8 +165,8 @@ HitInfo vobj_march_object(
             info.pos = hit_world;
             info.normal = world_normal;
             info.t = hit_t_local;
-            info.voxel_coord = map_pos;
-            info.step_mask = last_mask;
+            info.voxel_coord = dda.map_pos;
+            info.step_mask = dda.last_mask;
             info.color = get_material_color(mat);
             info.emissive = get_material_emissive(mat);
             info.roughness = get_material_roughness(mat);
@@ -165,10 +175,7 @@ HitInfo vobj_march_object(
             return info;
         }
 
-        bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-        last_mask = mask;
-        side_dist += vec3(mask) * delta_dist;
-        map_pos += ivec3(mask) * step_dir;
+        hdda_step(dda);
     }
 
     return info;

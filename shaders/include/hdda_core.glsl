@@ -1,3 +1,8 @@
+#ifndef HDDA_CORE_GLSL
+#define HDDA_CORE_GLSL
+
+#include "hdda_types.glsl"
+
 /*
  * hdda_core.glsl - Core hierarchical DDA raymarching algorithm
  *
@@ -9,11 +14,6 @@
  *   - ivec3 get_chunks_dim()
  *   - int get_total_chunks()
  */
-
-#ifndef HDDA_CORE_GLSL
-#define HDDA_CORE_GLSL
-
-#include "hdda_types.glsl"
 
 /* Initialize DDA state for a ray starting at grid_pos */
 DDAState hdda_init(vec3 grid_pos, vec3 ray_dir) {

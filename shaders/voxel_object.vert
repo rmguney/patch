@@ -15,7 +15,7 @@ struct VoxelObjectGPU {
     uint atlas_slice;
     uint material_base;
     uint flags;
-    uint pad;
+    uint occupancy_mask;
 };
 
 layout(std430, SET_BINDING(0, 1)) readonly buffer ObjectMetadata {

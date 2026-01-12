@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
 project(patch VERSION 1.0.0 LANGUAGES C CXX)
 
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -8,6 +12,15 @@ option(PATCH_ENABLE_WARNINGS "Enable compiler warnings" ON)
 option(PATCH_ENABLE_ASAN "Enable address sanitizer" OFF)
 option(PATCH_USE_PREBUILT_SHADERS "Use prebuilt shader header (no Vulkan SDK required for build)" OFF)
 option(PATCH_ENABLE_PROFILING "Enable CPU/GPU profiling (F3 toggle in app)" ON)
+
+# Optimization flags for Release builds
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    if(MSVC)
+        add_compile_options(/O2 /Ob2 /DNDEBUG)
+    else()
+        add_compile_options(-O3 -DNDEBUG)
+    endif()
+endif()
 
 # Kill patch_samples.exe if running (allows rebuild while app accidentally left open)
 if(WIN32)

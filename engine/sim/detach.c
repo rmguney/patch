@@ -3,130 +3,6 @@
 #include <string.h>
 #include <math.h>
 
-static void flood_fill_voxels(const VoxelObject *obj, uint8_t *visited,
-                              int32_t start_x, int32_t start_y, int32_t start_z)
-{
-    static int32_t stack[VOBJ_TOTAL_VOXELS];
-    int32_t stack_top = 0;
-
-    int32_t start_idx = vobj_index(start_x, start_y, start_z);
-    if (start_x < 0 || start_x >= VOBJ_GRID_SIZE ||
-        start_y < 0 || start_y >= VOBJ_GRID_SIZE ||
-        start_z < 0 || start_z >= VOBJ_GRID_SIZE ||
-        visited[start_idx] || obj->voxels[start_idx].material == 0)
-        return;
-
-    stack[stack_top++] = start_idx;
-    visited[start_idx] = 1;
-
-    static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
-    static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
-    static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
-
-    while (stack_top > 0)
-    {
-        int32_t idx = stack[--stack_top];
-        int32_t x, y, z;
-        vobj_coords(idx, &x, &y, &z);
-
-        for (int32_t i = 0; i < 6; i++)
-        {
-            int32_t nx = x + dx[i];
-            int32_t ny = y + dy[i];
-            int32_t nz = z + dz[i];
-
-            if (nx < 0 || nx >= VOBJ_GRID_SIZE ||
-                ny < 0 || ny >= VOBJ_GRID_SIZE ||
-                nz < 0 || nz >= VOBJ_GRID_SIZE)
-                continue;
-
-            int32_t nidx = vobj_index(nx, ny, nz);
-            if (visited[nidx] || obj->voxels[nidx].material == 0)
-                continue;
-
-            visited[nidx] = 1;
-            stack[stack_top++] = nidx;
-        }
-    }
-}
-
-static void split_disconnected_islands(VoxelObjectWorld *world, int32_t obj_index)
-{
-    static int32_t work_queue[VOBJ_MAX_OBJECTS];
-    int32_t queue_head = 0;
-    int32_t queue_tail = 0;
-
-    work_queue[queue_tail++] = obj_index;
-
-    while (queue_head < queue_tail)
-    {
-        int32_t current_idx = work_queue[queue_head++];
-        VoxelObject *obj = &world->objects[current_idx];
-
-        if (!obj->active || obj->voxel_count <= 1)
-            continue;
-
-        uint8_t visited[VOBJ_TOTAL_VOXELS] = {0};
-
-        int32_t first_x = -1, first_y = -1, first_z = -1;
-        for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS && first_x < 0; i++)
-        {
-            if (obj->voxels[i].material != 0)
-            {
-                vobj_coords(i, &first_x, &first_y, &first_z);
-            }
-        }
-        if (first_x < 0)
-            continue;
-
-        flood_fill_voxels(obj, visited, first_x, first_y, first_z);
-
-        int32_t unvisited_count = 0;
-        for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
-        {
-            if (obj->voxels[i].material != 0 && !visited[i])
-            {
-                unvisited_count++;
-            }
-        }
-        if (unvisited_count == 0)
-            continue;
-
-        if (world->object_count >= VOBJ_MAX_OBJECTS)
-            continue;
-
-        VoxelObject *new_obj = &world->objects[world->object_count];
-        memset(new_obj, 0, sizeof(VoxelObject));
-        new_obj->position = obj->position;
-        new_obj->orientation = obj->orientation;
-        new_obj->voxel_size = obj->voxel_size;
-        new_obj->active = true;
-        new_obj->voxel_count = 0;
-
-        for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
-        {
-            if (obj->voxels[i].material != 0 && !visited[i])
-            {
-                new_obj->voxels[i].material = obj->voxels[i].material;
-                new_obj->voxel_count++;
-                obj->voxels[i].material = 0;
-                obj->voxel_count--;
-            }
-        }
-
-        int32_t new_obj_idx = world->object_count;
-        world->object_count++;
-
-        voxel_object_recalc_shape(obj);
-        voxel_object_recalc_shape(new_obj);
-
-        if (queue_tail < VOBJ_MAX_OBJECTS)
-            work_queue[queue_tail++] = current_idx;
-        if (queue_tail < VOBJ_MAX_OBJECTS)
-            work_queue[queue_tail++] = new_obj_idx;
-    }
-}
-
 int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
                                Vec3 impact_point, float destroy_radius,
                                Vec3 *out_positions, uint8_t *out_materials,
@@ -197,8 +73,9 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
     }
     else
     {
-        voxel_object_recalc_shape(obj);
-        split_disconnected_islands(world, obj_index);
+        /* Defer shape recalc and island splitting to per-frame budget */
+        voxel_object_mark_dirty(obj);
+        voxel_object_world_queue_split(world, obj_index);
     }
 
     PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);

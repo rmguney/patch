@@ -34,7 +34,13 @@ extern "C"
         Vec3 shape_half_extents;
 
         bool active;
+        bool shape_dirty;        /* Deferred recalc flag */
+        uint8_t occupancy_mask;  /* 8 regions of 8³ voxels each */
     } VoxelObject;
+
+#define VOBJ_SPLIT_QUEUE_SIZE 64
+#define VOBJ_MAX_SPLITS_PER_TICK 4
+#define VOBJ_MAX_RECALCS_PER_TICK 8
 
     typedef struct
     {
@@ -45,6 +51,11 @@ extern "C"
         float voxel_size;
 
         VoxelVolume *terrain;
+
+        /* Deferred split work queue */
+        int32_t split_queue[VOBJ_SPLIT_QUEUE_SIZE];
+        int32_t split_queue_head;
+        int32_t split_queue_tail;
     } VoxelObjectWorld;
 
     typedef struct
@@ -86,8 +97,14 @@ extern "C"
     VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, Vec3 dir);
 
     void voxel_object_recalc_shape(VoxelObject *obj);
+    void voxel_object_mark_dirty(VoxelObject *obj);
 
     int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world);
+
+    /* Per-frame deferred processing */
+    void voxel_object_world_process_splits(VoxelObjectWorld *world);
+    void voxel_object_world_process_recalcs(VoxelObjectWorld *world);
+    void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index);
 
 #ifdef __cplusplus
 }

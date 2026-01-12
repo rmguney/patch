@@ -14,17 +14,20 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
 
     int32_t total_voxels = vol->total_chunks * CHUNK_VOXEL_COUNT;
 
-    work->visited_size = (total_voxels + 7) / 8;
-    work->visited = (uint8_t *)calloc(1, (size_t)work->visited_size);
-    if (!work->visited)
+    /* Generation-based visited: 1 byte per voxel instead of 1 bit */
+    work->visited_size = total_voxels;
+    work->visited_gen = (uint8_t *)calloc(1, (size_t)work->visited_size);
+    if (!work->visited_gen)
         return false;
+
+    work->generation = 1;  /* Start at 1; 0 means "never visited" */
 
     work->island_ids_size = total_voxels;
     work->island_ids = (uint8_t *)calloc(1, (size_t)work->island_ids_size);
     if (!work->island_ids)
     {
-        free(work->visited);
-        work->visited = NULL;
+        free(work->visited_gen);
+        work->visited_gen = NULL;
         return false;
     }
 
@@ -36,10 +39,10 @@ void connectivity_work_destroy(ConnectivityWorkBuffer *work)
     if (!work)
         return;
 
-    if (work->visited)
+    if (work->visited_gen)
     {
-        free(work->visited);
-        work->visited = NULL;
+        free(work->visited_gen);
+        work->visited_gen = NULL;
     }
     if (work->island_ids)
     {
@@ -53,8 +56,16 @@ void connectivity_work_clear(ConnectivityWorkBuffer *work)
     if (!work)
         return;
 
-    if (work->visited)
-        memset(work->visited, 0, (size_t)work->visited_size);
+    /* Generation-based clear: increment generation to invalidate all visited stamps */
+    work->generation++;
+    if (work->generation == 0)
+    {
+        /* Wrapped around - must do full clear */
+        work->generation = 1;
+        if (work->visited_gen)
+            memset(work->visited_gen, 0, (size_t)work->visited_size);
+    }
+
     if (work->island_ids)
         memset(work->island_ids, 0, (size_t)work->island_ids_size);
     work->stack_top = 0;
@@ -70,12 +81,12 @@ static inline int32_t global_voxel_index(const VoxelVolume *vol, int32_t cx, int
 
 static inline bool is_visited(const ConnectivityWorkBuffer *work, int32_t global_idx)
 {
-    return (work->visited[global_idx / 8] & (1 << (global_idx % 8))) != 0;
+    return work->visited_gen[global_idx] == work->generation;
 }
 
 static inline void set_visited(ConnectivityWorkBuffer *work, int32_t global_idx)
 {
-    work->visited[global_idx / 8] |= (1 << (global_idx % 8));
+    work->visited_gen[global_idx] = work->generation;
 }
 
 static inline void set_island_id(ConnectivityWorkBuffer *work, int32_t global_idx, uint8_t island_id)

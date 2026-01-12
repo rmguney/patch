@@ -97,8 +97,15 @@ namespace patch
 
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physical_device_, &props);
-        printf("  Selected: %s\n", props.deviceName);
+        strncpy(gpu_name_, props.deviceName, sizeof(gpu_name_) - 1);
+        gpu_name_[sizeof(gpu_name_) - 1] = '\0';
+        printf("  Selected: %s\n", gpu_name_);
         printf("  Max push constants: %u bytes\n", props.limits.maxPushConstantsSize);
+
+        if (discrete_gpu == VK_NULL_HANDLE && integrated_gpu != VK_NULL_HANDLE)
+        {
+            printf("  WARNING: Using integrated GPU. No discrete GPU found.\n");
+        }
 
         uint32_t ext_count = 0;
         vkEnumerateDeviceExtensionProperties(physical_device_, nullptr, &ext_count, nullptr);

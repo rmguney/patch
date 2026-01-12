@@ -55,8 +55,10 @@ typedef struct
     int32_t stack[CONNECTIVITY_WORK_STACK_SIZE];
     int32_t stack_top;
 
-    uint8_t *visited;
-    int32_t visited_size;
+    /* Generation-based visited tracking (avoids memset on each call) */
+    uint8_t *visited_gen;    /* Per-voxel generation stamp */
+    int32_t visited_size;    /* Number of voxels (not bytes) */
+    uint8_t generation;      /* Current generation (0 = needs full clear) */
 
     uint8_t *island_ids;
     int32_t island_ids_size;

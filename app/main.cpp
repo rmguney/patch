@@ -27,7 +27,7 @@ static BallPitParams params_from_settings(const AppSettings *s)
 }
 
 #ifdef PATCH_PROFILE
-static void export_profile_csv(const char *filename)
+static void export_profile_csv(const char *filename, const patch::Renderer *renderer)
 {
     FILE *f = fopen(filename, "w");
     if (!f)
@@ -35,6 +35,16 @@ static void export_profile_csv(const char *filename)
 
     time_t now = time(nullptr);
     fprintf(f, "# Profile export: %s", ctime(&now));
+    if (renderer)
+    {
+        fprintf(f, "# GPU Device: %s\n", renderer->get_gpu_name());
+        patch::Renderer::GPUTimings gpu;
+        if (renderer->get_gpu_timings(&gpu))
+        {
+            fprintf(f, "# GPU Timings: shadow=%.3fms, main=%.3fms, total=%.3fms\n",
+                    gpu.shadow_pass_ms, gpu.main_pass_ms, gpu.total_gpu_ms);
+        }
+    }
     fprintf(f, "# FPS: %.1f (avg), Frame: %.2fms (avg), %.2fms (max)\n",
             profile_get_avg_fps(),
             profile_get_avg_ms(PROFILE_FRAME_TOTAL),
@@ -190,15 +200,16 @@ static bool export_debug_info(const char *filename, const DebugSceneInfo *info, 
 }
 
 static bool export_all_debug(const char *debug_filename, const char *profile_filename,
-                             const DebugSceneInfo *info, float fps)
+                             const DebugSceneInfo *info, float fps, const patch::Renderer *renderer)
 {
     if (!export_debug_info(debug_filename, info, fps))
         return false;
 
 #ifdef PATCH_PROFILE
-    export_profile_csv(profile_filename);
+    export_profile_csv(profile_filename, renderer);
 #else
     (void)profile_filename;
+    (void)renderer;
 #endif
 
     return true;
@@ -278,6 +289,10 @@ static bool draw_overlay(Renderer &renderer, float fps, const BallPitStats *stat
              profile_get_avg_ms(PROFILE_SIM_PARTICLES));
     renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
 #endif
+
+    y_px += unit * 10.0f;
+    snprintf(line, sizeof(line), "Device: %s", renderer.get_gpu_name());
+    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.6f, 0.9f, 0.6f), 1.0f, line);
 
     Renderer::GPUTimings gpu_timings;
     if (renderer.get_gpu_timings(&gpu_timings))
@@ -917,7 +932,7 @@ int patch_main(int argc, char *argv[])
         {
             const char *debug_filename = "debug_info.txt";
             const char *profile_filename = "profile_results.csv";
-            dbg_feedback.success = export_all_debug(debug_filename, profile_filename, &dbg_info, fps_smooth);
+            dbg_feedback.success = export_all_debug(debug_filename, profile_filename, &dbg_info, fps_smooth, &renderer);
             snprintf(dbg_feedback.filename, sizeof(dbg_feedback.filename), "%s + %s", debug_filename, profile_filename);
             dbg_feedback.timer = 3.0f; /* Show for 3 seconds */
         }
@@ -944,7 +959,7 @@ int patch_main(int argc, char *argv[])
                 PROFILE_END(PROFILE_FRAME_TOTAL);
                 PROFILE_FRAME_END();
 #ifdef PATCH_PROFILE
-                export_profile_csv(profile_csv);
+                export_profile_csv(profile_csv, &renderer);
                 printf("Profile exported to %s\n", profile_csv);
 #endif
                 break;

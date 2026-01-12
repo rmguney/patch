@@ -28,7 +28,7 @@ TEST(work_buffer_init_destroy)
     ConnectivityWorkBuffer work;
     bool ok = connectivity_work_init(&work, vol);
     ASSERT(ok);
-    ASSERT(work.visited != NULL);
+    ASSERT(work.visited_gen != NULL);
     ASSERT(work.island_ids != NULL);
 
     connectivity_work_destroy(&work);

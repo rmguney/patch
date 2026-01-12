@@ -10,7 +10,7 @@ build/
 *.obj
 *.o
 nul
-*cwd
+tmp*
 
 # IDE/Editor directories
 .github/*

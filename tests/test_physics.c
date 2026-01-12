@@ -205,6 +205,13 @@ TEST(object_split_creates_fragments)
     int32_t destroyed = detach_object_at_point(world, obj_idx, bridge_point, 0.5f,
                                                        destroyed_pos, destroyed_mat, 64);
 
+    /* Process deferred splits until queue is empty */
+    for (int32_t tick = 0; tick < 16; tick++)
+    {
+        voxel_object_world_process_splits(world);
+        voxel_object_world_process_recalcs(world);
+    }
+
     printf("(destroyed %d voxels, now %d objects) ", destroyed, world->object_count);
 
     ASSERT(world->object_count >= 2);
@@ -237,6 +244,13 @@ TEST(object_split_dumbbell)
 
     Vec3 bridge_point = vec3_create(0.0f, 20.0f, 0.0f);
     detach_object_at_point(world, obj_idx, bridge_point, 0.5f, NULL, NULL, 0);
+
+    /* Process deferred splits until queue is empty */
+    for (int32_t tick = 0; tick < 16; tick++)
+    {
+        voxel_object_world_process_splits(world);
+        voxel_object_world_process_recalcs(world);
+    }
 
     /* Should split into 2 separate objects */
     ASSERT(world->object_count >= 2);

@@ -64,6 +64,8 @@ namespace patch
 
     bool Renderer::init()
     {
+        gpu_name_[0] = '\0';
+
         if (!create_instance())
         {
             init_error_ = "Failed to create Vulkan instance";

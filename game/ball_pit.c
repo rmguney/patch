@@ -207,6 +207,13 @@ static void ball_pit_tick(Scene *scene)
     particle_system_update(data->particles, dt);
     PROFILE_END(PROFILE_SIM_PARTICLES);
 
+    /* Process deferred voxel object work (budgeted per-frame) */
+    if (data->objects)
+    {
+        voxel_object_world_process_splits(data->objects);
+        voxel_object_world_process_recalcs(data->objects);
+    }
+
     PlatformTime t1 = platform_time_now();
     data->stats.tick_time_us = platform_time_delta_seconds(t0, t1) * 1000000.0f;
 
@@ -340,13 +347,18 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             }
 #undef MAX_TERRAIN_DESTROYED
 
-            if (data->detach_ready && data->objects)
-            {
-                DetachConfig cfg = detach_config_default();
-                detach_terrain_process(data->terrain, data->objects,
-                                       &cfg, &data->detach_work,
-                                       NULL);
-            }
+            /* Mark for deferred connectivity analysis (runs when mouse released) */
+            data->pending_connectivity = true;
+        }
+    }
+    else
+    {
+        /* Mouse not held - run pending connectivity analysis */
+        if (data->pending_connectivity && data->detach_ready && data->terrain && data->objects)
+        {
+            DetachConfig cfg = detach_config_default();
+            detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, NULL);
+            data->pending_connectivity = false;
         }
     }
 }

@@ -55,10 +55,10 @@ namespace patch
         float bounds_min[4];      /* Object AABB min (xyz), voxel_size (w) */
         float bounds_max[4];      /* Object AABB max (xyz), grid_size (w) */
         float position[4];        /* World position (xyz), active flag (w) */
-        uint32_t atlas_slice;     /* Z-slice in 3D atlas */
-        uint32_t material_base;   /* Base material offset (for future palette per-object) */
-        uint32_t flags;           /* Bitflags: sleeping, dirty, etc. */
-        uint32_t pad;
+        uint32_t atlas_slice;      /* Z-slice in 3D atlas */
+        uint32_t material_base;    /* Base material offset (for future palette per-object) */
+        uint32_t flags;            /* Bitflags: sleeping, dirty, etc. */
+        uint32_t occupancy_mask;   /* 8-bit region occupancy (2×2×2 regions of 8³) */
     };
     static_assert(sizeof(VoxelObjectGPU) == 192, "VoxelObjectGPU must be 192 bytes");
 
@@ -465,6 +465,7 @@ namespace patch
         VkQueryPool timestamp_query_pool_;
         float timestamp_period_ns_;
         bool timestamps_supported_;
+        char gpu_name_[256];
 
         bool create_timestamp_query_pool();
         void destroy_timestamp_query_pool();
@@ -523,6 +524,7 @@ namespace patch
 
         bool get_gpu_timings(GPUTimings *out_timings) const;
         bool is_gpu_profiling_supported() const { return timestamps_supported_; }
+        const char *get_gpu_name() const { return gpu_name_; }
     };
 
 }

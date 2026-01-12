@@ -698,7 +698,7 @@ namespace patch
             gpu->atlas_slice = static_cast<uint32_t>(i);
             gpu->material_base = 0;
             gpu->flags = 0;
-            gpu->pad = 0;
+            gpu->occupancy_mask = static_cast<uint32_t>(obj->occupancy_mask);
         }
     }
 

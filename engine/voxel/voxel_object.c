@@ -23,6 +23,7 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     if (obj->voxel_count <= 0)
     {
         obj->active = false;
+        obj->shape_dirty = false;
         return;
     }
 
@@ -31,7 +32,9 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     int32_t min_z = VOBJ_GRID_SIZE, max_z = 0;
     float com_x = 0.0f, com_y = 0.0f, com_z = 0.0f;
     int32_t counted = 0;
+    uint8_t occupancy = 0;
 
+    /* Single pass: bounds, center of mass, and occupancy */
     for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
     {
         for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
@@ -40,26 +43,26 @@ void voxel_object_recalc_shape(VoxelObject *obj)
             {
                 if (obj->voxels[vobj_index(x, y, z)].material != 0)
                 {
-                    if (x < min_x)
-                        min_x = x;
-                    if (x > max_x)
-                        max_x = x;
-                    if (y < min_y)
-                        min_y = y;
-                    if (y > max_y)
-                        max_y = y;
-                    if (z < min_z)
-                        min_z = z;
-                    if (z > max_z)
-                        max_z = z;
+                    if (x < min_x) min_x = x;
+                    if (x > max_x) max_x = x;
+                    if (y < min_y) min_y = y;
+                    if (y > max_y) max_y = y;
+                    if (z < min_z) min_z = z;
+                    if (z > max_z) max_z = z;
                     com_x += (float)x + 0.5f;
                     com_y += (float)y + 0.5f;
                     com_z += (float)z + 0.5f;
                     counted++;
+
+                    /* Occupancy: which 8³ region contains this voxel */
+                    int32_t region = (x / 8) + ((y / 8) * 2) + ((z / 8) * 4);
+                    occupancy |= (uint8_t)(1 << region);
                 }
             }
         }
     }
+
+    obj->occupancy_mask = occupancy;
 
     float extent_x = (float)(max_x - min_x + 1) * obj->voxel_size * 0.5f;
     float extent_y = (float)(max_y - min_y + 1) * obj->voxel_size * 0.5f;
@@ -71,35 +74,27 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     com_y *= inv_count;
     com_z *= inv_count;
 
+    /* Radius: use bounding box corners instead of per-voxel corners */
     float max_dist_sq = 0.0f;
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    for (int32_t c = 0; c < 8; c++)
     {
-        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
-        {
-            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
-            {
-                if (obj->voxels[vobj_index(x, y, z)].material != 0)
-                {
-                    float vx = (float)x + 0.5f;
-                    float vy = (float)y + 0.5f;
-                    float vz = (float)z + 0.5f;
-                    for (int32_t c = 0; c < 8; c++)
-                    {
-                        float cx = vx + ((c & 1) ? 0.5f : -0.5f);
-                        float cy = vy + ((c & 2) ? 0.5f : -0.5f);
-                        float cz = vz + ((c & 4) ? 0.5f : -0.5f);
-                        float dx = (cx - com_x) * obj->voxel_size;
-                        float dy = (cy - com_y) * obj->voxel_size;
-                        float dz = (cz - com_z) * obj->voxel_size;
-                        float dist_sq = dx * dx + dy * dy + dz * dz;
-                        if (dist_sq > max_dist_sq)
-                            max_dist_sq = dist_sq;
-                    }
-                }
-            }
-        }
+        float cx = ((c & 1) ? (float)max_x + 1.0f : (float)min_x);
+        float cy = ((c & 2) ? (float)max_y + 1.0f : (float)min_y);
+        float cz = ((c & 4) ? (float)max_z + 1.0f : (float)min_z);
+        float dx = (cx - com_x) * obj->voxel_size;
+        float dy = (cy - com_y) * obj->voxel_size;
+        float dz = (cz - com_z) * obj->voxel_size;
+        float dist_sq = dx * dx + dy * dy + dz * dz;
+        if (dist_sq > max_dist_sq)
+            max_dist_sq = dist_sq;
     }
     obj->radius = sqrtf(max_dist_sq);
+    obj->shape_dirty = false;
+}
+
+void voxel_object_mark_dirty(VoxelObject *obj)
+{
+    obj->shape_dirty = true;
 }
 
 VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
@@ -416,4 +411,178 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
 
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
     return result;
+}
+
+void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index)
+{
+    if (!world || obj_index < 0 || obj_index >= world->object_count)
+        return;
+
+    int32_t next_tail = (world->split_queue_tail + 1) % VOBJ_SPLIT_QUEUE_SIZE;
+    if (next_tail == world->split_queue_head)
+        return; /* Queue full */
+
+    world->split_queue[world->split_queue_tail] = obj_index;
+    world->split_queue_tail = next_tail;
+}
+
+void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
+{
+    if (!world)
+        return;
+
+    PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
+
+    int32_t processed = 0;
+    for (int32_t i = 0; i < world->object_count && processed < VOBJ_MAX_RECALCS_PER_TICK; i++)
+    {
+        VoxelObject *obj = &world->objects[i];
+        if (obj->active && obj->shape_dirty)
+        {
+            voxel_object_recalc_shape(obj);
+            processed++;
+        }
+    }
+
+    PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
+}
+
+static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
+                                     int32_t start_x, int32_t start_y, int32_t start_z)
+{
+    static int32_t stack[VOBJ_TOTAL_VOXELS];
+    int32_t stack_top = 0;
+
+    int32_t start_idx = vobj_index(start_x, start_y, start_z);
+    if (start_x < 0 || start_x >= VOBJ_GRID_SIZE ||
+        start_y < 0 || start_y >= VOBJ_GRID_SIZE ||
+        start_z < 0 || start_z >= VOBJ_GRID_SIZE ||
+        visited[start_idx] || obj->voxels[start_idx].material == 0)
+        return;
+
+    stack[stack_top++] = start_idx;
+    visited[start_idx] = 1;
+
+    static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
+    static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
+    static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
+
+    while (stack_top > 0)
+    {
+        int32_t idx = stack[--stack_top];
+        int32_t x, y, z;
+        vobj_coords(idx, &x, &y, &z);
+
+        for (int32_t i = 0; i < 6; i++)
+        {
+            int32_t nx = x + dx[i];
+            int32_t ny = y + dy[i];
+            int32_t nz = z + dz[i];
+
+            if (nx < 0 || nx >= VOBJ_GRID_SIZE ||
+                ny < 0 || ny >= VOBJ_GRID_SIZE ||
+                nz < 0 || nz >= VOBJ_GRID_SIZE)
+                continue;
+
+            int32_t nidx = vobj_index(nx, ny, nz);
+            if (visited[nidx] || obj->voxels[nidx].material == 0)
+                continue;
+
+            visited[nidx] = 1;
+            stack[stack_top++] = nidx;
+        }
+    }
+}
+
+static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
+{
+    if (obj_index < 0 || obj_index >= world->object_count)
+        return false;
+
+    VoxelObject *obj = &world->objects[obj_index];
+    if (!obj->active || obj->voxel_count <= 1)
+        return false;
+
+    uint8_t visited[VOBJ_TOTAL_VOXELS] = {0};
+
+    int32_t first_x = -1, first_y = -1, first_z = -1;
+    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS && first_x < 0; i++)
+    {
+        if (obj->voxels[i].material != 0)
+        {
+            vobj_coords(i, &first_x, &first_y, &first_z);
+        }
+    }
+    if (first_x < 0)
+        return false;
+
+    flood_fill_voxels_local(obj, visited, first_x, first_y, first_z);
+
+    int32_t unvisited_count = 0;
+    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
+    {
+        if (obj->voxels[i].material != 0 && !visited[i])
+        {
+            unvisited_count++;
+        }
+    }
+    if (unvisited_count == 0)
+        return false;
+
+    if (world->object_count >= VOBJ_MAX_OBJECTS)
+        return false;
+
+    VoxelObject *new_obj = &world->objects[world->object_count];
+    memset(new_obj, 0, sizeof(VoxelObject));
+    new_obj->position = obj->position;
+    new_obj->orientation = obj->orientation;
+    new_obj->voxel_size = obj->voxel_size;
+    new_obj->active = true;
+    new_obj->shape_dirty = true;
+    new_obj->voxel_count = 0;
+
+    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
+    {
+        if (obj->voxels[i].material != 0 && !visited[i])
+        {
+            new_obj->voxels[i].material = obj->voxels[i].material;
+            new_obj->voxel_count++;
+            obj->voxels[i].material = 0;
+            obj->voxel_count--;
+        }
+    }
+
+    int32_t new_obj_idx = world->object_count;
+    world->object_count++;
+
+    obj->shape_dirty = true;
+
+    /* Queue both for further splitting */
+    voxel_object_world_queue_split(world, obj_index);
+    voxel_object_world_queue_split(world, new_obj_idx);
+
+    return true;
+}
+
+void voxel_object_world_process_splits(VoxelObjectWorld *world)
+{
+    if (!world)
+        return;
+
+    PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
+
+    int32_t processed = 0;
+    while (world->split_queue_head != world->split_queue_tail &&
+           processed < VOBJ_MAX_SPLITS_PER_TICK)
+    {
+        int32_t obj_index = world->split_queue[world->split_queue_head];
+        world->split_queue_head = (world->split_queue_head + 1) % VOBJ_SPLIT_QUEUE_SIZE;
+
+        if (split_one_island(world, obj_index))
+        {
+            processed++;
+        }
+    }
+
+    PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
 }
