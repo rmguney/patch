@@ -24,6 +24,7 @@ extern "C"
 #define VOLUME_DIRTY_RING_SIZE 64
 #define VOLUME_EDIT_BATCH_MAX_CHUNKS 64
 #define VOLUME_CHUNK_BITMAP_SIZE ((VOLUME_MAX_CHUNKS + 63) / 64)
+#define VOLUME_SHADOW_DIRTY_MAX 64
 
     typedef struct
     {
@@ -64,6 +65,11 @@ extern "C"
 
         int32_t total_solid_voxels;
         int32_t active_chunks;
+
+        uint64_t shadow_dirty_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
+        int32_t shadow_dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
+        int32_t shadow_dirty_count;
+        bool shadow_needs_full_rebuild;
     } VoxelVolume;
 
     VoxelVolume *volume_create(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z,
@@ -223,6 +229,19 @@ extern "C"
 
     void volume_generate_shadow_mips(const uint8_t *mip0, uint32_t w, uint32_t h, uint32_t d,
                                      uint8_t *mip1, uint8_t *mip2);
+
+    int32_t volume_get_shadow_dirty_chunks(VoxelVolume *vol, int32_t *out_indices, int32_t max_count);
+    void volume_clear_shadow_dirty(VoxelVolume *vol);
+    bool volume_shadow_needs_full_rebuild(const VoxelVolume *vol);
+
+    void volume_pack_shadow_chunk(const VoxelVolume *vol, int32_t chunk_idx,
+                                  uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0);
+
+    void volume_generate_shadow_mips_for_chunk(int32_t chunk_idx,
+                                               int32_t chunks_x, int32_t chunks_y, int32_t chunks_z,
+                                               const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
+                                               uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
+                                               uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2);
 
 #ifdef __cplusplus
 }

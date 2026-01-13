@@ -835,6 +835,9 @@ int patch_main(int argc, char *argv[])
             VoxelObjectWorld *objects = ball_pit_get_objects(active_scene);
             ParticleSystem *particles = ball_pit_get_particles(active_scene);
 
+            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
+                                            (particles && particles->count > 0);
+
             if (terrain)
             {
                 volume_begin_frame(terrain);
@@ -844,14 +847,16 @@ int patch_main(int argc, char *argv[])
                 {
                     dbg_total_uploaded += uploaded;
                     volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
-                    renderer.update_shadow_volume(terrain);
+                }
+
+                if (uploaded > 0 || has_objects_or_particles)
+                {
+                    renderer.update_shadow_volume(terrain, objects, particles);
                 }
             }
 
             /* Dispatch compute terrain before render pass (if using compute path) */
             /* Skip compute when objects/particles exist - they need hardware depth buffer */
-            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
-                                            (particles && particles->count > 0);
             if (terrain)
             {
                 renderer.prepare_gbuffer_compute(terrain, has_objects_or_particles);

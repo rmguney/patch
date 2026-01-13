@@ -117,7 +117,9 @@ namespace patch
         int32_t upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices);
 
         /* Update shadow volume from current terrain state (call after terrain changes) */
-        void update_shadow_volume(const VoxelVolume *vol);
+        void update_shadow_volume(VoxelVolume *vol,
+                                  const VoxelObjectWorld *objects = nullptr,
+                                  const ParticleSystem *particles = nullptr);
 
         /* GPU raymarched particle rendering */
         void render_particles_raymarched(const ParticleSystem *sys);
@@ -417,6 +419,12 @@ namespace patch
         uint32_t shadow_volume_dims_[3];
         uint32_t shadow_volume_last_frame_;
 
+        std::vector<uint8_t> shadow_mip0_;
+        std::vector<uint8_t> shadow_mip1_;
+        std::vector<uint8_t> shadow_mip2_;
+        uint32_t shadow_mip_dims_[3][3];
+        bool shadow_volume_initialized_;
+
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;
         VkDeviceMemory blue_noise_memory_;
@@ -520,6 +528,7 @@ namespace patch
         bool create_shadow_compute_pipeline();
         bool create_gbuffer_compute_descriptor_sets();
         bool create_shadow_compute_descriptor_sets();
+        void update_shadow_volume_descriptor();
         bool create_shadow_output_resources();
         void destroy_compute_raymarching_resources();
         void dispatch_gbuffer_compute(const VoxelVolume *vol);

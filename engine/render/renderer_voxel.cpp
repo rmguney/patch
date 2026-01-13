@@ -3,6 +3,7 @@
 #include "voxel_push_constants.h"
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
+#include "engine/voxel/unified_volume.h"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -469,7 +470,9 @@ namespace patch
         PROFILE_END(PROFILE_VOLUME_INIT);
     }
 
-    void Renderer::update_shadow_volume(const VoxelVolume *vol)
+    void Renderer::update_shadow_volume(VoxelVolume *vol,
+                                         const VoxelObjectWorld *objects,
+                                         const ParticleSystem *particles)
     {
         if (!vol || !gbuffer_initialized_ || !shadow_volume_image_)
             return;
@@ -485,14 +488,12 @@ namespace patch
         if (w0 == 0 || h0 == 0 || d0 == 0)
             return;
 
-        size_t size0 = static_cast<size_t>(w0) * h0 * d0;
         uint32_t w1 = w0 >> 1;
         if (w1 == 0) w1 = 1;
         uint32_t h1 = h0 >> 1;
         if (h1 == 0) h1 = 1;
         uint32_t d1 = d0 >> 1;
         if (d1 == 0) d1 = 1;
-        size_t size1 = static_cast<size_t>(w1) * h1 * d1;
 
         uint32_t w2 = w1 >> 1;
         if (w2 == 0) w2 = 1;
@@ -500,19 +501,79 @@ namespace patch
         if (h2 == 0) h2 = 1;
         uint32_t d2 = d1 >> 1;
         if (d2 == 0) d2 = 1;
+
+        size_t size0 = static_cast<size_t>(w0) * h0 * d0;
+        size_t size1 = static_cast<size_t>(w1) * h1 * d1;
         size_t size2 = static_cast<size_t>(w2) * h2 * d2;
 
-        std::vector<uint8_t> mip0(size0);
-        std::vector<uint8_t> mip1(size1);
-        std::vector<uint8_t> mip2(size2);
+        bool has_dynamic = (objects && objects->object_count > 0) ||
+                           (particles && particles->count > 0);
 
-        uint32_t out_w, out_h, out_d;
-        volume_pack_shadow_volume(vol, mip0.data(), &out_w, &out_h, &out_d);
-        volume_generate_shadow_mips(mip0.data(), w0, h0, d0, mip1.data(), mip2.data());
+        bool needs_full_rebuild = volume_shadow_needs_full_rebuild(vol) ||
+                                  !shadow_volume_initialized_ ||
+                                  shadow_mip0_.size() != size0 ||
+                                  has_dynamic;
 
-        upload_shadow_volume(mip0.data(), w0, h0, d0,
-                             mip1.data(), w1, h1, d1,
-                             mip2.data(), w2, h2, d2);
+        if (needs_full_rebuild)
+        {
+            shadow_mip0_.resize(size0);
+            shadow_mip1_.resize(size1);
+            shadow_mip2_.resize(size2);
+
+            shadow_mip_dims_[0][0] = w0;
+            shadow_mip_dims_[0][1] = h0;
+            shadow_mip_dims_[0][2] = d0;
+            shadow_mip_dims_[1][0] = w1;
+            shadow_mip_dims_[1][1] = h1;
+            shadow_mip_dims_[1][2] = d1;
+            shadow_mip_dims_[2][0] = w2;
+            shadow_mip_dims_[2][1] = h2;
+            shadow_mip_dims_[2][2] = d2;
+
+            uint32_t out_w, out_h, out_d;
+            volume_pack_shadow_volume(vol, shadow_mip0_.data(), &out_w, &out_h, &out_d);
+
+            if (objects && objects->object_count > 0)
+            {
+                unified_volume_stamp_objects_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, objects);
+            }
+
+            if (particles && particles->count > 0)
+            {
+                unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles);
+            }
+
+            volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
+                                        shadow_mip1_.data(), shadow_mip2_.data());
+
+            shadow_volume_initialized_ = true;
+        }
+        else
+        {
+            int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
+            int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
+
+            for (int32_t i = 0; i < dirty_count; i++)
+            {
+                int32_t chunk_idx = dirty_chunks[i];
+                volume_pack_shadow_chunk(vol, chunk_idx,
+                                         shadow_mip0_.data(), w0, h0, d0);
+                volume_generate_shadow_mips_for_chunk(chunk_idx,
+                                                      vol->chunks_x, vol->chunks_y, vol->chunks_z,
+                                                      shadow_mip0_.data(), w0, h0, d0,
+                                                      shadow_mip1_.data(), w1, h1, d1,
+                                                      shadow_mip2_.data(), w2, h2, d2);
+            }
+        }
+
+        volume_clear_shadow_dirty(vol);
+
+        upload_shadow_volume(shadow_mip0_.data(), w0, h0, d0,
+                             shadow_mip1_.data(), w1, h1, d1,
+                             shadow_mip2_.data(), w2, h2, d2);
+
+        /* Update shadow compute descriptor with new shadow volume texture */
+        update_shadow_volume_descriptor();
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)

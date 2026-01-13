@@ -63,6 +63,8 @@ set(ENGINE_VOXEL_SOURCES
     engine/voxel/connectivity.c
     engine/voxel/voxel_object.h
     engine/voxel/voxel_object.c
+    engine/voxel/unified_volume.h
+    engine/voxel/unified_volume.c
 )
 
 add_library(engine_voxel STATIC ${ENGINE_VOXEL_SOURCES})

@@ -213,8 +213,8 @@ namespace patch
 
     bool Renderer::create_shadow_compute_pipeline()
     {
-        /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers) */
-        VkDescriptorSetLayoutBinding input_bindings[2]{};
+        /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers, shadow volume) */
+        VkDescriptorSetLayoutBinding input_bindings[3]{};
         input_bindings[0].binding = 0;
         input_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         input_bindings[0].descriptorCount = 1;
@@ -225,9 +225,14 @@ namespace patch
         input_bindings[1].descriptorCount = 1;
         input_bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+        input_bindings[2].binding = 2;
+        input_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        input_bindings[2].descriptorCount = 1;
+        input_bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
         VkDescriptorSetLayoutCreateInfo input_layout_info{};
         input_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        input_layout_info.bindingCount = 2;
+        input_layout_info.bindingCount = 3;
         input_layout_info.pBindings = input_bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &input_layout_info, nullptr, &shadow_compute_input_layout_) != VK_SUCCESS)
@@ -509,7 +514,7 @@ namespace patch
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2; /* voxel_data + chunk_headers */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3; /* depth, normal, blue noise */
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4; /* depth, normal, blue noise, shadow_volume */
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1;
 
@@ -577,7 +582,12 @@ namespace patch
             headers_info.offset = 0;
             headers_info.range = VK_WHOLE_SIZE;
 
-            VkWriteDescriptorSet input_writes[2]{};
+            VkDescriptorImageInfo shadow_vol_info{};
+            shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            shadow_vol_info.imageView = shadow_volume_view_;
+            shadow_vol_info.sampler = shadow_volume_sampler_;
+
+            VkWriteDescriptorSet input_writes[3]{};
             input_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             input_writes[0].dstSet = shadow_compute_input_sets_[i];
             input_writes[0].dstBinding = 0;
@@ -592,7 +602,14 @@ namespace patch
             input_writes[1].descriptorCount = 1;
             input_writes[1].pBufferInfo = &headers_info;
 
-            vkUpdateDescriptorSets(device_, 2, input_writes, 0, nullptr);
+            input_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[2].dstSet = shadow_compute_input_sets_[i];
+            input_writes[2].dstBinding = 2;
+            input_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[2].descriptorCount = 1;
+            input_writes[2].pImageInfo = &shadow_vol_info;
+
+            vkUpdateDescriptorSets(device_, shadow_volume_view_ ? 3 : 2, input_writes, 0, nullptr);
 
             /* Set 1: G-buffer samplers (depth, normal, blue noise) */
             VkDescriptorImageInfo depth_info{};
@@ -652,6 +669,30 @@ namespace patch
 
         printf("  Shadow compute descriptor sets created\n");
         return true;
+    }
+
+    void Renderer::update_shadow_volume_descriptor()
+    {
+        if (!shadow_volume_view_ || !shadow_volume_sampler_ || !shadow_compute_descriptor_pool_)
+            return;
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorImageInfo shadow_vol_info{};
+            shadow_vol_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            shadow_vol_info.imageView = shadow_volume_view_;
+            shadow_vol_info.sampler = shadow_volume_sampler_;
+
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = shadow_compute_input_sets_[i];
+            write.dstBinding = 2;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.descriptorCount = 1;
+            write.pImageInfo = &shadow_vol_info;
+
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        }
     }
 
     void Renderer::dispatch_gbuffer_compute(const VoxelVolume *vol)
@@ -776,7 +817,7 @@ namespace patch
 
     void Renderer::dispatch_shadow_compute()
     {
-        if (!compute_resources_initialized_ || !shadow_compute_pipeline_)
+        if (!compute_resources_initialized_ || !shadow_compute_pipeline_ || !shadow_volume_view_)
             return;
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];

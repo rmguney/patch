@@ -47,6 +47,9 @@ layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
     uvec4 chunk_headers[];
 };
 
+/* Shadow volume texture (set 0, binding 2) - R8_UINT with 3 mip levels */
+layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
+
 #include "include/data_terrain.glsl"
 
 /* G-buffer inputs (set 1) */
@@ -66,6 +69,57 @@ const vec3 SUN_DIR = normalize(vec3(-0.6, 0.9, 0.35));
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
+}
+
+/* Sample shadow volume occupancy at voxel position
+   Shadow volume is half-resolution: 2x2x2 voxels packed per texel
+   Returns true if occupied */
+bool sample_shadow_volume(ivec3 voxel_pos) {
+    /* Shadow volume texel coords (half res) */
+    ivec3 shadow_pos = voxel_pos >> 1;
+    ivec3 shadow_size = textureSize(shadow_volume_tex, 0);
+
+    if (shadow_pos.x < 0 || shadow_pos.x >= shadow_size.x ||
+        shadow_pos.y < 0 || shadow_pos.y >= shadow_size.y ||
+        shadow_pos.z < 0 || shadow_pos.z >= shadow_size.z) {
+        return false;
+    }
+
+    /* Fetch packed occupancy byte */
+    uint packed = texelFetch(shadow_volume_tex, shadow_pos, 0).r;
+
+    /* Compute bit index within 2x2x2 */
+    int bit_idx = (voxel_pos.x & 1) + ((voxel_pos.y & 1) << 1) + ((voxel_pos.z & 1) << 2);
+
+    return (packed & (1u << bit_idx)) != 0u;
+}
+
+/* Sample shadow volume mip1 (4x4x4 voxels per texel) */
+bool sample_shadow_mip1(ivec3 voxel_pos) {
+    ivec3 mip1_pos = voxel_pos >> 2;  /* Divide by 4 */
+    ivec3 mip1_size = textureSize(shadow_volume_tex, 1);
+
+    if (mip1_pos.x < 0 || mip1_pos.x >= mip1_size.x ||
+        mip1_pos.y < 0 || mip1_pos.y >= mip1_size.y ||
+        mip1_pos.z < 0 || mip1_pos.z >= mip1_size.z) {
+        return false;
+    }
+
+    return texelFetch(shadow_volume_tex, mip1_pos, 1).r != 0u;
+}
+
+/* Sample shadow volume mip2 (8x8x8 voxels per texel) */
+bool sample_shadow_mip2(ivec3 voxel_pos) {
+    ivec3 mip2_pos = voxel_pos >> 3;  /* Divide by 8 */
+    ivec3 mip2_size = textureSize(shadow_volume_tex, 2);
+
+    if (mip2_pos.x < 0 || mip2_pos.x >= mip2_size.x ||
+        mip2_pos.y < 0 || mip2_pos.y >= mip2_size.y ||
+        mip2_pos.z < 0 || mip2_pos.z >= mip2_size.z) {
+        return false;
+    }
+
+    return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
 }
 
 float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
@@ -90,11 +144,10 @@ float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
     ivec3 step_dir = ivec3(sign(rd));
     vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
 
-    ivec3 last_chunk = ivec3(-1000);
-    ivec3 last_region = ivec3(-1000);
-    bool chunk_empty = false;
-    bool region_empty = false;
-    int current_chunk_idx = -1;
+    ivec3 last_mip2_pos = ivec3(-1000);
+    ivec3 last_mip1_pos = ivec3(-1000);
+    bool mip2_empty = false;
+    bool mip1_empty = false;
 
     for (int i = 0; i < MAX_SHADOW_STEPS; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
@@ -103,41 +156,37 @@ float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
             return 1.0;
         }
 
-        /* Level 2: Chunk occupancy */
-        ivec3 current_chunk = map_pos / CHUNK_SIZE;
-        if (current_chunk != last_chunk) {
-            last_chunk = current_chunk;
-            current_chunk_idx = current_chunk.x + current_chunk.y * pc.chunks_dim.x +
-                               current_chunk.z * pc.chunks_dim.x * pc.chunks_dim.y;
-            chunk_empty = !sample_occupancy_chunk(current_chunk_idx);
-            last_region = ivec3(-1000);
+        /* Level 2: mip2 occupancy (8x8x8 voxels) */
+        ivec3 current_mip2 = map_pos >> 3;
+        if (current_mip2 != last_mip2_pos) {
+            last_mip2_pos = current_mip2;
+            mip2_empty = !sample_shadow_mip2(map_pos);
+            last_mip1_pos = ivec3(-1000);
         }
 
-        if (chunk_empty) {
+        if (mip2_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
             side_dist += vec3(mask) * delta_dist;
             map_pos += ivec3(mask) * step_dir;
             continue;
         }
 
-        /* Level 1: Region occupancy (8x8x8) */
-        ivec3 local_pos = map_pos - current_chunk * CHUNK_SIZE;
-        ivec3 current_region = local_pos / REGION_SIZE;
-        if (current_region != last_region) {
-            last_region = current_region;
-            region_empty = !sample_occupancy_region(current_chunk_idx, current_region);
+        /* Level 1: mip1 occupancy (4x4x4 voxels) */
+        ivec3 current_mip1 = map_pos >> 2;
+        if (current_mip1 != last_mip1_pos) {
+            last_mip1_pos = current_mip1;
+            mip1_empty = !sample_shadow_mip1(map_pos);
         }
 
-        if (region_empty) {
+        if (mip1_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
             side_dist += vec3(mask) * delta_dist;
             map_pos += ivec3(mask) * step_dir;
             continue;
         }
 
-        /* Level 0: Per-voxel check */
-        uint mat = sample_material(map_pos);
-        if (mat != 0u) {
+        /* Level 0: Per-voxel check against shadow volume */
+        if (sample_shadow_volume(map_pos)) {
             return 0.0;
         }
 
