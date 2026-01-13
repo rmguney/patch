@@ -999,5 +999,7 @@ int patch_main(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    printf("DEBUG: patch_samples starting (console output enabled)\n");
+    fflush(stdout);
     return patch_main(argc, argv);
 }

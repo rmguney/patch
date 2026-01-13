@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 project(patch VERSION 1.0.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -329,7 +329,12 @@ endif()
 # Windows-specific
 # -----------------------------------------------------------------------------
 if(WIN32)
-    set_target_properties(patch_samples PROPERTIES WIN32_EXECUTABLE TRUE)
+    # Release: GUI subsystem (no console), Debug: console subsystem (for printf/stdout)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        set_target_properties(patch_samples PROPERTIES WIN32_EXECUTABLE TRUE)
+    else()
+        set_target_properties(patch_samples PROPERTIES WIN32_EXECUTABLE FALSE)
+    endif()
 
     set(WIN32_TARGETS engine_platform engine_render game patch_samples)
     foreach(tgt ${WIN32_TARGETS})
