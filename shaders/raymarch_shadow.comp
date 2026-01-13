@@ -232,14 +232,18 @@ void main() {
 
     if (pc.rt_quality > 0) {
         vec2 noise_uv = vec2(pixel) / 128.0;
-        float base_noise = texture(blue_noise_tex, noise_uv).r;
-        base_noise = fract(base_noise + float(pc.frame_count) * 0.6180339887);
-
-        float origin_jitter = (base_noise - 0.5) * pc.voxel_size * 0.5;
-        vec3 shadow_origin = world_pos + normal * (pc.voxel_size * 0.5 + origin_jitter);
+        float spatial_noise = texture(blue_noise_tex, noise_uv).r;
+        float temporal_noise = fract(spatial_noise + float(pc.frame_count) * 0.6180339887);
 
         vec3 tangent = normalize(cross(SUN_DIR, vec3(0.0, 1.0, 0.01)));
         vec3 bitangent = cross(SUN_DIR, tangent);
+
+        /* Bias along light direction instead of normal - ensures shadow ray starts
+           outside occluders regardless of surface orientation (fixes dotty shadows
+           on rotated objects where normal-based bias was insufficient) */
+        float light_bias = pc.voxel_size * 0.6;
+        float normal_bias = pc.voxel_size * 0.1;
+        vec3 shadow_origin = world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
         /* Scale samples: quality 1=4, 2=8, 3=12 samples for smoother soft shadows */
         int num_samples = pc.rt_quality * 4;
@@ -247,7 +251,7 @@ void main() {
         float penumbra = 0.03 + 0.015 * float(pc.rt_quality);
 
         for (int s = 0; s < num_samples; s++) {
-            float noise = fract(base_noise + float(s) * 0.618);
+            float noise = fract(temporal_noise + float(s) * 0.618);
             float angle = (float(s) + noise) * 6.28318 / float(num_samples);
             float radius = sqrt((float(s) + noise) / float(num_samples)) * penumbra;
             vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
