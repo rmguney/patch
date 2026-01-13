@@ -55,10 +55,10 @@ namespace patch
         float bounds_min[4];      /* Object AABB min (xyz), voxel_size (w) */
         float bounds_max[4];      /* Object AABB max (xyz), grid_size (w) */
         float position[4];        /* World position (xyz), active flag (w) */
-        uint32_t atlas_slice;      /* Z-slice in 3D atlas */
-        uint32_t material_base;    /* Base material offset (for future palette per-object) */
-        uint32_t flags;            /* Bitflags: sleeping, dirty, etc. */
-        uint32_t occupancy_mask;   /* 8-bit region occupancy (2×2×2 regions of 8³) */
+        uint32_t atlas_slice;     /* Z-slice in 3D atlas */
+        uint32_t material_base;   /* Base material offset (for future palette per-object) */
+        uint32_t flags;           /* Bitflags: sleeping, dirty, etc. */
+        uint32_t occupancy_mask;  /* 8-bit region occupancy (2×2×2 regions of 8³) */
     };
     static_assert(sizeof(VoxelObjectGPU) == 192, "VoxelObjectGPU must be 192 bytes");
 
@@ -102,7 +102,7 @@ namespace patch
         void end_frame(uint32_t image_index);
 
         /* Deferred rendering pass methods */
-        void prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles);  /* Call before begin_gbuffer_pass */
+        void prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles); /* Call before begin_gbuffer_pass */
         void begin_gbuffer_pass();
         void end_gbuffer_pass();
         void render_gbuffer_terrain(const VoxelVolume *vol);
@@ -297,7 +297,7 @@ namespace patch
         float ortho_half_width_;
         float ortho_half_height_;
         ProjectionMode projection_mode_;
-        PresentMode present_mode_ = PresentMode::Mailbox;  /* Default: uncapped FPS */
+        PresentMode present_mode_ = PresentMode::Mailbox; /* Default: uncapped FPS */
         float perspective_fov_y_degrees_;
         float perspective_near_;
         float perspective_far_;
@@ -331,20 +331,27 @@ namespace patch
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;
-        int rt_quality_ = 1; /* 0=Off, 1=Fair, 2=Good, 3=High */
-        int terrain_debug_mode_ = 0; /* DEBUG: 0=normal, 1=AABB visualization */
+        int rt_quality_ = 1;                 /* 0=Off, 1=Fair, 2=Good, 3=High */
+        int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
 
-        /* Compute shader infrastructure for temporal resolve */
+        /* Compute shader infrastructure for temporal shadow resolve */
         VkPipeline temporal_compute_pipeline_;
         VkPipelineLayout temporal_compute_layout_;
+
+        VkDescriptorSetLayout temporal_shadow_input_layout_;  /* Set 0: depth/normal/motion/current/history */
+        VkDescriptorSetLayout temporal_shadow_output_layout_; /* Set 1: resolved shadow output */
+        VkDescriptorPool temporal_shadow_descriptor_pool_;
+        VkDescriptorSet temporal_shadow_input_sets_[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSet temporal_shadow_output_sets_[MAX_FRAMES_IN_FLIGHT];
+        bool temporal_shadow_history_valid_ = false;
 
         /* Unified raymarching compute pipelines */
         VkPipeline gbuffer_compute_pipeline_;
         VkPipelineLayout gbuffer_compute_layout_;
-        VkDescriptorSetLayout gbuffer_compute_terrain_layout_;   /* Set 0: terrain data */
-        VkDescriptorSetLayout gbuffer_compute_vobj_layout_;      /* Set 1: voxel objects */
-        VkDescriptorSetLayout gbuffer_compute_output_layout_;    /* Set 2: G-buffer outputs */
+        VkDescriptorSetLayout gbuffer_compute_terrain_layout_; /* Set 0: terrain data */
+        VkDescriptorSetLayout gbuffer_compute_vobj_layout_;    /* Set 1: voxel objects */
+        VkDescriptorSetLayout gbuffer_compute_output_layout_;  /* Set 2: G-buffer outputs */
         VkDescriptorPool gbuffer_compute_descriptor_pool_;
         VkDescriptorSet gbuffer_compute_terrain_sets_[MAX_FRAMES_IN_FLIGHT];
         VkDescriptorSet gbuffer_compute_vobj_sets_[MAX_FRAMES_IN_FLIGHT];
@@ -352,9 +359,9 @@ namespace patch
 
         VkPipeline shadow_compute_pipeline_;
         VkPipelineLayout shadow_compute_layout_;
-        VkDescriptorSetLayout shadow_compute_input_layout_;      /* Set 0: chunk headers + shadow vol */
-        VkDescriptorSetLayout shadow_compute_gbuffer_layout_;    /* Set 1: G-buffer depth/normal */
-        VkDescriptorSetLayout shadow_compute_output_layout_;     /* Set 2: shadow output */
+        VkDescriptorSetLayout shadow_compute_input_layout_;   /* Set 0: chunk headers + shadow vol */
+        VkDescriptorSetLayout shadow_compute_gbuffer_layout_; /* Set 1: G-buffer depth/normal */
+        VkDescriptorSetLayout shadow_compute_output_layout_;  /* Set 2: shadow output */
         VkDescriptorPool shadow_compute_descriptor_pool_;
         VkDescriptorSet shadow_compute_input_sets_[MAX_FRAMES_IN_FLIGHT];
         VkDescriptorSet shadow_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT];
@@ -365,16 +372,15 @@ namespace patch
         VkDeviceMemory shadow_output_memory_;
         VkImageView shadow_output_view_;
 
-        bool compute_raymarching_enabled_ = true;  /* Use compute path when available */
+        bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
-        bool gbuffer_compute_dispatched_ = false;  /* Set when compute fills gbuffer this frame */
+        bool gbuffer_compute_dispatched_ = false; /* Set when compute fills gbuffer this frame */
 
     public:
         void set_compute_raymarching_enabled(bool enabled) { compute_raymarching_enabled_ = enabled; }
         bool is_compute_raymarching_enabled() const { return compute_raymarching_enabled_ && compute_resources_initialized_; }
 
     private:
-
         /* History buffers for temporal accumulation (ping-pong) */
         VkImage history_images_[2];
         VkDeviceMemory history_image_memory_[2];
@@ -396,7 +402,7 @@ namespace patch
         VkImageView gbuffer_views_[GBUFFER_COUNT];
         VkSampler gbuffer_sampler_;
         VkRenderPass gbuffer_render_pass_;
-        VkRenderPass gbuffer_render_pass_load_;  /* Uses LOAD_OP_LOAD for post-compute */
+        VkRenderPass gbuffer_render_pass_load_; /* Uses LOAD_OP_LOAD for post-compute */
         VkFramebuffer gbuffer_framebuffer_;
         VkDescriptorSetLayout gbuffer_descriptor_layout_;
         VkDescriptorPool gbuffer_descriptor_pool_;
@@ -500,6 +506,7 @@ namespace patch
         bool create_deferred_lighting_pipeline();
         bool create_gbuffer_descriptor_sets();
         bool create_deferred_lighting_descriptor_sets();
+        void update_deferred_shadow_buffer_descriptor(uint32_t frame_index, VkImageView shadow_view);
         void destroy_gbuffer_resources();
         bool init_deferred_pipeline();
         bool init_deferred_descriptors();
@@ -530,9 +537,13 @@ namespace patch
         bool create_shadow_compute_descriptor_sets();
         void update_shadow_volume_descriptor();
         bool create_shadow_output_resources();
+        bool create_shadow_history_resources();
+        bool create_temporal_shadow_pipeline();
+        bool create_temporal_shadow_descriptor_sets();
         void destroy_compute_raymarching_resources();
         void dispatch_gbuffer_compute(const VoxelVolume *vol);
         void dispatch_shadow_compute();
+        void dispatch_temporal_shadow_resolve();
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

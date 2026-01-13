@@ -14,6 +14,7 @@ layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_material;
 layout(location = 3) out float out_linear_depth;
+layout(location = 4) out vec2 out_motion_vector;
 
 PUSH_CONSTANT uniform Constants {
     mat4 inv_view;
@@ -365,6 +366,7 @@ void main() {
         out_normal = vec4(0.5, 0.5, 1.0, 1.0);
         out_material = vec4(0.5, 0.0, 0.0, 0.0);
         out_linear_depth = 10.0;
+        out_motion_vector = vec2(0.0);
         gl_FragDepth = 0.5;
         return;
     }
@@ -376,6 +378,7 @@ void main() {
         out_normal = vec4(0.5, 0.5, 1.0, 1.0);
         out_material = vec4(0.5, 0.0, 0.0, 0.0);
         out_linear_depth = 10.0;
+        out_motion_vector = vec2(0.0);
         gl_FragDepth = 0.5;
         return;
     }
@@ -399,6 +402,11 @@ void main() {
     out_normal = vec4(hit.normal * 0.5 + 0.5, 1.0);
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
     out_linear_depth = hit.t;
+
+    vec3 world_pos = ray_origin + ray_world * hit.t;
+    vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
+    vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+    out_motion_vector = prev_uv - in_uv;
 
     gl_FragDepth = clamp(camera_linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
 }

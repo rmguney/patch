@@ -1,0 +1,94 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Constants {
+    mat4 inv_view;
+    mat4 inv_projection;
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float chunk_size;
+    vec3 camera_pos;
+    float pad1;
+    ivec3 grid_size;
+    int total_chunks;
+    ivec3 chunks_dim;
+    int frame_count;
+    int rt_quality;
+    int debug_mode;
+    int is_orthographic;
+    int max_steps;
+    float near_plane;
+    float far_plane;
+    int reserved[5];
+} pc;
+
+/* Set 0: inputs */
+layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
+layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
+layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
+layout(SET_BINDING(0, 3)) uniform sampler2D shadow_current;
+layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
+
+/* Set 1: output */
+layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
+
+const float HISTORY_BLEND = 0.9;
+const float NORMAL_REJECT_COS = 0.9;
+const float DEPTH_REJECT_BASE = 0.5;
+const float DEPTH_REJECT_REL = 0.02;
+
+vec3 decode_normal(vec4 enc)
+{
+    return normalize(enc.xyz * 2.0 - 1.0);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_shadow_resolved);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
+
+    float current_shadow = texelFetch(shadow_current, pixel, 0).r;
+
+    int history_valid = pc.reserved[0];
+    if (history_valid == 0)
+    {
+        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    vec2 motion = texture(gbuffer_motion_vector, uv).xy;
+    vec2 prev_uv = uv + motion;
+
+    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0))))
+    {
+        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    float depth_curr = texture(gbuffer_linear_depth, uv).r;
+    float depth_prev = texture(gbuffer_linear_depth, prev_uv).r;
+
+    vec3 n_curr = decode_normal(texture(gbuffer_normal, uv));
+    vec3 n_prev = decode_normal(texture(gbuffer_normal, prev_uv));
+
+    float depth_thresh = max(DEPTH_REJECT_BASE, depth_curr * DEPTH_REJECT_REL);
+    bool reject = abs(depth_prev - depth_curr) > depth_thresh;
+    reject = reject || (dot(n_prev, n_curr) < NORMAL_REJECT_COS);
+
+    float history_shadow = texture(shadow_history, prev_uv).r;
+    float resolved = reject ? current_shadow : mix(current_shadow, history_shadow, HISTORY_BLEND);
+
+    imageStore(out_shadow_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
+}

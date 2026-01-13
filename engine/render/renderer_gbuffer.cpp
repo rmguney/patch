@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "voxel_push_constants.h"
 #include "shaders_embedded.h"
+#include "engine/core/profile.h"
 #include <cstring>
 #include <cstdio>
 
@@ -11,8 +12,7 @@ namespace patch
         VK_FORMAT_R8G8B8A8_UNORM,
         VK_FORMAT_A2B10G10R10_UNORM_PACK32,
         VK_FORMAT_R8G8B8A8_UNORM,
-        VK_FORMAT_R32_SFLOAT
-    };
+        VK_FORMAT_R32_SFLOAT};
 
     bool Renderer::create_gbuffer_resources()
     {
@@ -104,17 +104,18 @@ namespace patch
             return false;
         }
 
-        VkImageView fb_attachments[5] = {
+        VkImageView fb_attachments[6] = {
             gbuffer_views_[GBUFFER_ALBEDO],
             gbuffer_views_[GBUFFER_NORMAL],
             gbuffer_views_[GBUFFER_MATERIAL],
             gbuffer_views_[GBUFFER_LINEAR_DEPTH],
+            motion_vector_view_,
             depth_image_view_};
 
         VkFramebufferCreateInfo fb_info{};
         fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fb_info.renderPass = gbuffer_render_pass_;
-        fb_info.attachmentCount = 5;
+        fb_info.attachmentCount = 6;
         fb_info.pAttachments = fb_attachments;
         fb_info.width = swapchain_extent_.width;
         fb_info.height = swapchain_extent_.height;
@@ -133,7 +134,7 @@ namespace patch
 
     bool Renderer::create_gbuffer_render_pass()
     {
-        VkAttachmentDescription attachments[5]{};
+        VkAttachmentDescription attachments[6]{};
 
         attachments[0].format = GBUFFER_FORMATS[GBUFFER_ALBEDO];
         attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -171,26 +172,37 @@ namespace patch
         attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        attachments[4].format = VK_FORMAT_D32_SFLOAT;
+        /* Motion vectors (RG16F) */
+        attachments[4].format = VK_FORMAT_R16G16_SFLOAT;
         attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
         attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachments[4].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[4].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[4].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments[4].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkAttachmentReference color_refs[4] = {
+        attachments[5].format = VK_FORMAT_D32_SFLOAT;
+        attachments[5].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[5].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[5].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[5].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[5].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[5].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference color_refs[5] = {
             {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
             {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
             {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-            {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+            {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
 
-        VkAttachmentReference depth_ref{4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depth_ref{5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 4;
+        subpass.colorAttachmentCount = 5;
         subpass.pColorAttachments = color_refs;
         subpass.pDepthStencilAttachment = &depth_ref;
 
@@ -212,7 +224,7 @@ namespace patch
 
         VkRenderPassCreateInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp_info.attachmentCount = 5;
+        rp_info.attachmentCount = 6;
         rp_info.pAttachments = attachments;
         rp_info.subpassCount = 1;
         rp_info.pSubpasses = &subpass;
@@ -226,13 +238,13 @@ namespace patch
         }
 
         /* Create load render pass for post-compute (preserves compute results) */
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 5; i++)
         {
             attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             attachments[i].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
-        attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; /* Still clear depth for voxel objects */
-        attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; /* Still clear depth for voxel objects */
+        attachments[5].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_) != VK_SUCCESS)
         {
@@ -382,8 +394,8 @@ namespace patch
         depth_stencil.depthWriteEnable = VK_TRUE;
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        VkPipelineColorBlendAttachmentState blend_attachments[4]{};
-        for (int i = 0; i < 4; i++)
+        VkPipelineColorBlendAttachmentState blend_attachments[5]{};
+        for (int i = 0; i < 5; i++)
         {
             blend_attachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -392,7 +404,7 @@ namespace patch
 
         VkPipelineColorBlendStateCreateInfo color_blending{};
         color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blending.attachmentCount = 4;
+        color_blending.attachmentCount = 5;
         color_blending.pAttachments = blend_attachments;
 
         VkGraphicsPipelineCreateInfo pipeline_info{};
@@ -1102,7 +1114,7 @@ namespace patch
         image_info.format = VK_FORMAT_R16G16_SFLOAT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
         image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
         if (vkCreateImage(device_, &image_info, nullptr, &motion_vector_image_) != VK_SUCCESS)
@@ -1366,17 +1378,39 @@ namespace patch
         return true;
     }
 
+    void Renderer::update_deferred_shadow_buffer_descriptor(uint32_t frame_index, VkImageView shadow_view)
+    {
+        if (!gbuffer_initialized_ || !deferred_lighting_descriptor_pool_ || frame_index >= MAX_FRAMES_IN_FLIGHT)
+            return;
+
+        VkDescriptorImageInfo shadow_buffer_info{};
+        shadow_buffer_info.sampler = gbuffer_sampler_;
+        shadow_buffer_info.imageView = shadow_view ? shadow_view : (shadow_output_view_ ? shadow_output_view_ : gbuffer_views_[0]);
+        shadow_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = deferred_lighting_descriptor_sets_[frame_index];
+        write.dstBinding = 5; /* shadow buffer */
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &shadow_buffer_info;
+
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
     void Renderer::begin_gbuffer_pass()
     {
         if (!gbuffer_initialized_)
             return;
 
-        VkClearValue clear_values[5]{};
+        VkClearValue clear_values[6]{};
         clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[1].color = {{0.5f, 0.5f, 0.5f, 0.0f}};
         clear_values[2].color = {{1.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[3].color = {{1000.0f, 0.0f, 0.0f, 0.0f}};
-        clear_values[4].depthStencil = {1.0f, 0};
+        clear_values[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        clear_values[5].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1385,7 +1419,7 @@ namespace patch
         rp_info.framebuffer = gbuffer_framebuffer_;
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = swapchain_extent_;
-        rp_info.clearValueCount = 5;
+        rp_info.clearValueCount = 6;
         rp_info.pClearValues = clear_values;
 
         vkCmdBeginRenderPass(command_buffers_[current_frame_], &rp_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -1414,7 +1448,10 @@ namespace patch
         /* Dispatch shadow compute after gbuffer is complete (skip if no chunks to process) */
         if (compute_resources_initialized_ && shadow_compute_pipeline_ && deferred_total_chunks_ > 0)
         {
+            PROFILE_BEGIN(PROFILE_RENDER_SHADOW);
             dispatch_shadow_compute();
+            dispatch_temporal_shadow_resolve();
+            PROFILE_END(PROFILE_RENDER_SHADOW);
         }
         gbuffer_compute_dispatched_ = false;
     }
@@ -1512,7 +1549,7 @@ namespace patch
             return;
 
         VkClearValue clear_values[2]{};
-        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}};  /* Light pastel baby blue */
+        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}}; /* Light pastel baby blue */
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};
@@ -1586,6 +1623,12 @@ namespace patch
     {
         printf("Initializing deferred rendering pipeline...\n");
 
+        if (!create_motion_vector_resources())
+        {
+            fprintf(stderr, "Failed to create motion vector resources\n");
+            return false;
+        }
+
         if (!create_gbuffer_resources())
         {
             fprintf(stderr, "Failed to create G-buffer resources\n");
@@ -1601,12 +1644,6 @@ namespace patch
         if (!create_deferred_lighting_pipeline())
         {
             fprintf(stderr, "Failed to create deferred lighting pipeline\n");
-            return false;
-        }
-
-        if (!create_motion_vector_resources())
-        {
-            fprintf(stderr, "Failed to create motion vector resources\n");
             return false;
         }
 

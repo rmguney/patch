@@ -414,8 +414,8 @@ namespace patch
         depth_stencil.depthWriteEnable = VK_TRUE;
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        VkPipelineColorBlendAttachmentState blend_attachments[4]{};
-        for (int i = 0; i < 4; i++)
+        VkPipelineColorBlendAttachmentState blend_attachments[5]{};
+        for (int i = 0; i < 5; i++)
         {
             blend_attachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -424,7 +424,7 @@ namespace patch
 
         VkPipelineColorBlendStateCreateInfo color_blending{};
         color_blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blending.attachmentCount = 4;
+        color_blending.attachmentCount = 5;
         color_blending.pAttachments = blend_attachments;
 
         VkGraphicsPipelineCreateInfo pipeline_info{};

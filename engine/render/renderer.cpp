@@ -7,7 +7,7 @@ namespace patch
 {
 
     Renderer::Renderer(Window &window)
-        : window_(window), instance_(VK_NULL_HANDLE), physical_device_(VK_NULL_HANDLE), device_(VK_NULL_HANDLE), graphics_queue_(VK_NULL_HANDLE), present_queue_(VK_NULL_HANDLE), graphics_family_(UINT32_MAX), present_family_(UINT32_MAX), surface_(VK_NULL_HANDLE), swapchain_(VK_NULL_HANDLE), swapchain_format_(VK_FORMAT_UNDEFINED), swapchain_extent_{}, render_pass_(VK_NULL_HANDLE), pipeline_layout_(VK_NULL_HANDLE), ui_pipeline_(VK_NULL_HANDLE), camera_target_(vec3_zero()), prev_camera_target_(vec3_zero()), camera_initialized_(false), command_pool_(VK_NULL_HANDLE), current_frame_(0), depth_image_(VK_NULL_HANDLE), depth_image_memory_(VK_NULL_HANDLE), depth_image_view_(VK_NULL_HANDLE), depth_sampler_(VK_NULL_HANDLE), view_matrix_(mat4_identity()), projection_matrix_(mat4_identity()), prev_view_matrix_(mat4_identity()), prev_projection_matrix_(mat4_identity()), ortho_base_width_(0.0f), ortho_base_height_(0.0f), ortho_base_depth_(0.0f), ortho_half_width_(0.0f), ortho_half_height_(0.0f), projection_mode_(ProjectionMode::Orthographic), perspective_fov_y_degrees_(60.0f), perspective_near_(0.1f), perspective_far_(200.0f), camera_position_(vec3_zero()), init_error_(nullptr), material_count_(0), voxel_descriptor_layout_(VK_NULL_HANDLE), voxel_descriptor_pool_(VK_NULL_HANDLE), voxel_data_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_headers_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_material_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_total_chunks_(0), voxel_resources_initialized_(false), rt_supported_(false), rt_quality_(0), temporal_compute_pipeline_(VK_NULL_HANDLE), temporal_compute_layout_(VK_NULL_HANDLE), history_images_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_memory_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_views_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_write_index_(0), last_bound_pipeline_(VK_NULL_HANDLE), last_bound_descriptor_set_(VK_NULL_HANDLE), gbuffer_sampler_(VK_NULL_HANDLE), gbuffer_render_pass_(VK_NULL_HANDLE), gbuffer_framebuffer_(VK_NULL_HANDLE), gbuffer_descriptor_layout_(VK_NULL_HANDLE), gbuffer_descriptor_pool_(VK_NULL_HANDLE), gbuffer_pipeline_(VK_NULL_HANDLE), gbuffer_pipeline_layout_(VK_NULL_HANDLE), deferred_lighting_pipeline_(VK_NULL_HANDLE), deferred_lighting_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_pool_(VK_NULL_HANDLE), shadow_volume_image_(VK_NULL_HANDLE), shadow_volume_memory_(VK_NULL_HANDLE), shadow_volume_view_(VK_NULL_HANDLE), shadow_volume_sampler_(VK_NULL_HANDLE), blue_noise_image_(VK_NULL_HANDLE), blue_noise_memory_(VK_NULL_HANDLE), blue_noise_view_(VK_NULL_HANDLE), blue_noise_sampler_(VK_NULL_HANDLE), motion_vector_image_(VK_NULL_HANDLE), motion_vector_memory_(VK_NULL_HANDLE), motion_vector_view_(VK_NULL_HANDLE), gbuffer_initialized_(false), timestamp_query_pool_(VK_NULL_HANDLE), timestamp_period_ns_(0.0f), timestamps_supported_(false)
+        : window_(window), instance_(VK_NULL_HANDLE), physical_device_(VK_NULL_HANDLE), device_(VK_NULL_HANDLE), graphics_queue_(VK_NULL_HANDLE), present_queue_(VK_NULL_HANDLE), graphics_family_(UINT32_MAX), present_family_(UINT32_MAX), surface_(VK_NULL_HANDLE), swapchain_(VK_NULL_HANDLE), swapchain_format_(VK_FORMAT_UNDEFINED), swapchain_extent_{}, render_pass_(VK_NULL_HANDLE), pipeline_layout_(VK_NULL_HANDLE), ui_pipeline_(VK_NULL_HANDLE), camera_target_(vec3_zero()), prev_camera_target_(vec3_zero()), camera_initialized_(false), command_pool_(VK_NULL_HANDLE), current_frame_(0), depth_image_(VK_NULL_HANDLE), depth_image_memory_(VK_NULL_HANDLE), depth_image_view_(VK_NULL_HANDLE), depth_sampler_(VK_NULL_HANDLE), view_matrix_(mat4_identity()), projection_matrix_(mat4_identity()), prev_view_matrix_(mat4_identity()), prev_projection_matrix_(mat4_identity()), ortho_base_width_(0.0f), ortho_base_height_(0.0f), ortho_base_depth_(0.0f), ortho_half_width_(0.0f), ortho_half_height_(0.0f), projection_mode_(ProjectionMode::Orthographic), perspective_fov_y_degrees_(60.0f), perspective_near_(0.1f), perspective_far_(200.0f), camera_position_(vec3_zero()), init_error_(nullptr), material_count_(0), voxel_descriptor_layout_(VK_NULL_HANDLE), voxel_descriptor_pool_(VK_NULL_HANDLE), voxel_data_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_headers_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_material_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_total_chunks_(0), voxel_resources_initialized_(false), rt_supported_(false), rt_quality_(0), temporal_compute_pipeline_(VK_NULL_HANDLE), temporal_compute_layout_(VK_NULL_HANDLE), temporal_shadow_input_layout_(VK_NULL_HANDLE), temporal_shadow_output_layout_(VK_NULL_HANDLE), temporal_shadow_descriptor_pool_(VK_NULL_HANDLE), history_images_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_memory_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_views_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_write_index_(0), last_bound_pipeline_(VK_NULL_HANDLE), last_bound_descriptor_set_(VK_NULL_HANDLE), gbuffer_sampler_(VK_NULL_HANDLE), gbuffer_render_pass_(VK_NULL_HANDLE), gbuffer_framebuffer_(VK_NULL_HANDLE), gbuffer_descriptor_layout_(VK_NULL_HANDLE), gbuffer_descriptor_pool_(VK_NULL_HANDLE), gbuffer_pipeline_(VK_NULL_HANDLE), gbuffer_pipeline_layout_(VK_NULL_HANDLE), deferred_lighting_pipeline_(VK_NULL_HANDLE), deferred_lighting_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_pool_(VK_NULL_HANDLE), shadow_volume_image_(VK_NULL_HANDLE), shadow_volume_memory_(VK_NULL_HANDLE), shadow_volume_view_(VK_NULL_HANDLE), shadow_volume_sampler_(VK_NULL_HANDLE), blue_noise_image_(VK_NULL_HANDLE), blue_noise_memory_(VK_NULL_HANDLE), blue_noise_view_(VK_NULL_HANDLE), blue_noise_sampler_(VK_NULL_HANDLE), motion_vector_image_(VK_NULL_HANDLE), motion_vector_memory_(VK_NULL_HANDLE), motion_vector_view_(VK_NULL_HANDLE), gbuffer_initialized_(false), timestamp_query_pool_(VK_NULL_HANDLE), timestamp_period_ns_(0.0f), timestamps_supported_(false)
     {
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
@@ -18,6 +18,8 @@ namespace patch
             voxel_temporal_ubo_[i].memory = VK_NULL_HANDLE;
             gbuffer_descriptor_sets_[i] = VK_NULL_HANDLE;
             deferred_lighting_descriptor_sets_[i] = VK_NULL_HANDLE;
+            temporal_shadow_input_sets_[i] = VK_NULL_HANDLE;
+            temporal_shadow_output_sets_[i] = VK_NULL_HANDLE;
         }
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -234,6 +236,12 @@ namespace patch
                 vkDestroyPipeline(device_, temporal_compute_pipeline_, nullptr);
             if (temporal_compute_layout_)
                 vkDestroyPipelineLayout(device_, temporal_compute_layout_, nullptr);
+            if (temporal_shadow_descriptor_pool_)
+                vkDestroyDescriptorPool(device_, temporal_shadow_descriptor_pool_, nullptr);
+            if (temporal_shadow_input_layout_)
+                vkDestroyDescriptorSetLayout(device_, temporal_shadow_input_layout_, nullptr);
+            if (temporal_shadow_output_layout_)
+                vkDestroyDescriptorSetLayout(device_, temporal_shadow_output_layout_, nullptr);
 
             destroy_timestamp_query_pool();
             destroy_gbuffer_resources();
@@ -378,7 +386,7 @@ namespace patch
         }
 
         VkClearValue clear_values[2];
-        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}};  /* Light pastel baby blue */
+        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}}; /* Light pastel baby blue */
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo render_pass_info{};

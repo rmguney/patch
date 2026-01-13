@@ -223,9 +223,9 @@ namespace patch
         depth_stencil.depthWriteEnable = VK_TRUE;
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        // G-buffer has 4 color attachments
-        VkPipelineColorBlendAttachmentState blend_attachments[4] = {};
-        for (int i = 0; i < 4; i++)
+        // G-buffer has 5 color attachments
+        VkPipelineColorBlendAttachmentState blend_attachments[5] = {};
+        for (int i = 0; i < 5; i++)
         {
             blend_attachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -234,7 +234,7 @@ namespace patch
 
         VkPipelineColorBlendStateCreateInfo color_blend{};
         color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend.attachmentCount = 4;
+        color_blend.attachmentCount = 5;
         color_blend.pAttachments = blend_attachments;
 
         VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};

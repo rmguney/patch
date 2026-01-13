@@ -17,6 +17,12 @@ namespace patch
             return false;
         }
 
+        if (!create_shadow_history_resources())
+        {
+            fprintf(stderr, "Failed to create shadow history resources\n");
+            return false;
+        }
+
         if (!create_gbuffer_compute_pipeline())
         {
             fprintf(stderr, "Failed to create G-buffer compute pipeline\n");
@@ -29,8 +35,294 @@ namespace patch
             return false;
         }
 
+        if (!create_temporal_shadow_pipeline())
+        {
+            fprintf(stderr, "Failed to create temporal shadow pipeline\n");
+            return false;
+        }
+
+        if (!create_temporal_shadow_descriptor_sets())
+        {
+            fprintf(stderr, "Failed to create temporal shadow descriptor sets\n");
+            return false;
+        }
+
+        history_write_index_ = 0;
+        temporal_shadow_history_valid_ = false;
+
         compute_resources_initialized_ = true;
         printf("  Compute raymarching pipelines initialized\n");
+        return true;
+    }
+
+    bool Renderer::create_shadow_history_resources()
+    {
+        for (int i = 0; i < 2; i++)
+        {
+            if (history_images_[i] || history_image_views_[i] || history_image_memory_[i])
+                continue;
+
+            VkImageCreateInfo image_info{};
+            image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+            image_info.imageType = VK_IMAGE_TYPE_2D;
+            image_info.extent.width = swapchain_extent_.width;
+            image_info.extent.height = swapchain_extent_.height;
+            image_info.extent.depth = 1;
+            image_info.mipLevels = 1;
+            image_info.arrayLayers = 1;
+            image_info.format = VK_FORMAT_R8_UNORM;
+            image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+            image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+
+            if (vkCreateImage(device_, &image_info, nullptr, &history_images_[i]) != VK_SUCCESS)
+            {
+                fprintf(stderr, "Failed to create shadow history image %d\n", i);
+                return false;
+            }
+
+            VkMemoryRequirements mem_reqs;
+            vkGetImageMemoryRequirements(device_, history_images_[i], &mem_reqs);
+
+            VkMemoryAllocateInfo alloc_info{};
+            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            alloc_info.allocationSize = mem_reqs.size;
+            alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+            if (vkAllocateMemory(device_, &alloc_info, nullptr, &history_image_memory_[i]) != VK_SUCCESS)
+            {
+                fprintf(stderr, "Failed to allocate shadow history memory %d\n", i);
+                return false;
+            }
+
+            vkBindImageMemory(device_, history_images_[i], history_image_memory_[i], 0);
+
+            VkImageViewCreateInfo view_info{};
+            view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            view_info.image = history_images_[i];
+            view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view_info.format = VK_FORMAT_R8_UNORM;
+            view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            view_info.subresourceRange.baseMipLevel = 0;
+            view_info.subresourceRange.levelCount = 1;
+            view_info.subresourceRange.baseArrayLayer = 0;
+            view_info.subresourceRange.layerCount = 1;
+
+            if (vkCreateImageView(device_, &view_info, nullptr, &history_image_views_[i]) != VK_SUCCESS)
+            {
+                fprintf(stderr, "Failed to create shadow history view %d\n", i);
+                return false;
+            }
+        }
+
+        printf("  Shadow history buffers created: %ux%u\n", swapchain_extent_.width, swapchain_extent_.height);
+        return true;
+    }
+
+    bool Renderer::create_temporal_shadow_pipeline()
+    {
+        /* Set 0: G-buffer samplers + current/history shadow */
+        VkDescriptorSetLayoutBinding input_bindings[5]{};
+        for (uint32_t b = 0; b < 5; b++)
+        {
+            input_bindings[b].binding = b;
+            input_bindings[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_bindings[b].descriptorCount = 1;
+            input_bindings[b].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+
+        VkDescriptorSetLayoutCreateInfo input_layout_info{};
+        input_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        input_layout_info.bindingCount = 5;
+        input_layout_info.pBindings = input_bindings;
+
+        if (vkCreateDescriptorSetLayout(device_, &input_layout_info, nullptr, &temporal_shadow_input_layout_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create temporal shadow input layout\n");
+            return false;
+        }
+
+        /* Set 1: resolved shadow output */
+        VkDescriptorSetLayoutBinding output_binding{};
+        output_binding.binding = 0;
+        output_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        output_binding.descriptorCount = 1;
+        output_binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo output_layout_info{};
+        output_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        output_layout_info.bindingCount = 1;
+        output_layout_info.pBindings = &output_binding;
+
+        if (vkCreateDescriptorSetLayout(device_, &output_layout_info, nullptr, &temporal_shadow_output_layout_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create temporal shadow output layout\n");
+            return false;
+        }
+
+        VkDescriptorSetLayout set_layouts[2] = {temporal_shadow_input_layout_, temporal_shadow_output_layout_};
+
+        VkPushConstantRange push_range{};
+        push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push_range.offset = 0;
+        push_range.size = 256;
+
+        VkPipelineLayoutCreateInfo layout_info{};
+        layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount = 2;
+        layout_info.pSetLayouts = set_layouts;
+        layout_info.pushConstantRangeCount = 1;
+        layout_info.pPushConstantRanges = &push_range;
+
+        if (vkCreatePipelineLayout(device_, &layout_info, nullptr, &temporal_compute_layout_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create temporal shadow pipeline layout\n");
+            return false;
+        }
+
+        if (!create_compute_pipeline(
+                shaders::k_shader_temporal_shadow_comp_spv,
+                shaders::k_shader_temporal_shadow_comp_spv_size,
+                temporal_compute_layout_,
+                &temporal_compute_pipeline_))
+        {
+            fprintf(stderr, "Failed to create temporal shadow compute pipeline\n");
+            return false;
+        }
+
+        printf("  Temporal shadow pipeline created\n");
+        return true;
+    }
+
+    bool Renderer::create_temporal_shadow_descriptor_sets()
+    {
+        VkDescriptorPoolSize pool_sizes[2]{};
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 5;
+        pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+
+        VkDescriptorPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.poolSizeCount = 2;
+        pool_info.pPoolSizes = pool_sizes;
+        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 2;
+
+        if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &temporal_shadow_descriptor_pool_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create temporal shadow descriptor pool\n");
+            return false;
+        }
+
+        VkDescriptorSetLayout input_layouts[MAX_FRAMES_IN_FLIGHT];
+        VkDescriptorSetLayout output_layouts[MAX_FRAMES_IN_FLIGHT];
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            input_layouts[i] = temporal_shadow_input_layout_;
+            output_layouts[i] = temporal_shadow_output_layout_;
+        }
+
+        VkDescriptorSetAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = temporal_shadow_descriptor_pool_;
+        alloc_info.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+
+        alloc_info.pSetLayouts = input_layouts;
+        if (vkAllocateDescriptorSets(device_, &alloc_info, temporal_shadow_input_sets_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to allocate temporal shadow input sets\n");
+            return false;
+        }
+
+        alloc_info.pSetLayouts = output_layouts;
+        if (vkAllocateDescriptorSets(device_, &alloc_info, temporal_shadow_output_sets_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to allocate temporal shadow output sets\n");
+            return false;
+        }
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorImageInfo depth_info{};
+            depth_info.sampler = gbuffer_sampler_;
+            depth_info.imageView = gbuffer_views_[GBUFFER_LINEAR_DEPTH];
+            depth_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo normal_info{};
+            normal_info.sampler = gbuffer_sampler_;
+            normal_info.imageView = gbuffer_views_[GBUFFER_NORMAL];
+            normal_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo motion_info{};
+            motion_info.sampler = gbuffer_sampler_;
+            motion_info.imageView = motion_vector_view_ ? motion_vector_view_ : gbuffer_views_[0];
+            motion_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo shadow_current_info{};
+            shadow_current_info.sampler = gbuffer_sampler_;
+            shadow_current_info.imageView = shadow_output_view_ ? shadow_output_view_ : gbuffer_views_[0];
+            shadow_current_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkDescriptorImageInfo shadow_history_info{};
+            shadow_history_info.sampler = gbuffer_sampler_;
+            shadow_history_info.imageView = history_image_views_[0] ? history_image_views_[0] : gbuffer_views_[0];
+            shadow_history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet input_writes[5]{};
+            input_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[0].dstSet = temporal_shadow_input_sets_[i];
+            input_writes[0].dstBinding = 0;
+            input_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[0].descriptorCount = 1;
+            input_writes[0].pImageInfo = &depth_info;
+
+            input_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[1].dstSet = temporal_shadow_input_sets_[i];
+            input_writes[1].dstBinding = 1;
+            input_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[1].descriptorCount = 1;
+            input_writes[1].pImageInfo = &normal_info;
+
+            input_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[2].dstSet = temporal_shadow_input_sets_[i];
+            input_writes[2].dstBinding = 2;
+            input_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[2].descriptorCount = 1;
+            input_writes[2].pImageInfo = &motion_info;
+
+            input_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[3].dstSet = temporal_shadow_input_sets_[i];
+            input_writes[3].dstBinding = 3;
+            input_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[3].descriptorCount = 1;
+            input_writes[3].pImageInfo = &shadow_current_info;
+
+            input_writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[4].dstSet = temporal_shadow_input_sets_[i];
+            input_writes[4].dstBinding = 4;
+            input_writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            input_writes[4].descriptorCount = 1;
+            input_writes[4].pImageInfo = &shadow_history_info;
+
+            vkUpdateDescriptorSets(device_, 5, input_writes, 0, nullptr);
+
+            VkDescriptorImageInfo out_info{};
+            out_info.imageView = history_image_views_[0] ? history_image_views_[0] : shadow_output_view_;
+            out_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+            VkWriteDescriptorSet output_write{};
+            output_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            output_write.dstSet = temporal_shadow_output_sets_[i];
+            output_write.dstBinding = 0;
+            output_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            output_write.descriptorCount = 1;
+            output_write.pImageInfo = &out_info;
+
+            vkUpdateDescriptorSets(device_, 1, &output_write, 0, nullptr);
+        }
+
+        printf("  Temporal shadow descriptor sets created\n");
         return true;
     }
 
@@ -926,8 +1218,110 @@ namespace patch
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+
+    void Renderer::dispatch_temporal_shadow_resolve()
+    {
+        if (!compute_resources_initialized_ || !temporal_compute_pipeline_ || !history_image_views_[0] || !history_image_views_[1])
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        const int write_index = history_write_index_ & 1;
+        const int read_index = 1 - write_index;
+
+        /* Transition write history image to GENERAL for compute write */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = history_images_[write_index];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Update history descriptors for this frame */
+        VkDescriptorImageInfo shadow_history_info{};
+        shadow_history_info.sampler = gbuffer_sampler_;
+        shadow_history_info.imageView = history_image_views_[read_index];
+        shadow_history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet history_write{};
+        history_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        history_write.dstSet = temporal_shadow_input_sets_[current_frame_];
+        history_write.dstBinding = 4;
+        history_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        history_write.descriptorCount = 1;
+        history_write.pImageInfo = &shadow_history_info;
+
+        VkDescriptorImageInfo out_info{};
+        out_info.imageView = history_image_views_[write_index];
+        out_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet out_write{};
+        out_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        out_write.dstSet = temporal_shadow_output_sets_[current_frame_];
+        out_write.dstBinding = 0;
+        out_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        out_write.descriptorCount = 1;
+        out_write.pImageInfo = &out_info;
+
+        VkWriteDescriptorSet writes[2] = {history_write, out_write};
+        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_compute_pipeline_);
+        VkDescriptorSet sets[2] = {temporal_shadow_input_sets_[current_frame_], temporal_shadow_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_compute_layout_, 0, 2, sets, 0, nullptr);
+
+        Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
+        Mat4 inv_proj = mat4_inverse(projection_matrix_);
+
+        VoxelPushConstants pc{};
+        pc.inv_view = inv_view;
+        pc.inv_projection = inv_proj;
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.rt_quality = rt_quality_;
+        pc.debug_mode = terrain_debug_mode_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
+        pc.reserved[0] = temporal_shadow_history_valid_ ? 1 : 0;
+
+        vkCmdPushConstants(cmd, temporal_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition resolved image to SHADER_READ_ONLY for lighting pass sampling */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Point deferred lighting at the resolved shadow image for this frame */
+        update_deferred_shadow_buffer_descriptor(current_frame_, history_image_views_[write_index]);
+
+        temporal_shadow_history_valid_ = true;
+        history_write_index_ = read_index;
     }
 
     void Renderer::destroy_compute_raymarching_resources()
