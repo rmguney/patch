@@ -84,9 +84,10 @@ layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
 layout(rgb10_a2, SET_BINDING(2, 1)) writeonly uniform image2D out_normal;
 layout(rgba8, SET_BINDING(2, 2)) writeonly uniform image2D out_material;
 layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
+layout(rg16f, SET_BINDING(2, 4)) writeonly uniform image2D out_motion_vector;
 
 const int DEFAULT_MAX_STEPS = 512;
-const int VOBJ_MAX_STEPS = 48;
+const int VOBJ_BASE_STEPS = 48;
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
@@ -248,9 +249,16 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
-    /* March all voxel objects and keep closest */
+    /* March all voxel objects and keep closest (with distance-based LOD) */
     for (int i = 0; i < pc.object_count; i++) {
-        HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, VOBJ_MAX_STEPS);
+        /* Calculate distance to object for LOD */
+        vec3 obj_pos = vobj_get_world_position(i);
+        float dist = length(obj_pos - pc.camera_pos);
+        
+        /* Distance-based LOD (no screen coverage in compute path) */
+        int max_steps = vobj_calc_distance_lod_steps(dist, pc.rt_quality, VOBJ_BASE_STEPS);
+        
+        HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
         if (obj_hit.hit && obj_hit.t < best_hit.t) {
             best_hit = obj_hit;
         }
@@ -269,11 +277,18 @@ void main() {
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
         imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));
+
+        /* Motion vectors for temporal effects */
+        vec2 curr_uv = (vec2(pixel) + 0.5) / vec2(screen_size);
+        vec4 prev_clip = prev_view_proj * vec4(best_hit.pos, 1.0);
+        vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+        imageStore(out_motion_vector, pixel, vec4(prev_uv - curr_uv, 0.0, 0.0));
     } else {
         /* Sky/miss - write transparent alpha so lighting shader knows */
         imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
         imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
         imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
+        imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
     }
 }

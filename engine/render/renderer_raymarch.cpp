@@ -151,9 +151,9 @@ namespace patch
             return false;
         }
 
-        /* Set 2: G-buffer output images (albedo, normal, material, depth) */
-        VkDescriptorSetLayoutBinding output_bindings[4]{};
-        for (int i = 0; i < 4; i++)
+        /* Set 2: G-buffer output images (albedo, normal, material, depth, motion_vector) */
+        VkDescriptorSetLayoutBinding output_bindings[5]{};
+        for (int i = 0; i < 5; i++)
         {
             output_bindings[i].binding = i;
             output_bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -163,7 +163,7 @@ namespace patch
 
         VkDescriptorSetLayoutCreateInfo output_layout_info{};
         output_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        output_layout_info.bindingCount = 4;
+        output_layout_info.bindingCount = 5;
         output_layout_info.pBindings = output_bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &output_layout_info, nullptr, &gbuffer_compute_output_layout_) != VK_SUCCESS)
@@ -340,7 +340,7 @@ namespace patch
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1; /* vobj atlas */
         pool_sizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        pool_sizes[3].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4; /* 4 G-buffer outputs */
+        pool_sizes[3].descriptorCount = MAX_FRAMES_IN_FLIGHT * 5; /* 5 G-buffer outputs (incl motion vector) */
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -478,16 +478,18 @@ namespace patch
                 vkUpdateDescriptorSets(device_, 2, vobj_writes, 0, nullptr);
             }
 
-            /* Set 2: G-buffer output images */
-            VkDescriptorImageInfo gbuffer_infos[4]{};
+            /* Set 2: G-buffer output images (albedo, normal, material, depth, motion_vector) */
+            VkDescriptorImageInfo gbuffer_infos[5]{};
             for (int g = 0; g < 4; g++)
             {
                 gbuffer_infos[g].imageView = gbuffer_views_[g];
                 gbuffer_infos[g].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             }
+            gbuffer_infos[4].imageView = motion_vector_view_;
+            gbuffer_infos[4].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-            VkWriteDescriptorSet output_writes[4]{};
-            for (int g = 0; g < 4; g++)
+            VkWriteDescriptorSet output_writes[5]{};
+            for (int g = 0; g < 5; g++)
             {
                 output_writes[g].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 output_writes[g].dstSet = gbuffer_compute_output_sets_[i];
@@ -497,7 +499,7 @@ namespace patch
                 output_writes[g].pImageInfo = &gbuffer_infos[g];
             }
 
-            vkUpdateDescriptorSets(device_, 4, output_writes, 0, nullptr);
+            vkUpdateDescriptorSets(device_, 5, output_writes, 0, nullptr);
         }
 
         printf("  G-buffer compute descriptor sets created\n");
@@ -721,7 +723,7 @@ namespace patch
         VkCommandBuffer cmd = command_buffers_[current_frame_];
 
         /* Transition G-buffer images to GENERAL for compute write */
-        VkImageMemoryBarrier barriers[4]{};
+        VkImageMemoryBarrier barriers[5]{};
         for (int i = 0; i < 4; i++)
         {
             barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -738,11 +740,25 @@ namespace patch
             barriers[i].srcAccessMask = 0;
             barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         }
+        /* Motion vector image barrier */
+        barriers[4].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[4].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[4].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[4].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[4].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[4].image = motion_vector_image_;
+        barriers[4].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[4].subresourceRange.baseMipLevel = 0;
+        barriers[4].subresourceRange.levelCount = 1;
+        barriers[4].subresourceRange.baseArrayLayer = 0;
+        barriers[4].subresourceRange.layerCount = 1;
+        barriers[4].srcAccessMask = 0;
+        barriers[4].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 4, barriers);
+                             0, 0, nullptr, 0, nullptr, 5, barriers);
 
         /* Bind pipeline and descriptor sets */
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gbuffer_compute_pipeline_);
@@ -806,11 +822,16 @@ namespace patch
             barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             barriers[i].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         }
+        /* Motion vector image transition */
+        barriers[4].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[4].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[4].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barriers[4].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 4, barriers);
+                             0, 0, nullptr, 0, nullptr, 5, barriers);
 
         gbuffer_compute_dispatched_ = true;
     }

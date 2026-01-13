@@ -765,7 +765,8 @@ namespace patch
             float near_plane;
             float far_plane;
             int32_t debug_mode;
-            int32_t pad2[3];
+            int32_t rt_quality;
+            int32_t pad2[2];
         } pc;
 
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
@@ -779,7 +780,8 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.debug_mode = terrain_debug_mode_;
-        pc.pad2[0] = pc.pad2[1] = pc.pad2[2] = 0;
+        pc.rt_quality = rt_quality_;
+        pc.pad2[0] = pc.pad2[1] = 0;
 
         vkCmdPushConstants(command_buffers_[current_frame_], vobj_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

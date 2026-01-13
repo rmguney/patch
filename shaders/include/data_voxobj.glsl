@@ -79,6 +79,59 @@ vec3 vobj_get_world_position(int object_idx) {
     return objects[object_idx].position.xyz;
 }
 
+/*
+ * Calculate LOD-adjusted max steps based on distance and rt_quality.
+ * 
+ * Distance thresholds (scaled by rt_quality 1-3):
+ *   Near:  < 40/60/80 units  -> full steps (48)
+ *   Mid:   < 80/120/160 units -> medium (32)
+ *   Far:   >= threshold      -> coarse (16)
+ */
+int vobj_calc_distance_lod_steps(float distance, int rt_quality, int base_steps) {
+    float quality_scale = float(max(rt_quality, 1));
+    float near_thresh = 40.0 * quality_scale;
+    float far_thresh = 80.0 * quality_scale;
+    
+    if (distance < near_thresh) {
+        return base_steps;           // Full detail
+    } else if (distance < far_thresh) {
+        return (base_steps * 2) / 3; // ~32 steps for base 48
+    } else {
+        return base_steps / 3;       // ~16 steps for base 48
+    }
+}
+
+/*
+ * Calculate LOD-adjusted max steps based on screen coverage.
+ * Large objects covering more screen need fewer steps (voxels span multiple pixels).
+ * 
+ * Coverage thresholds:
+ *   > 40% screen -> very coarse (16 steps)
+ *   > 20% screen -> coarse (24 steps)  
+ *   > 10% screen -> medium (32 steps)
+ *   <= 10%       -> full detail (base_steps)
+ */
+int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
+    if (coverage > 0.4) {
+        return base_steps / 3;       // ~16 steps
+    } else if (coverage > 0.2) {
+        return base_steps / 2;       // ~24 steps
+    } else if (coverage > 0.1) {
+        return (base_steps * 2) / 3; // ~32 steps
+    }
+    return base_steps;               // Full detail
+}
+
+/*
+ * Combined LOD: take minimum of distance and coverage LOD.
+ * This ensures large close objects get reduced steps.
+ */
+int vobj_calc_combined_lod_steps(float distance, float coverage, int rt_quality, int base_steps) {
+    int dist_steps = vobj_calc_distance_lod_steps(distance, rt_quality, base_steps);
+    int cov_steps = vobj_calc_coverage_lod_steps(coverage, base_steps);
+    return min(dist_steps, cov_steps);
+}
+
 HitInfo vobj_march_object(
     int object_idx,
     vec3 world_origin,
