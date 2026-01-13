@@ -64,6 +64,33 @@ namespace patch
         rt_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
+    void Renderer::set_adaptive_quality(bool enabled)
+    {
+        adaptive_quality_ = enabled;
+        if (enabled && rt_quality_ < 1)
+            rt_quality_ = 1; /* Minimum quality 1 when adaptive is on */
+        adaptive_cooldown_ = 0;
+    }
+
+    void Renderer::update_adaptive_quality(float frame_time_ms)
+    {
+        if (!adaptive_quality_)
+            return;
+        if (adaptive_cooldown_ > 0)
+        {
+            adaptive_cooldown_--;
+            return;
+        }
+
+        constexpr float HIGH_MS = 20.0f;
+
+        if (frame_time_ms > HIGH_MS && rt_quality_ > 1)
+        {
+            rt_quality_--;
+            adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
+        }
+    }
+
     bool Renderer::init()
     {
         gpu_name_[0] = '\0';

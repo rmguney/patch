@@ -174,6 +174,11 @@ namespace patch
         int get_rt_quality() const { return rt_quality_; }
         void set_rt_quality(int level);
 
+        /* Adaptive quality control */
+        void set_adaptive_quality(bool enabled);
+        bool get_adaptive_quality() const { return adaptive_quality_; }
+        void update_adaptive_quality(float frame_time_ms);
+
     public:
         enum class PresentMode
         {
@@ -332,6 +337,9 @@ namespace patch
 
         bool rt_supported_ = false;
         int rt_quality_ = 1;                 /* 0=Off, 1=Fair, 2=Good, 3=High */
+        bool adaptive_quality_ = true;       /* Dynamic quality adjustment (default on) */
+        int adaptive_cooldown_ = 0;          /* Frames until next quality change allowed */
+        static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
 

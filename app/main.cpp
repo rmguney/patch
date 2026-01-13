@@ -814,8 +814,11 @@ int patch_main(int argc, char *argv[])
         uint32_t image_index;
         renderer.begin_frame(&image_index);
 
-        /* Apply RT quality from settings */
-        renderer.set_rt_quality(app_ui_get_settings(&ui)->rt_quality);
+        /* Apply quality settings */
+        const AppSettings *settings = app_ui_get_settings(&ui);
+        renderer.set_adaptive_quality(settings->adaptive_quality != 0);
+        if (!settings->adaptive_quality)
+            renderer.set_rt_quality(settings->rt_quality);
 
         PROFILE_BEGIN(PROFILE_RENDER_TOTAL);
 
@@ -987,6 +990,9 @@ int patch_main(int argc, char *argv[])
 
         PROFILE_END(PROFILE_FRAME_TOTAL);
         PROFILE_FRAME_END();
+
+        /* Update adaptive quality based on frame time */
+        renderer.update_adaptive_quality(profile_get_avg_ms(PROFILE_FRAME_TOTAL));
 
 #ifdef PATCH_PROFILE
         float fps = profile_get_fps();

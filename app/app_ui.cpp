@@ -40,8 +40,13 @@ static void init_settings_menu(UIMenu *menu, const AppSettings *s)
                        s->max_spawns, 50, 1024, 50);
     ui_menu_add_slider(menu, "VOXEL SIZE (MM)", APP_ACTION_SETTING_VOXEL_SIZE,
                        s->voxel_size_mm, 50, 200, 10);
-    ui_menu_add_slider(menu, "RT QUALITY", APP_ACTION_SETTING_RT_QUALITY,
-                       s->rt_quality, 0, 3, 1); /* 0=Off, 1=Fair, 2=Good, 3=High */
+    ui_menu_add_toggle(menu, "ADAPTIVE QUALITY", APP_ACTION_SETTING_ADAPTIVE,
+                       s->adaptive_quality != 0);
+    if (!s->adaptive_quality)
+    {
+        ui_menu_add_slider(menu, "RT QUALITY", APP_ACTION_SETTING_RT_QUALITY,
+                           s->rt_quality, 0, 3, 1);
+    }
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "RUN STRESS TEST", APP_ACTION_RUN_STRESS_TEST);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
@@ -60,7 +65,8 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
-    ui->settings.rt_quality = 1; /* Fair by default */
+    ui->settings.rt_quality = 1;       /* Fair by default */
+    ui->settings.adaptive_quality = 1; /* On by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -93,6 +99,23 @@ void app_ui_hide(AppUI *ui)
 static void sync_settings_from_menu(AppUI *ui)
 {
     UIMenu *menu = &ui->settings_menu;
+    bool needs_rebuild = false;
+
+    for (int32_t i = 0; i < menu->item_count; i++)
+    {
+        UIMenuItem *item = &menu->items[i];
+        if (item->type == UI_ITEM_TOGGLE &&
+            item->action_id == APP_ACTION_SETTING_ADAPTIVE)
+        {
+            int32_t new_val = item->toggle_state ? 1 : 0;
+            if (ui->settings.adaptive_quality != new_val)
+            {
+                ui->settings.adaptive_quality = new_val;
+                needs_rebuild = true;
+            }
+        }
+    }
+
     for (int32_t i = 0; i < menu->item_count; i++)
     {
         UIMenuItem *item = &menu->items[i];
@@ -121,6 +144,9 @@ static void sync_settings_from_menu(AppUI *ui)
             break;
         }
     }
+
+    if (needs_rebuild)
+        init_settings_menu(menu, &ui->settings);
 }
 
 void app_ui_update(AppUI *ui, float dt, float mouse_x, float mouse_y, bool mouse_down,
