@@ -1,20 +1,7 @@
 #include "content/materials.h"
 #include "content/scenes.h"
-#include <stdio.h>
+#include "test_common.h"
 #include <string.h>
-
-static int g_tests_run = 0;
-static int g_tests_passed = 0;
-
-#define TEST(name) static int test_##name(void)
-#define RUN_TEST(name) do { \
-    g_tests_run++; \
-    printf("  %s... ", #name); \
-    if (test_##name()) { g_tests_passed++; printf("PASS\n"); } \
-    else { printf("FAIL\n"); } \
-} while(0)
-
-#define ASSERT(cond) do { if (!(cond)) { printf("ASSERT FAILED: %s\n", #cond); return 0; } } while(0)
 
 TEST(mat_air_is_zero)
 {

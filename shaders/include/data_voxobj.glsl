@@ -80,6 +80,38 @@ vec3 vobj_get_world_position(int object_idx) {
 }
 
 /*
+ * Calculate squared distance from ray to sphere center.
+ * Used for early rejection of objects that a ray cannot possibly hit.
+ * Returns squared distance to avoid sqrt in the common case.
+ */
+float vobj_ray_sphere_dist_sq(vec3 ray_origin, vec3 ray_dir, vec3 sphere_center) {
+    vec3 oc = ray_origin - sphere_center;
+    float b = dot(oc, ray_dir);
+    float c = dot(oc, oc);
+    return c - b * b;
+}
+
+/*
+ * Calculate bounding sphere radius for a voxel object.
+ * Uses sqrt(3) * half_extent for the diagonal of the bounding cube.
+ */
+float vobj_get_bounding_radius(int object_idx) {
+    float half_ext = vobj_get_half_extent(object_idx);
+    return half_ext * 1.732051;  // sqrt(3)
+}
+
+/*
+ * Quick ray-sphere rejection test.
+ * Returns true if the ray could possibly hit the object's bounding sphere.
+ */
+bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
+    vec3 center = vobj_get_world_position(object_idx);
+    float radius = vobj_get_bounding_radius(object_idx);
+    float dist_sq = vobj_ray_sphere_dist_sq(ray_origin, ray_dir, center);
+    return dist_sq <= radius * radius;
+}
+
+/*
  * Calculate LOD-adjusted max steps based on distance and rt_quality.
  * 
  * Distance thresholds (scaled by rt_quality 1-3):

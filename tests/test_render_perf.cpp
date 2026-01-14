@@ -14,6 +14,38 @@ static const int LAUNCH_WAIT_MS = 5000;
 static const float FRAME_BUDGET_MS = 16.667f;
 static const char *TEMP_CSV = "profile_temp.csv";
 
+/*
+ * Performance Budget Thresholds (RTX 4050M / mid-range laptop)
+ * Based on Phase 1.9 analysis. Frame times in milliseconds.
+ */
+struct PerfThreshold {
+    float pass_ms;   // Green: performance is good
+    float warn_ms;   // Yellow: approaching limit
+    float fail_ms;   // Red: regression detected
+};
+
+static const PerfThreshold THRESHOLD_50   = { 12.0f, 15.0f, 18.0f };
+static const PerfThreshold THRESHOLD_250  = { 14.0f, 16.67f, 20.0f };
+static const PerfThreshold THRESHOLD_500  = { 16.0f, 20.0f, 28.0f };
+static const PerfThreshold THRESHOLD_1000 = { 25.0f, 30.0f, 45.0f };
+
+enum PerfStatus { PERF_PASS, PERF_WARN, PERF_FAIL };
+
+static PerfStatus evaluate_perf(float frame_ms, const PerfThreshold &thresh) {
+    if (frame_ms <= thresh.pass_ms) return PERF_PASS;
+    if (frame_ms <= thresh.warn_ms) return PERF_WARN;
+    return PERF_FAIL;
+}
+
+static const char* status_string(PerfStatus s) {
+    switch (s) {
+        case PERF_PASS: return "PASS";
+        case PERF_WARN: return "WARN";
+        case PERF_FAIL: return "FAIL";
+    }
+    return "UNKNOWN";
+}
+
 struct ProfileData
 {
     float frame_avg_ms;
@@ -149,7 +181,8 @@ static ProfileData parse_profile_csv(const char *filepath)
 }
 
 static bool run_perf_test(const char *exe_path, const char *test_name, int frames,
-                          int stress_objects, float frame_limit_pct, int *passed, int *failed)
+                          int stress_objects, const PerfThreshold &threshold,
+                          int *passed, int *warned, int *failed)
 {
     char args[256];
     snprintf(args, sizeof(args), "--scene 0 --test-frames %d --profile-csv %s", frames, TEMP_CSV);
@@ -158,7 +191,9 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("================================================================================\n");
     printf("  %s\n", test_name);
     printf("================================================================================\n");
-    printf("Configuration: %d frames, %d objects\n\n", frames, stress_objects > 0 ? stress_objects : 10);
+    printf("Configuration: %d frames, %d objects\n", frames, stress_objects > 0 ? stress_objects : 10);
+    printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n\n",
+           threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
     fflush(stdout);
 
     DeleteFileA(TEMP_CSV);
@@ -202,15 +237,17 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("  Physics:     %7.2f ms\n", data.sim_physics_avg_ms);
     printf("  Collision:   %7.2f ms\n\n", data.sim_collision_avg_ms);
 
-    bool pass = (frame_budget_pct <= frame_limit_pct);
-    printf("Result: %s (%.1f%% vs %.0f%% limit)\n", pass ? "PASS" : "FAIL", frame_budget_pct, frame_limit_pct);
+    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
+    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
+           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
 
-    if (pass)
-        (*passed)++;
-    else
-        (*failed)++;
+    switch (status) {
+        case PERF_PASS: (*passed)++; break;
+        case PERF_WARN: (*warned)++; break;
+        case PERF_FAIL: (*failed)++; break;
+    }
 
-    return pass;
+    return (status != PERF_FAIL);
 }
 
 int main(int argc, char *argv[])
@@ -223,6 +260,7 @@ int main(int argc, char *argv[])
 
     const char *exe_path = argv[1];
     int passed = 0;
+    int warned = 0;
     int failed = 0;
 
     time_t now = time(NULL);
@@ -235,16 +273,21 @@ int main(int argc, char *argv[])
     printf("Generated: %s\n", time_str);
     printf("Executable: %s\n", exe_path);
 
-    run_perf_test(exe_path, "BASELINE (50 objects, 30 frames)", 30, 50, 100.0f, &passed, &failed);
-    run_perf_test(exe_path, "STRESS TEST (250 objects, 30 frames)", 30, 250, 1000.0f, &passed, &failed);
-    run_perf_test(exe_path, "HEAVY STRESS (500 objects, 30 frames)", 30, 500, 2500.0f, &passed, &failed);
-    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects, 30 frames)", 30, 1000, 5000.0f, &passed, &failed);
+    run_perf_test(exe_path, "BASELINE (50 objects, 30 frames)", 30, 50,
+                  THRESHOLD_50, &passed, &warned, &failed);
+    run_perf_test(exe_path, "STRESS TEST (250 objects, 30 frames)", 30, 250,
+                  THRESHOLD_250, &passed, &warned, &failed);
+    run_perf_test(exe_path, "HEAVY STRESS (500 objects, 30 frames)", 30, 500,
+                  THRESHOLD_500, &passed, &warned, &failed);
+    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects, 30 frames)", 30, 1000,
+                  THRESHOLD_1000, &passed, &warned, &failed);
 
     printf("\n");
     printf("################################################################################\n");
     printf("#                              SUMMARY                                        #\n");
     printf("################################################################################\n");
     printf("Tests passed: %d\n", passed);
+    printf("Tests warned: %d\n", warned);
     printf("Tests failed: %d\n", failed);
 
     DeleteFileA(TEMP_CSV);

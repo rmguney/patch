@@ -5,52 +5,12 @@
 #include "engine/platform/platform.h"
 #include "game/ball_pit.h"
 #include "content/scenes.h"
-#include <stdio.h>
+#include "test_common.h"
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
 
 #define FRAME_BUDGET_MS 16.667f
-
-static int g_tests_run = 0;
-static int g_tests_passed = 0;
-
-#define TEST(name) static int test_##name(void)
-#define RUN_TEST(name)             \
-    do                             \
-    {                              \
-        g_tests_run++;             \
-        printf("  %s... ", #name); \
-        fflush(stdout);            \
-        if (test_##name())         \
-        {                          \
-            g_tests_passed++;      \
-            printf("PASS\n");      \
-        }                          \
-        else                       \
-        {                          \
-            printf("FAIL\n");      \
-        }                          \
-    } while (0)
-
-#define ASSERT(cond)                                                  \
-    do                                                                \
-    {                                                                 \
-        if (!(cond))                                                  \
-        {                                                             \
-            printf("ASSERT FAILED: %s (line %d)\n", #cond, __LINE__); \
-            return 0;                                                 \
-        }                                                             \
-    } while (0)
-#define ASSERT_NEAR(a, b, eps)                                                                    \
-    do                                                                                            \
-    {                                                                                             \
-        if (fabsf((a) - (b)) > (eps))                                                             \
-        {                                                                                         \
-            printf("ASSERT_NEAR FAILED: %f != %f (line %d)\n", (float)(a), (float)(b), __LINE__); \
-            return 0;                                                                             \
-        }                                                                                         \
-    } while (0)
 
 TEST(ball_pit_create_destroy)
 {

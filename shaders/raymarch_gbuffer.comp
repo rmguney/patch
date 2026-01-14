@@ -249,15 +249,20 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
-    /* March all voxel objects and keep closest (with distance-based LOD) */
+    /* March all voxel objects and keep closest (with ray-sphere early-out + distance LOD) */
     for (int i = 0; i < pc.object_count; i++) {
+        /* Quick ray-sphere rejection - skip objects ray cannot possibly hit */
+        if (!vobj_ray_could_hit(ray_origin, ray_dir, i)) {
+            continue;
+        }
+
         /* Calculate distance to object for LOD */
         vec3 obj_pos = vobj_get_world_position(i);
         float dist = length(obj_pos - pc.camera_pos);
-        
+
         /* Distance-based LOD (no screen coverage in compute path) */
         int max_steps = vobj_calc_distance_lod_steps(dist, pc.rt_quality, VOBJ_BASE_STEPS);
-        
+
         HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
         if (obj_hit.hit && obj_hit.t < best_hit.t) {
             best_hit = obj_hit;

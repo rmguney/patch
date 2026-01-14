@@ -7,41 +7,11 @@
 #include "engine/sim/detach.h"
 #include "engine/physics/particles.h"
 #include "engine/platform/platform.h"
-#include <stdio.h>
+#include "test_common.h"
 #include <string.h>
 #include <stdlib.h>
 
-static int g_tests_run = 0;
-static int g_tests_passed = 0;
 static bool g_verbose = false;
-
-#define TEST(name) static int test_##name(void)
-#define RUN_TEST(name)             \
-    do                             \
-    {                              \
-        g_tests_run++;             \
-        printf("  %s... ", #name); \
-        fflush(stdout);            \
-        if (test_##name())         \
-        {                          \
-            g_tests_passed++;      \
-            printf("PASS\n");      \
-        }                          \
-        else                       \
-        {                          \
-            printf("FAIL\n");      \
-        }                          \
-    } while (0)
-
-#define ASSERT(cond)                              \
-    do                                            \
-    {                                             \
-        if (!(cond))                              \
-        {                                         \
-            printf("ASSERT FAILED: %s\n", #cond); \
-            return 0;                             \
-        }                                         \
-    } while (0)
 
 #define FRAME_BUDGET_MS 16.667f
 #define TICK_COUNT 10
