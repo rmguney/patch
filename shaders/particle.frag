@@ -92,5 +92,5 @@ void main() {
     out_linear_depth = linear_depth;
     out_motion_vector = vec2(0.0);
 
-    gl_FragDepth = camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane), 0.0, 1.0);
 }

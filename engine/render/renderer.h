@@ -102,7 +102,7 @@ namespace patch
         void end_frame(uint32_t image_index);
 
         /* Deferred rendering pass methods */
-        void prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects); /* Call before begin_gbuffer_pass */
+        void prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects, bool has_objects_or_particles = false); /* Call before begin_gbuffer_pass */
         void begin_gbuffer_pass();
         void end_gbuffer_pass();
         void render_gbuffer_terrain(const VoxelVolume *vol);
@@ -410,7 +410,9 @@ namespace patch
         VkImageView gbuffer_views_[GBUFFER_COUNT];
         VkSampler gbuffer_sampler_;
         VkRenderPass gbuffer_render_pass_;
-        VkRenderPass gbuffer_render_pass_load_; /* Uses LOAD_OP_LOAD for post-compute */
+        VkRenderPass gbuffer_render_pass_load_;             /* Uses LOAD_OP_LOAD for colors, CLEAR for depth */
+        VkRenderPass gbuffer_render_pass_load_with_depth_;  /* Uses LOAD_OP_LOAD for colors AND depth */
+        bool depth_primed_this_frame_ = false;
         VkFramebuffer gbuffer_framebuffer_;
         VkDescriptorSetLayout gbuffer_descriptor_layout_;
         VkDescriptorPool gbuffer_descriptor_pool_;
@@ -424,6 +426,16 @@ namespace patch
         VkDescriptorSetLayout deferred_lighting_descriptor_layout_;
         VkDescriptorPool deferred_lighting_descriptor_pool_;
         VkDescriptorSet deferred_lighting_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
+
+        /* Depth prime pass (copies linear_depth texture to hardware depth buffer) */
+        VkRenderPass depth_prime_render_pass_;
+        VkFramebuffer depth_prime_framebuffer_;
+        VkPipeline depth_prime_pipeline_;
+        VkPipelineLayout depth_prime_layout_;
+        VkDescriptorSetLayout depth_prime_descriptor_layout_;
+        VkDescriptorPool depth_prime_descriptor_pool_;
+        VkDescriptorSet depth_prime_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
+        bool depth_prime_initialized_ = false;
 
         /* Shadow volume for sparse RT tracing */
         VkImage shadow_volume_image_;
@@ -557,6 +569,11 @@ namespace patch
         bool init_particle_resources();
         bool create_particle_pipeline();
         void destroy_particle_resources();
+
+        /* Depth prime pass (copies linear_depth to hardware depth after compute) */
+        bool create_depth_prime_resources();
+        void destroy_depth_prime_resources();
+        void dispatch_depth_prime();
 
     public:
         struct GPUTimings

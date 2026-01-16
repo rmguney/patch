@@ -237,18 +237,28 @@ namespace patch
             return false;
         }
 
-        /* Create load render pass for post-compute (preserves compute results) */
+        /* Create load render pass for post-compute (loads colors, clears depth) */
         for (int i = 0; i < 5; i++)
         {
             attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             attachments[i].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
-        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; /* Still clear depth for voxel objects */
+        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[5].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_) != VK_SUCCESS)
         {
             fprintf(stderr, "Failed to create G-buffer load render pass\n");
+            return false;
+        }
+
+        /* Create load render pass with depth primed (loads colors AND depth) */
+        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachments[5].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_with_depth_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create G-buffer load-with-depth render pass\n");
             return false;
         }
 
@@ -634,6 +644,12 @@ namespace patch
             gbuffer_render_pass_load_ = VK_NULL_HANDLE;
         }
 
+        if (gbuffer_render_pass_load_with_depth_)
+        {
+            vkDestroyRenderPass(device_, gbuffer_render_pass_load_with_depth_, nullptr);
+            gbuffer_render_pass_load_with_depth_ = VK_NULL_HANDLE;
+        }
+
         if (gbuffer_sampler_)
         {
             vkDestroySampler(device_, gbuffer_sampler_, nullptr);
@@ -694,6 +710,8 @@ namespace patch
             vkDestroyDescriptorSetLayout(device_, deferred_lighting_descriptor_layout_, nullptr);
             deferred_lighting_descriptor_layout_ = VK_NULL_HANDLE;
         }
+
+        destroy_depth_prime_resources();
 
         gbuffer_initialized_ = false;
     }
@@ -1414,8 +1432,13 @@ namespace patch
 
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        /* Use load render pass if compute already filled the gbuffer */
-        rp_info.renderPass = gbuffer_compute_dispatched_ ? gbuffer_render_pass_load_ : gbuffer_render_pass_;
+        /* Select render pass based on compute and depth prime state */
+        if (!gbuffer_compute_dispatched_)
+            rp_info.renderPass = gbuffer_render_pass_;
+        else if (depth_primed_this_frame_)
+            rp_info.renderPass = gbuffer_render_pass_load_with_depth_;
+        else
+            rp_info.renderPass = gbuffer_render_pass_load_;
         rp_info.framebuffer = gbuffer_framebuffer_;
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = swapchain_extent_;
@@ -1456,7 +1479,7 @@ namespace patch
         gbuffer_compute_dispatched_ = false;
     }
 
-    void Renderer::prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects)
+    void Renderer::prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects, bool has_objects_or_particles)
     {
         if (!gbuffer_initialized_ || !vol || !voxel_resources_initialized_)
             return;
@@ -1466,6 +1489,14 @@ namespace patch
         {
             int32_t object_count = (objects && vobj_resources_initialized_) ? objects->object_count : 0;
             dispatch_gbuffer_compute(vol, object_count);
+
+            /* Prime hardware depth buffer only when objects/particles will be rendered */
+            depth_primed_this_frame_ = false;
+            if (has_objects_or_particles)
+            {
+                dispatch_depth_prime();
+                depth_primed_this_frame_ = true;
+            }
         }
     }
 
@@ -1653,6 +1684,12 @@ namespace patch
             return false;
         }
 
+        if (!create_depth_prime_resources())
+        {
+            fprintf(stderr, "Failed to create depth prime resources\n");
+            return false;
+        }
+
         printf("  Deferred pipeline initialized\n");
         return true;
     }
@@ -1676,6 +1713,384 @@ namespace patch
 
         printf("  Deferred descriptor sets initialized\n");
         return true;
+    }
+
+    bool Renderer::create_depth_prime_resources()
+    {
+        if (depth_prime_initialized_)
+            return true;
+
+        /* Create render pass with only depth attachment */
+        VkAttachmentDescription depth_attach{};
+        depth_attach.format = VK_FORMAT_D32_SFLOAT;
+        depth_attach.samples = VK_SAMPLE_COUNT_1_BIT;
+        depth_attach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; /* We'll overwrite everything */
+        depth_attach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depth_attach.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        depth_attach.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth_attach.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depth_attach.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference depth_ref{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.pDepthStencilAttachment = &depth_ref;
+
+        VkSubpassDependency dep{};
+        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dep.dstSubpass = 0;
+        dep.srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        dep.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        dep.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dep.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo rp_info{};
+        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rp_info.attachmentCount = 1;
+        rp_info.pAttachments = &depth_attach;
+        rp_info.subpassCount = 1;
+        rp_info.pSubpasses = &subpass;
+        rp_info.dependencyCount = 1;
+        rp_info.pDependencies = &dep;
+
+        if (vkCreateRenderPass(device_, &rp_info, nullptr, &depth_prime_render_pass_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime render pass\n");
+            return false;
+        }
+
+        /* Create framebuffer with only depth attachment */
+        VkFramebufferCreateInfo fb_info{};
+        fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb_info.renderPass = depth_prime_render_pass_;
+        fb_info.attachmentCount = 1;
+        fb_info.pAttachments = &depth_image_view_;
+        fb_info.width = swapchain_extent_.width;
+        fb_info.height = swapchain_extent_.height;
+        fb_info.layers = 1;
+
+        if (vkCreateFramebuffer(device_, &fb_info, nullptr, &depth_prime_framebuffer_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime framebuffer\n");
+            return false;
+        }
+
+        /* Create descriptor set layout for linear_depth sampler */
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo layout_info{};
+        layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = 1;
+        layout_info.pBindings = &binding;
+
+        if (vkCreateDescriptorSetLayout(device_, &layout_info, nullptr, &depth_prime_descriptor_layout_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime descriptor layout\n");
+            return false;
+        }
+
+        /* Create push constant range */
+        VkPushConstantRange push_range{};
+        push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        push_range.offset = 0;
+        push_range.size = 8; /* near_plane (4) + far_plane (4) */
+
+        /* Create pipeline layout */
+        VkPipelineLayoutCreateInfo pipe_layout_info{};
+        pipe_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipe_layout_info.setLayoutCount = 1;
+        pipe_layout_info.pSetLayouts = &depth_prime_descriptor_layout_;
+        pipe_layout_info.pushConstantRangeCount = 1;
+        pipe_layout_info.pPushConstantRanges = &push_range;
+
+        if (vkCreatePipelineLayout(device_, &pipe_layout_info, nullptr, &depth_prime_layout_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime pipeline layout\n");
+            return false;
+        }
+
+        /* Create pipeline */
+        VkShaderModuleCreateInfo vert_info{};
+        vert_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        vert_info.codeSize = shaders::k_shader_voxel_vert_spv_size;
+        vert_info.pCode = shaders::k_shader_voxel_vert_spv;
+
+        VkShaderModule vert_module;
+        if (vkCreateShaderModule(device_, &vert_info, nullptr, &vert_module) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime vertex shader\n");
+            return false;
+        }
+
+        VkShaderModuleCreateInfo frag_info{};
+        frag_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        frag_info.codeSize = shaders::k_shader_depth_prime_frag_spv_size;
+        frag_info.pCode = shaders::k_shader_depth_prime_frag_spv;
+
+        VkShaderModule frag_module;
+        if (vkCreateShaderModule(device_, &frag_info, nullptr, &frag_module) != VK_SUCCESS)
+        {
+            vkDestroyShaderModule(device_, vert_module, nullptr);
+            fprintf(stderr, "Failed to create depth prime fragment shader\n");
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert_module;
+        stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag_module;
+        stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vertex_input{};
+        vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+        input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo viewport_state{};
+        viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport_state.viewportCount = 1;
+        viewport_state.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+        depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth_stencil.depthTestEnable = VK_TRUE;
+        depth_stencil.depthWriteEnable = VK_TRUE;
+        depth_stencil.depthCompareOp = VK_COMPARE_OP_ALWAYS; /* Always write */
+
+        VkPipelineColorBlendStateCreateInfo color_blend{};
+        color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        color_blend.attachmentCount = 0; /* No color attachments */
+
+        VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamic_state{};
+        dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic_state.dynamicStateCount = 2;
+        dynamic_state.pDynamicStates = dynamic_states;
+
+        VkGraphicsPipelineCreateInfo pipeline_info{};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount = 2;
+        pipeline_info.pStages = stages;
+        pipeline_info.pVertexInputState = &vertex_input;
+        pipeline_info.pInputAssemblyState = &input_assembly;
+        pipeline_info.pViewportState = &viewport_state;
+        pipeline_info.pRasterizationState = &rasterizer;
+        pipeline_info.pMultisampleState = &multisampling;
+        pipeline_info.pDepthStencilState = &depth_stencil;
+        pipeline_info.pColorBlendState = &color_blend;
+        pipeline_info.pDynamicState = &dynamic_state;
+        pipeline_info.layout = depth_prime_layout_;
+        pipeline_info.renderPass = depth_prime_render_pass_;
+        pipeline_info.subpass = 0;
+
+        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &depth_prime_pipeline_);
+
+        vkDestroyShaderModule(device_, vert_module, nullptr);
+        vkDestroyShaderModule(device_, frag_module, nullptr);
+
+        if (result != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime pipeline\n");
+            return false;
+        }
+
+        /* Create descriptor pool and sets */
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_size.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+
+        VkDescriptorPoolCreateInfo pool_info{};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT;
+
+        if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &depth_prime_descriptor_pool_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to create depth prime descriptor pool\n");
+            return false;
+        }
+
+        VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            layouts[i] = depth_prime_descriptor_layout_;
+
+        VkDescriptorSetAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = depth_prime_descriptor_pool_;
+        alloc_info.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+        alloc_info.pSetLayouts = layouts;
+
+        if (vkAllocateDescriptorSets(device_, &alloc_info, depth_prime_descriptor_sets_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to allocate depth prime descriptor sets\n");
+            return false;
+        }
+
+        /* Update descriptor sets to point to linear_depth texture */
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorImageInfo image_info{};
+            image_info.sampler = gbuffer_sampler_;
+            image_info.imageView = gbuffer_views_[GBUFFER_LINEAR_DEPTH];
+            image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = depth_prime_descriptor_sets_[i];
+            write.dstBinding = 0;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.descriptorCount = 1;
+            write.pImageInfo = &image_info;
+
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        }
+
+        depth_prime_initialized_ = true;
+        printf("  Depth prime resources initialized\n");
+        return true;
+    }
+
+    void Renderer::destroy_depth_prime_resources()
+    {
+        if (!depth_prime_initialized_)
+            return;
+
+        vkDeviceWaitIdle(device_);
+
+        if (depth_prime_pipeline_)
+        {
+            vkDestroyPipeline(device_, depth_prime_pipeline_, nullptr);
+            depth_prime_pipeline_ = VK_NULL_HANDLE;
+        }
+        if (depth_prime_layout_)
+        {
+            vkDestroyPipelineLayout(device_, depth_prime_layout_, nullptr);
+            depth_prime_layout_ = VK_NULL_HANDLE;
+        }
+        if (depth_prime_descriptor_pool_)
+        {
+            vkDestroyDescriptorPool(device_, depth_prime_descriptor_pool_, nullptr);
+            depth_prime_descriptor_pool_ = VK_NULL_HANDLE;
+        }
+        if (depth_prime_descriptor_layout_)
+        {
+            vkDestroyDescriptorSetLayout(device_, depth_prime_descriptor_layout_, nullptr);
+            depth_prime_descriptor_layout_ = VK_NULL_HANDLE;
+        }
+        if (depth_prime_framebuffer_)
+        {
+            vkDestroyFramebuffer(device_, depth_prime_framebuffer_, nullptr);
+            depth_prime_framebuffer_ = VK_NULL_HANDLE;
+        }
+        if (depth_prime_render_pass_)
+        {
+            vkDestroyRenderPass(device_, depth_prime_render_pass_, nullptr);
+            depth_prime_render_pass_ = VK_NULL_HANDLE;
+        }
+
+        depth_prime_initialized_ = false;
+    }
+
+    void Renderer::dispatch_depth_prime()
+    {
+        if (!depth_prime_initialized_ || !gbuffer_compute_dispatched_)
+            return;
+
+        /* Transition linear_depth from color attachment (post-compute) to shader read */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = gbuffer_images_[GBUFFER_LINEAR_DEPTH];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(
+            command_buffers_[current_frame_],
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Begin depth prime render pass */
+        VkRenderPassBeginInfo rp_info{};
+        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp_info.renderPass = depth_prime_render_pass_;
+        rp_info.framebuffer = depth_prime_framebuffer_;
+        rp_info.renderArea.offset = {0, 0};
+        rp_info.renderArea.extent = swapchain_extent_;
+
+        vkCmdBeginRenderPass(command_buffers_[current_frame_], &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport viewport{};
+        viewport.width = static_cast<float>(swapchain_extent_.width);
+        viewport.height = static_cast<float>(swapchain_extent_.height);
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.extent = swapchain_extent_;
+
+        vkCmdSetViewport(command_buffers_[current_frame_], 0, 1, &viewport);
+        vkCmdSetScissor(command_buffers_[current_frame_], 0, 1, &scissor);
+
+        vkCmdBindPipeline(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS, depth_prime_pipeline_);
+        vkCmdBindDescriptorSets(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                depth_prime_layout_, 0, 1, &depth_prime_descriptor_sets_[current_frame_], 0, nullptr);
+
+        /* Push near/far planes - must match hardcoded values used elsewhere */
+        struct
+        {
+            float near_plane;
+            float far_plane;
+        } pc = {0.1f, 1000.0f};
+
+        vkCmdPushConstants(command_buffers_[current_frame_], depth_prime_layout_,
+                           VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+
+        /* Draw fullscreen triangle */
+        vkCmdDraw(command_buffers_[current_frame_], 3, 1, 0, 0);
+
+        vkCmdEndRenderPass(command_buffers_[current_frame_]);
+
+        /* Transition linear_depth back to color attachment for the G-buffer load pass */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        vkCmdPipelineBarrier(
+            command_buffers_[current_frame_],
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
 }

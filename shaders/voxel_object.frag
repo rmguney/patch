@@ -106,5 +106,5 @@ void main() {
     vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
     out_motion_vector = prev_uv - curr_uv;
 
-    gl_FragDepth = camera_linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
 }

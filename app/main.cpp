@@ -861,7 +861,8 @@ int patch_main(int argc, char *argv[])
             /* Dispatch compute terrain before render pass (if using compute path) */
             if (terrain)
             {
-                renderer.prepare_gbuffer_compute(terrain, nullptr);
+                bool need_depth_prime = (objects && objects->object_count > 0) || particles;
+                renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
             }
 
             /* Begin render pass - uses load pass if compute was dispatched */
