@@ -41,7 +41,9 @@ layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
 /* Set 1: output */
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
 
-const float HISTORY_BLEND = 0.85;
+const float HISTORY_BLEND_MAX = 0.8;
+const float DEPTH_REJECT_THRESHOLD = 0.02;
+const float NORMAL_REJECT_THRESHOLD = 0.9;
 
 void main()
 {
@@ -70,7 +72,28 @@ void main()
         return;
     }
 
+    float current_depth = texelFetch(gbuffer_linear_depth, pixel, 0).r;
+    float reproj_depth = texture(gbuffer_linear_depth, prev_uv).r;
+    float depth_diff = abs(current_depth - reproj_depth) / max(current_depth, 0.001);
+    if (depth_diff > DEPTH_REJECT_THRESHOLD)
+    {
+        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    vec3 current_normal = texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0;
+    vec3 reproj_normal = texture(gbuffer_normal, prev_uv).xyz * 2.0 - 1.0;
+    if (dot(current_normal, reproj_normal) < NORMAL_REJECT_THRESHOLD)
+    {
+        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    float motion_len = length(motion * vec2(size));
+    float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
+    float history_blend = mix(HISTORY_BLEND_MAX, 0.3, velocity_weight);
+
     float history_shadow = texture(shadow_history, prev_uv).r;
-    float resolved = mix(current_shadow, history_shadow, HISTORY_BLEND);
+    float resolved = mix(current_shadow, history_shadow, history_blend);
     imageStore(out_shadow_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
 }
