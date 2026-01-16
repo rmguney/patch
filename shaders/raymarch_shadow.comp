@@ -31,7 +31,7 @@ layout(push_constant) uniform Constants {
     int reserved[6];
 } pc;
 
-#include "include/camera.glsl"
+#include "include/gbuffer_sample.glsl"
 
 /* Global parameters required by data_terrain.glsl */
 ivec3 pc_grid_size;
@@ -211,22 +211,19 @@ void main() {
         return;
     }
 
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(screen_size);
+    GBufferSample g = sample_gbuffer_shadow(
+        pixel, screen_size,
+        gbuffer_depth, gbuffer_normal,
+        pc.inv_view, pc.inv_projection, pc.camera_pos,
+        pc.is_orthographic != 0
+    );
 
-    float linear_depth = texelFetch(gbuffer_depth, pixel, 0).r;
-
-    if (linear_depth > 1e9) {
+    if (g.is_sky) {
         imageStore(out_shadow, pixel, vec4(1.0));
         return;
     }
 
-    vec3 world_pos = camera_reconstruct_world_pos(
-        uv, linear_depth,
-        pc.inv_view, pc.inv_projection, pc.camera_pos,
-        pc.is_orthographic != 0
-    );
-    vec3 normal = texelFetch(gbuffer_normal, pixel, 0).rgb * 2.0 - 1.0;
-    normal = normalize(normal);
+    vec3 normal = normalize(g.normal);
 
     float shadow = 1.0;
 
@@ -243,7 +240,7 @@ void main() {
            on rotated objects where normal-based bias was insufficient) */
         float light_bias = pc.voxel_size * 0.6;
         float normal_bias = pc.voxel_size * 0.1;
-        vec3 shadow_origin = world_pos + SUN_DIR * light_bias + normal * normal_bias;
+        vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
         /* Scale samples: quality 1=4, 2=8, 3=12 samples for smoother soft shadows */
         int num_samples = pc.rt_quality * 4;

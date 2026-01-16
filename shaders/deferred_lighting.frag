@@ -38,7 +38,7 @@ layout(push_constant) uniform Constants {
     int reserved[6];
 } pc;
 
-#include "include/camera.glsl"
+#include "include/gbuffer_sample.glsl"
 
 vec3 aces_tonemap(vec3 x) {
     const float a = 2.51;
@@ -50,35 +50,27 @@ vec3 aces_tonemap(vec3 x) {
 }
 
 void main() {
-    vec4 albedo_sample = texture(gbuffer_albedo, in_uv);
+    GBufferSample g = sample_gbuffer(
+        in_uv,
+        gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_depth,
+        pc.inv_view, pc.inv_projection, pc.cam_pos,
+        pc.is_orthographic != 0
+    );
 
-    if (albedo_sample.a < 0.01) {
+    if (g.is_sky) {
         out_color = vec4(0.75, 0.80, 0.95, 1.0);
         gl_FragDepth = 1.0;
         return;
     }
 
-    vec3 albedo = albedo_sample.rgb;
-    vec3 normal = texture(gbuffer_normal, in_uv).rgb * 2.0 - 1.0;
-    vec4 material = texture(gbuffer_material, in_uv);
-    float linear_depth = texture(gbuffer_depth, in_uv).r;
-    gl_FragDepth = camera_linear_depth_to_ndc(max(linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
+    gl_FragDepth = camera_linear_depth_to_ndc(max(g.linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
 
-    float roughness = material.r;
-    float metallic = material.g;
-    float emissive = material.b;
-
-    vec3 world_pos = camera_reconstruct_world_pos(
-        in_uv, linear_depth,
-        pc.inv_view, pc.inv_projection, pc.cam_pos,
-        pc.is_orthographic != 0
-    );
-    vec3 N = normalize(normal);
-    vec3 V = normalize(pc.cam_pos - world_pos);
+    vec3 N = normalize(g.normal);
+    vec3 V = normalize(pc.cam_pos - g.world_pos);
 
     /* DEBUG: Visualize world position (should be stable when camera moves) */
     if (pc.debug_mode == 10) {
-        vec3 wp_color = fract(world_pos * 0.1);
+        vec3 wp_color = fract(g.world_pos * 0.1);
         out_color = vec4(wp_color, 1.0);
         return;
     }
@@ -86,7 +78,7 @@ void main() {
     /* DEBUG: Visualize shadow UVW (should map 0-1 across terrain bounds) */
     if (pc.debug_mode == 11) {
         vec3 bounds_size = pc.bounds_max - pc.bounds_min;
-        vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
+        vec3 uvw = (g.world_pos - pc.bounds_min) / bounds_size;
         out_color = vec4(uvw, 1.0);
         return;
     }
@@ -121,9 +113,9 @@ void main() {
     wrap_key = max(wrap_key, 0.0);
 
     vec3 diffuse = vec3(0.0);
-    diffuse += albedo * key_color * wrap_key * key_strength * shadow;
-    diffuse += albedo * fill_color * fill_dot * fill_strength;
-    diffuse += albedo * back_color * back_dot * back_strength;
+    diffuse += g.albedo * key_color * wrap_key * key_strength * shadow;
+    diffuse += g.albedo * fill_color * fill_dot * fill_strength;
+    diffuse += g.albedo * back_color * back_dot * back_strength;
 
     float ambient = 0.4;
     vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);
@@ -131,8 +123,8 @@ void main() {
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient;
 
     vec3 H = normalize(key_light_dir + V);
-    float spec_power = mix(128.0, 4.0, roughness * roughness);
-    float spec_strength = mix(0.4, 0.02, roughness);
+    float spec_power = mix(128.0, 4.0, g.roughness * g.roughness);
+    float spec_strength = mix(0.4, 0.02, g.roughness);
     float spec = pow(max(dot(N, H), 0.0), spec_power) * spec_strength;
     vec3 specular = vec3(spec) * key_color * key_dot * shadow;
 
@@ -141,16 +133,16 @@ void main() {
     specular += vec3(spec_fill) * fill_color * fill_dot;
 
     float floor_y = pc.bounds_min.y;
-    float ground_dist = world_pos.y - floor_y;
+    float ground_dist = g.world_pos.y - floor_y;
     float ground_ao = smoothstep(0.0, 1.5, ground_dist) * 0.3 + 0.7;
 
-    vec3 color = (albedo * ambient_light + diffuse + specular) * ground_ao;
+    vec3 color = (g.albedo * ambient_light + diffuse + specular) * ground_ao;
 
     float rim = 1.0 - max(dot(N, V), 0.0);
     rim = pow(rim, 4.0) * 0.08;
     color += rim * vec3(0.7, 0.8, 1.0);
 
-    vec3 emissive_color = albedo * emissive * 2.0;
+    vec3 emissive_color = g.albedo * g.emissive * 2.0;
     color += emissive_color;
 
     float exposure = 1.0;

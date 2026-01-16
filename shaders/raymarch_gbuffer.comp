@@ -79,7 +79,7 @@ layout(std430, SET_BINDING(1, 1)) readonly buffer ObjectMetadata {
 
 #include "include/data_voxobj.glsl"
 
-/* G-buffer output images (set 2) */
+/* G-buffer outputs (set 2) - see gbuffer_sample.glsl for downstream sampling */
 layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
 layout(rgb10_a2, SET_BINDING(2, 1)) writeonly uniform image2D out_normal;
 layout(rgba8, SET_BINDING(2, 2)) writeonly uniform image2D out_material;
