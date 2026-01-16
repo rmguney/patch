@@ -15,6 +15,7 @@ layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_material;
 layout(SET_BINDING(0, 3)) uniform sampler2D gbuffer_depth;
 layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
+layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
 
 layout(push_constant) uniform Constants {
     mat4 inv_view;
@@ -35,7 +36,8 @@ layout(push_constant) uniform Constants {
     int max_steps;
     float near_plane;
     float far_plane;
-    int reserved[6];
+    int object_count;
+    int reserved[5];
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -90,6 +92,13 @@ void main() {
         return;
     }
 
+    /* DEBUG: Show AO value only (white=unoccluded, black=occluded) */
+    if (pc.debug_mode == 13) {
+        float ao = texture(ao_buffer, in_uv).r;
+        out_color = vec4(vec3(ao), 1.0);
+        return;
+    }
+
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
@@ -117,10 +126,13 @@ void main() {
     diffuse += g.albedo * fill_color * fill_dot * fill_strength;
     diffuse += g.albedo * back_color * back_dot * back_strength;
 
+    /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
+    float ao = texture(ao_buffer, in_uv).r;
+
     float ambient = 0.4;
     vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);
     vec3 ground_ambient = vec3(0.42, 0.36, 0.32) * (0.5 - N.y * 0.5);
-    vec3 ambient_light = (sky_ambient + ground_ambient) * ambient;
+    vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
 
     vec3 H = normalize(key_light_dir + V);
     float spec_power = mix(128.0, 4.0, g.roughness * g.roughness);

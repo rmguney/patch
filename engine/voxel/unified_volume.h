@@ -76,7 +76,8 @@ extern "C"
                                                 const VoxelVolume *terrain, const VoxelObjectWorld *objects);
 
     void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
-                                                  const VoxelVolume *terrain, const ParticleSystem *particles);
+                                                  const VoxelVolume *terrain, const ParticleSystem *particles,
+                                                  float interp_alpha);
 
     static inline int32_t unified_volume_chunk_index(const UnifiedVolume *vol,
                                                      int32_t cx, int32_t cy, int32_t cz)

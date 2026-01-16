@@ -534,6 +534,10 @@ int patch_main(int argc, char *argv[])
 
             if (particles)
             {
+                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
+                if (interp_alpha < 0.0f) interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f) interp_alpha = 1.0f;
+                renderer.set_interp_alpha(interp_alpha);
                 renderer.render_particles_raymarched(particles);
             }
 
@@ -661,7 +665,5 @@ int patch_main(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-    printf("DEBUG: patch_samples starting (console output enabled)\n");
-    fflush(stdout);
     return patch_main(argc, argv);
 }

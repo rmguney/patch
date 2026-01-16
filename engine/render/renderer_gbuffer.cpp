@@ -420,6 +420,13 @@ namespace patch
             dispatch_temporal_shadow_resolve();
             PROFILE_END(PROFILE_RENDER_SHADOW);
         }
+
+        /* Dispatch AO compute after shadow (only if rt_quality >= 1) */
+        if (rt_quality_ >= 1 && ao_resources_initialized_ && ao_compute_pipeline_ && deferred_total_chunks_ > 0)
+        {
+            dispatch_ao_compute();
+            dispatch_temporal_ao_resolve();
+        }
         gbuffer_compute_dispatched_ = false;
     }
 

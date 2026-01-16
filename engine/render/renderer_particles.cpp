@@ -331,15 +331,22 @@ namespace patch
         vkMapMemory(device_, particle_ssbo_.memory, 0, MAX_PARTICLE_INSTANCES * sizeof(ParticleGPU), 0,
                     reinterpret_cast<void **>(&gpu_data));
 
+        float alpha = interp_alpha_;
+
         for (int32_t i = 0; i < sys->count && active_count < MAX_PARTICLE_INSTANCES; i++)
         {
             const Particle *p = &sys->particles[i];
             if (!p->active)
                 continue;
 
-            gpu_data[active_count].position[0] = p->position.x;
-            gpu_data[active_count].position[1] = p->position.y;
-            gpu_data[active_count].position[2] = p->position.z;
+            /* Interpolate between previous and current position for smooth rendering */
+            float interp_x = p->prev_position.x + alpha * (p->position.x - p->prev_position.x);
+            float interp_y = p->prev_position.y + alpha * (p->position.y - p->prev_position.y);
+            float interp_z = p->prev_position.z + alpha * (p->position.z - p->prev_position.z);
+
+            gpu_data[active_count].position[0] = interp_x;
+            gpu_data[active_count].position[1] = interp_y;
+            gpu_data[active_count].position[2] = interp_z;
             gpu_data[active_count].radius = p->radius;
             gpu_data[active_count].color[0] = p->color.x;
             gpu_data[active_count].color[1] = p->color.y;

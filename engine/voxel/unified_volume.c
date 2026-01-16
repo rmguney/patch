@@ -405,7 +405,8 @@ void unified_volume_stamp_objects_to_shadow(uint8_t *shadow_mip0, uint32_t w, ui
 }
 
 void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
-                                              const VoxelVolume *terrain, const ParticleSystem *particles)
+                                              const VoxelVolume *terrain, const ParticleSystem *particles,
+                                              float interp_alpha)
 {
     if (!shadow_mip0 || !terrain || !particles)
         return;
@@ -416,9 +417,14 @@ void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, 
         if (!p->active)
             continue;
 
-        float rel_x = p->position.x - terrain->bounds.min_x;
-        float rel_y = p->position.y - terrain->bounds.min_y;
-        float rel_z = p->position.z - terrain->bounds.min_z;
+        /* Interpolate between previous and current position */
+        float interp_x = p->prev_position.x + interp_alpha * (p->position.x - p->prev_position.x);
+        float interp_y = p->prev_position.y + interp_alpha * (p->position.y - p->prev_position.y);
+        float interp_z = p->prev_position.z + interp_alpha * (p->position.z - p->prev_position.z);
+
+        float rel_x = interp_x - terrain->bounds.min_x;
+        float rel_y = interp_y - terrain->bounds.min_y;
+        float rel_z = interp_z - terrain->bounds.min_z;
 
         float radius_voxels = p->radius / terrain->voxel_size;
         int32_t min_vx = (int32_t)((rel_x - p->radius) / terrain->voxel_size);

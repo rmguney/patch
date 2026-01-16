@@ -35,7 +35,8 @@ PUSH_CONSTANT uniform Constants {
     int max_steps;
     float near_plane;
     float far_plane;
-    int reserved[6];
+    int object_count;
+    int reserved[5];
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {

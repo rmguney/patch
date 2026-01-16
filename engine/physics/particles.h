@@ -26,8 +26,10 @@ extern "C"
     typedef struct
     {
         Vec3 position;
+        Vec3 prev_position;
         Vec3 velocity;
         Vec3 rotation;
+        Vec3 prev_rotation;
         Vec3 angular_velocity;
         Vec3 color;
         float radius;

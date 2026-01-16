@@ -198,6 +198,7 @@ set(ENGINE_RENDER_SOURCES
     engine/render/renderer_raymarch.cpp
     engine/render/renderer_compute_init.cpp
     engine/render/renderer_shadow_init.cpp
+    engine/render/renderer_ao_init.cpp
     engine/render/renderer_voxel_objects.cpp
     engine/render/renderer_particles.cpp
     engine/render/ui_font.h

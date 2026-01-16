@@ -281,6 +281,14 @@ namespace patch
                     {
                         fprintf(stderr, "Warning: Shadow compute descriptors failed\n");
                     }
+                    if (!create_ao_compute_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: AO compute descriptors failed\n");
+                    }
+                    if (!create_temporal_ao_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: Temporal AO descriptors failed\n");
+                    }
                 }
             }
 
@@ -540,7 +548,7 @@ namespace patch
 
             if (particles && particles->count > 0)
             {
-                unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles);
+                unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
             }
 
             volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,

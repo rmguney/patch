@@ -48,6 +48,35 @@ namespace patch
         history_write_index_ = 0;
         temporal_shadow_history_valid_ = false;
 
+        /* Initialize AO compute resources */
+        if (!create_ao_output_resources())
+        {
+            fprintf(stderr, "Failed to create AO output resources\n");
+            return false;
+        }
+
+        if (!create_ao_history_resources())
+        {
+            fprintf(stderr, "Failed to create AO history resources\n");
+            return false;
+        }
+
+        if (!create_ao_compute_pipeline())
+        {
+            fprintf(stderr, "Failed to create AO compute pipeline\n");
+            return false;
+        }
+
+        if (!create_temporal_ao_pipeline())
+        {
+            fprintf(stderr, "Failed to create temporal AO pipeline\n");
+            return false;
+        }
+
+        ao_history_write_index_ = 0;
+        temporal_ao_history_valid_ = false;
+        ao_resources_initialized_ = true;
+
         compute_resources_initialized_ = true;
         printf("  Compute raymarching pipelines initialized\n");
         return true;

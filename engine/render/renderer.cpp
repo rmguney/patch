@@ -351,9 +351,6 @@ namespace patch
     {
         total_frame_count_++;
 
-        prev_view_matrix_ = view_matrix_;
-        prev_projection_matrix_ = projection_matrix_;
-
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         frustum_ = frustum_from_view_proj(view_proj);
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
@@ -471,6 +468,11 @@ namespace patch
         present_info.pImageIndices = &image_index;
 
         vkQueuePresentKHR(present_queue_, &present_info);
+
+        /* Save current matrices for next frame's temporal reprojection */
+        prev_view_matrix_ = view_matrix_;
+        prev_projection_matrix_ = projection_matrix_;
+
         current_frame_ = (current_frame_ + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
@@ -683,17 +685,6 @@ namespace patch
             *out_origin = mat4_transform_point(inv_view, origin_view);
         if (out_dir)
             *out_dir = vec3_normalize(mat4_transform_direction(inv_view, dir_view));
-    }
-
-    bool Renderer::is_chunk_visible(int32_t cx, int32_t cy, int32_t cz, const VoxelVolume *vol) const
-    {
-        if (!vol)
-            return false;
-
-        Vec3 vol_min = vec3_create(vol->bounds.min_x, vol->bounds.min_y, vol->bounds.min_z);
-        Bounds3D chunk_bounds = chunk_world_bounds(cx, cy, cz, vol_min, vol->voxel_size);
-        FrustumResult result = frustum_test_aabb(&frustum_, chunk_bounds);
-        return result != FRUSTUM_OUTSIDE;
     }
 
 }

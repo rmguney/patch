@@ -49,8 +49,10 @@ int32_t particle_system_add(ParticleSystem* sys, RngState *rng, Vec3 position, V
      * - If slot was active (at capacity, overwriting oldest): no change */
     if (!p->active) sys->active_count++;
     p->position = position;
+    p->prev_position = position;
     p->velocity = velocity;
     p->rotation = vec3_zero();
+    p->prev_rotation = vec3_zero();
     p->angular_velocity = vec3_create(
         rng_signed_half(rng) * 20.0f,
         rng_signed_half(rng) * 20.0f,
@@ -104,6 +106,14 @@ void particle_system_update(ParticleSystem* sys, float dt) {
     float max_velocity = 0.03f / dt;
     if (max_velocity < 10.0f) max_velocity = 10.0f;
     if (max_velocity > 30.0f) max_velocity = 30.0f;
+
+    /* Save previous positions for interpolation before updating physics */
+    for (int32_t i = 0; i < sys->count; i++) {
+        Particle* p = &sys->particles[i];
+        if (!p->active) continue;
+        p->prev_position = p->position;
+        p->prev_rotation = p->rotation;
+    }
 
     /* Update lifetime for age tracking (used for young particle priority).
      * No auto-expiration - particles are removed via circular buffer when at capacity. */
@@ -265,8 +275,10 @@ int32_t particle_system_spawn_explosion(ParticleSystem* sys, RngState *rng, Vec3
         Particle* p = particle_system_add_slot(sys);
         if (!p->active) sys->active_count++;
         p->position = vec3_add(center, offset);
+        p->prev_position = p->position;
         p->velocity = vel;
         p->rotation = vec3_zero();
+        p->prev_rotation = vec3_zero();
         p->angular_velocity = vec3_create(
             rng_signed_half(rng) * 20.0f,
             rng_signed_half(rng) * 20.0f,
@@ -327,8 +339,10 @@ int32_t particle_system_spawn_at_impact(ParticleSystem* sys, RngState *rng, Vec3
         Particle* p = particle_system_add_slot(sys);
         if (!p->active) sys->active_count++;
         p->position = vec3_add(impact_point, offset);
+        p->prev_position = p->position;
         p->velocity = vel;
         p->rotation = vec3_zero();
+        p->prev_rotation = vec3_zero();
         p->angular_velocity = vec3_create(
             rng_signed_half(rng) * 20.0f,
             rng_signed_half(rng) * 20.0f,

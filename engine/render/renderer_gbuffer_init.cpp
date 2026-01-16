@@ -190,7 +190,7 @@ namespace patch
 
     bool Renderer::create_deferred_lighting_pipeline()
     {
-        VkDescriptorSetLayoutBinding bindings[6]{};
+        VkDescriptorSetLayoutBinding bindings[7]{};
 
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -210,9 +210,14 @@ namespace patch
         bindings[5].descriptorCount = 1;
         bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        bindings[6].binding = 7; /* ao_buffer from compute AO pass */
+        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[6].descriptorCount = 1;
+        bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 6;
+        layout_info.bindingCount = 7;
         layout_info.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &layout_info, nullptr, &deferred_lighting_descriptor_layout_) != VK_SUCCESS)
@@ -475,7 +480,7 @@ namespace patch
     {
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 7;
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8; /* +1 for AO */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
@@ -527,7 +532,12 @@ namespace patch
             blue_noise_info.imageView = blue_noise_view_ ? blue_noise_view_ : gbuffer_views_[0];
             blue_noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet writes[6]{};
+            VkDescriptorImageInfo ao_buffer_info{};
+            ao_buffer_info.sampler = gbuffer_sampler_;
+            ao_buffer_info.imageView = ao_output_view_ ? ao_output_view_ : gbuffer_views_[0];
+            ao_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet writes[7]{};
 
             for (uint32_t g = 0; g < GBUFFER_COUNT; g++)
             {
@@ -553,7 +563,14 @@ namespace patch
             writes[5].descriptorCount = 1;
             writes[5].pImageInfo = &blue_noise_info;
 
-            vkUpdateDescriptorSets(device_, 6, writes, 0, nullptr);
+            writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[6].dstSet = deferred_lighting_descriptor_sets_[i];
+            writes[6].dstBinding = 7; /* ao_buffer from compute AO pass */
+            writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[6].descriptorCount = 1;
+            writes[6].pImageInfo = &ao_buffer_info;
+
+            vkUpdateDescriptorSets(device_, 7, writes, 0, nullptr);
         }
 
         return true;
@@ -576,6 +593,27 @@ namespace patch
         write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         write.descriptorCount = 1;
         write.pImageInfo = &shadow_buffer_info;
+
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
+    void Renderer::update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view)
+    {
+        if (!gbuffer_initialized_ || !deferred_lighting_descriptor_pool_ || frame_index >= MAX_FRAMES_IN_FLIGHT)
+            return;
+
+        VkDescriptorImageInfo ao_buffer_info{};
+        ao_buffer_info.sampler = gbuffer_sampler_;
+        ao_buffer_info.imageView = ao_view ? ao_view : (ao_output_view_ ? ao_output_view_ : gbuffer_views_[0]);
+        ao_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = deferred_lighting_descriptor_sets_[frame_index];
+        write.dstBinding = 7; /* ao buffer */
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &ao_buffer_info;
 
         vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
     }

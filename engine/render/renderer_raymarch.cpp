@@ -11,6 +11,18 @@ namespace patch
         if (!compute_resources_initialized_ || !gbuffer_compute_pipeline_ || !vol)
             return;
 
+        /* Update temporal UBO with previous frame's view-projection matrix */
+        if (voxel_temporal_ubo_[current_frame_].buffer)
+        {
+            Mat4 prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
+            void *mapped = nullptr;
+            if (vkMapMemory(device_, voxel_temporal_ubo_[current_frame_].memory, 0, sizeof(Mat4), 0, &mapped) == VK_SUCCESS)
+            {
+                memcpy(mapped, &prev_view_proj, sizeof(Mat4));
+                vkUnmapMemory(device_, voxel_temporal_ubo_[current_frame_].memory);
+            }
+        }
+
         terrain_draw_count_++;
 
         /* Cache volume parameters for deferred lighting */
@@ -341,6 +353,205 @@ namespace patch
         history_write_index_ = read_index;
     }
 
+    void Renderer::dispatch_ao_compute()
+    {
+        if (!ao_resources_initialized_ || !ao_compute_pipeline_ || !shadow_volume_view_ ||
+            !ao_compute_descriptor_pool_ || !ao_output_image_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        /* Transition AO output to GENERAL for compute write */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = ao_output_image_;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Bind pipeline and descriptor sets */
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ao_compute_pipeline_);
+
+        VkDescriptorSet sets[3] = {
+            ao_compute_input_sets_[current_frame_],
+            ao_compute_gbuffer_sets_[current_frame_],
+            ao_compute_output_sets_[current_frame_]};
+
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                ao_compute_layout_, 0, 3, sets, 0, nullptr);
+
+        /* Push constants - same structure as shadow */
+        Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
+        Mat4 inv_proj = mat4_inverse(projection_matrix_);
+
+        VoxelPushConstants pc{};
+        pc.inv_view = inv_view;
+        pc.inv_projection = inv_proj;
+        pc.bounds_min[0] = deferred_bounds_min_[0];
+        pc.bounds_min[1] = deferred_bounds_min_[1];
+        pc.bounds_min[2] = deferred_bounds_min_[2];
+        pc.voxel_size = deferred_voxel_size_;
+        pc.bounds_max[0] = deferred_bounds_max_[0];
+        pc.bounds_max[1] = deferred_bounds_max_[1];
+        pc.bounds_max[2] = deferred_bounds_max_[2];
+        pc.chunk_size = static_cast<float>(CHUNK_SIZE);
+        pc.camera_pos[0] = camera_position_.x;
+        pc.camera_pos[1] = camera_position_.y;
+        pc.camera_pos[2] = camera_position_.z;
+        pc.pad1 = 0.0f;
+        pc.grid_size[0] = deferred_grid_size_[0];
+        pc.grid_size[1] = deferred_grid_size_[1];
+        pc.grid_size[2] = deferred_grid_size_[2];
+        pc.total_chunks = deferred_total_chunks_;
+        pc.chunks_dim[0] = deferred_chunks_dim_[0];
+        pc.chunks_dim[1] = deferred_chunks_dim_[1];
+        pc.chunks_dim[2] = deferred_chunks_dim_[2];
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.rt_quality = rt_quality_;
+        pc.debug_mode = terrain_debug_mode_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.max_steps = 512;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
+        pc.object_count = 0;
+
+        vkCmdPushConstants(cmd, ao_compute_layout_,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        /* Dispatch compute shader */
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition AO output to SHADER_READ_ONLY for temporal resolve */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+
+    void Renderer::dispatch_temporal_ao_resolve()
+    {
+        if (!ao_resources_initialized_ || !temporal_ao_compute_pipeline_ ||
+            !ao_history_image_views_[0] || !ao_history_image_views_[1] ||
+            !temporal_ao_descriptor_pool_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        const int write_index = ao_history_write_index_ & 1;
+        const int read_index = 1 - write_index;
+
+        /* Transition write history image to GENERAL for compute write */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = ao_history_images_[write_index];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Update history descriptors for this frame */
+        VkDescriptorImageInfo ao_history_info{};
+        ao_history_info.sampler = gbuffer_sampler_;
+        ao_history_info.imageView = ao_history_image_views_[read_index];
+        ao_history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet history_write{};
+        history_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        history_write.dstSet = temporal_ao_input_sets_[current_frame_];
+        history_write.dstBinding = 4;
+        history_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        history_write.descriptorCount = 1;
+        history_write.pImageInfo = &ao_history_info;
+
+        VkDescriptorImageInfo out_info{};
+        out_info.imageView = ao_history_image_views_[write_index];
+        out_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet out_write{};
+        out_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        out_write.dstSet = temporal_ao_output_sets_[current_frame_];
+        out_write.dstBinding = 0;
+        out_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        out_write.descriptorCount = 1;
+        out_write.pImageInfo = &out_info;
+
+        VkWriteDescriptorSet writes[2] = {history_write, out_write};
+        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_ao_compute_pipeline_);
+        VkDescriptorSet sets[2] = {temporal_ao_input_sets_[current_frame_], temporal_ao_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_ao_compute_layout_, 0, 2, sets, 0, nullptr);
+
+        Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
+        Mat4 inv_proj = mat4_inverse(projection_matrix_);
+
+        VoxelPushConstants pc{};
+        pc.inv_view = inv_view;
+        pc.inv_projection = inv_proj;
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.rt_quality = rt_quality_;
+        pc.debug_mode = terrain_debug_mode_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
+        pc.reserved[0] = temporal_ao_history_valid_ ? 1 : 0;
+
+        vkCmdPushConstants(cmd, temporal_ao_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition resolved image to SHADER_READ_ONLY for lighting pass sampling */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Point deferred lighting at the resolved AO image for this frame */
+        update_deferred_ao_buffer_descriptor(current_frame_, ao_history_image_views_[write_index]);
+
+        temporal_ao_history_valid_ = true;
+        ao_history_write_index_ = read_index;
+    }
+
     void Renderer::destroy_compute_raymarching_resources()
     {
         if (!compute_resources_initialized_)
@@ -425,6 +636,9 @@ namespace patch
             vkDestroyDescriptorPool(device_, shadow_compute_descriptor_pool_, nullptr);
             shadow_compute_descriptor_pool_ = VK_NULL_HANDLE;
         }
+
+        /* Destroy AO resources */
+        destroy_ao_resources();
 
         compute_resources_initialized_ = false;
     }

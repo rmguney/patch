@@ -168,11 +168,11 @@ namespace patch
         const Frustum &get_frustum() const { return frustum_; }
         bool is_rt_supported() const { return rt_supported_; }
 
-        /* Frustum culling utilities */
-        bool is_chunk_visible(int32_t cx, int32_t cy, int32_t cz,
-                              const VoxelVolume *vol) const;
         int get_rt_quality() const { return rt_quality_; }
         void set_rt_quality(int level);
+
+        void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
+        float get_interp_alpha() const { return interp_alpha_; }
 
         /* Adaptive quality control */
         void set_adaptive_quality(bool enabled);
@@ -340,6 +340,7 @@ namespace patch
         bool adaptive_quality_ = true;       /* Dynamic quality adjustment (default on) */
         int adaptive_cooldown_ = 0;          /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
+        float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
 
@@ -379,6 +380,35 @@ namespace patch
         VkImage shadow_output_image_;
         VkDeviceMemory shadow_output_memory_;
         VkImageView shadow_output_view_;
+
+        /* AO compute infrastructure */
+        VkPipeline ao_compute_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout ao_compute_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool ao_compute_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSet ao_compute_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet ao_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet ao_compute_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        /* AO output buffer */
+        VkImage ao_output_image_ = VK_NULL_HANDLE;
+        VkDeviceMemory ao_output_memory_ = VK_NULL_HANDLE;
+        VkImageView ao_output_view_ = VK_NULL_HANDLE;
+
+        /* AO history buffers for temporal accumulation */
+        VkImage ao_history_images_[2] = {};
+        VkDeviceMemory ao_history_image_memory_[2] = {};
+        VkImageView ao_history_image_views_[2] = {};
+        bool temporal_ao_history_valid_ = false;
+        int ao_history_write_index_ = 0;
+
+        /* Temporal AO pipeline */
+        VkPipeline temporal_ao_compute_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout temporal_ao_compute_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool temporal_ao_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSet temporal_ao_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet temporal_ao_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        bool ao_resources_initialized_ = false;
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -465,10 +495,10 @@ namespace patch
         /* Voxel object GPU raymarching (Phase 1.5) */
         static constexpr uint32_t VOBJ_ATLAS_MAX_OBJECTS = 512;
         static constexpr uint32_t VOBJ_GRID_DIM = 16;
-        VkImage vobj_atlas_image_;
-        VkDeviceMemory vobj_atlas_memory_;
-        VkImageView vobj_atlas_view_;
-        VkSampler vobj_atlas_sampler_;
+        VkImage vobj_atlas_image_ = VK_NULL_HANDLE;
+        VkDeviceMemory vobj_atlas_memory_ = VK_NULL_HANDLE;
+        VkImageView vobj_atlas_view_ = VK_NULL_HANDLE;
+        VkSampler vobj_atlas_sampler_ = VK_NULL_HANDLE;
         VulkanBuffer vobj_metadata_buffer_[MAX_FRAMES_IN_FLIGHT];
         void *vobj_metadata_mapped_[MAX_FRAMES_IN_FLIGHT];
         VulkanBuffer vobj_staging_buffer_;
@@ -564,6 +594,19 @@ namespace patch
         void dispatch_gbuffer_compute(const VoxelVolume *vol, int32_t object_count);
         void dispatch_shadow_compute();
         void dispatch_temporal_shadow_resolve();
+
+        /* AO compute infrastructure */
+        bool create_ao_output_resources();
+        bool create_ao_history_resources();
+        bool create_ao_compute_pipeline();
+        bool create_temporal_ao_pipeline();
+        bool create_ao_compute_descriptor_sets();
+        bool create_temporal_ao_descriptor_sets();
+        void destroy_ao_resources();
+        void update_ao_volume_descriptor();
+        void dispatch_ao_compute();
+        void dispatch_temporal_ao_resolve();
+        void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

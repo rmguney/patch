@@ -31,46 +31,41 @@ layout(push_constant) uniform Constants {
     int reserved[5];
 } pc;
 
-/* Set 0: inputs */
 layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
 layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
 layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
-layout(SET_BINDING(0, 3)) uniform sampler2D shadow_current;
-layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
+layout(SET_BINDING(0, 3)) uniform sampler2D ao_current;
+layout(SET_BINDING(0, 4)) uniform sampler2D ao_history;
 
-/* Set 1: output */
-layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
+layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_ao_resolved;
 
 const float HISTORY_BLEND = 0.85;
 
-void main()
-{
+void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(out_shadow_resolved);
+    ivec2 size = imageSize(out_ao_resolved);
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
 
     vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
 
-    float current_shadow = texelFetch(shadow_current, pixel, 0).r;
+    float current_ao = texelFetch(ao_current, pixel, 0).r;
 
     int history_valid = pc.reserved[0];
-    if (history_valid == 0)
-    {
-        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+    if (history_valid == 0) {
+        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
         return;
     }
 
     vec2 motion = texture(gbuffer_motion_vector, uv).xy;
     vec2 prev_uv = uv + motion;
 
-    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0))))
-    {
-        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
+    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)))) {
+        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
         return;
     }
 
-    float history_shadow = texture(shadow_history, prev_uv).r;
-    float resolved = mix(current_shadow, history_shadow, HISTORY_BLEND);
-    imageStore(out_shadow_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
+    float history_ao = texture(ao_history, prev_uv).r;
+    float resolved = mix(current_ao, history_ao, HISTORY_BLEND);
+    imageStore(out_ao_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
 }
