@@ -469,8 +469,8 @@ namespace patch
         VkDeviceMemory vobj_atlas_memory_;
         VkImageView vobj_atlas_view_;
         VkSampler vobj_atlas_sampler_;
-        VulkanBuffer vobj_metadata_buffer_;
-        void *vobj_metadata_mapped_;
+        VulkanBuffer vobj_metadata_buffer_[MAX_FRAMES_IN_FLIGHT];
+        void *vobj_metadata_mapped_[MAX_FRAMES_IN_FLIGHT];
         VulkanBuffer vobj_staging_buffer_;
         void *vobj_staging_mapped_;
 

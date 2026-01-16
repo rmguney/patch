@@ -59,6 +59,8 @@ set(ENGINE_VOXEL_SOURCES
     engine/voxel/chunk.c
     engine/voxel/volume.h
     engine/voxel/volume.c
+    engine/voxel/volume_raycast.c
+    engine/voxel/volume_shadow.c
     engine/voxel/connectivity.h
     engine/voxel/connectivity.c
     engine/voxel/voxel_object.h
@@ -191,7 +193,11 @@ set(ENGINE_RENDER_SOURCES
     engine/render/renderer_vulkan.cpp
     engine/render/renderer_voxel.cpp
     engine/render/renderer_gbuffer.cpp
+    engine/render/renderer_gbuffer_init.cpp
+    engine/render/renderer_textures.cpp
     engine/render/renderer_raymarch.cpp
+    engine/render/renderer_compute_init.cpp
+    engine/render/renderer_shadow_init.cpp
     engine/render/renderer_voxel_objects.cpp
     engine/render/renderer_particles.cpp
     engine/render/ui_font.h
@@ -276,6 +282,8 @@ set(APP_SOURCES
     app/main.cpp
     app/app_ui.h
     app/app_ui.cpp
+    app/app_debug.h
+    app/app_debug.cpp
 )
 
 add_executable(patch_samples ${APP_SOURCES})

@@ -112,14 +112,17 @@ namespace patch
             vobj_atlas_memory_ = VK_NULL_HANDLE;
         }
 
-        if (vobj_metadata_buffer_.buffer)
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
-            if (vobj_metadata_mapped_)
+            if (vobj_metadata_buffer_[i].buffer)
             {
-                vkUnmapMemory(device_, vobj_metadata_buffer_.memory);
-                vobj_metadata_mapped_ = nullptr;
+                if (vobj_metadata_mapped_[i])
+                {
+                    vkUnmapMemory(device_, vobj_metadata_buffer_[i].memory);
+                    vobj_metadata_mapped_[i] = nullptr;
+                }
+                destroy_buffer(&vobj_metadata_buffer_[i]);
             }
-            destroy_buffer(&vobj_metadata_buffer_);
         }
 
         if (vobj_staging_buffer_.buffer)
@@ -141,8 +144,11 @@ namespace patch
         vobj_atlas_memory_ = VK_NULL_HANDLE;
         vobj_atlas_view_ = VK_NULL_HANDLE;
         vobj_atlas_sampler_ = VK_NULL_HANDLE;
-        vobj_metadata_buffer_ = {};
-        vobj_metadata_mapped_ = nullptr;
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vobj_metadata_buffer_[i] = {};
+            vobj_metadata_mapped_[i] = nullptr;
+        }
         vobj_staging_buffer_ = {};
         vobj_staging_mapped_ = nullptr;
 
@@ -217,12 +223,15 @@ namespace patch
         }
 
         VkDeviceSize metadata_size = static_cast<VkDeviceSize>(max_objects) * sizeof(VoxelObjectGPU);
-        create_buffer(metadata_size,
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      &vobj_metadata_buffer_);
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            create_buffer(metadata_size,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &vobj_metadata_buffer_[i]);
 
-        vkMapMemory(device_, vobj_metadata_buffer_.memory, 0, metadata_size, 0, &vobj_metadata_mapped_);
+            vkMapMemory(device_, vobj_metadata_buffer_[i].memory, 0, metadata_size, 0, &vobj_metadata_mapped_[i]);
+        }
 
         VkDeviceSize staging_size = static_cast<VkDeviceSize>(VOBJ_GRID_DIM) * VOBJ_GRID_DIM * VOBJ_GRID_DIM;
         create_buffer(staging_size,
@@ -509,7 +518,7 @@ namespace patch
             atlas_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
             VkDescriptorBufferInfo metadata_info{};
-            metadata_info.buffer = vobj_metadata_buffer_.buffer;
+            metadata_info.buffer = vobj_metadata_buffer_[i].buffer;
             metadata_info.offset = 0;
             metadata_info.range = VK_WHOLE_SIZE;
 
@@ -629,10 +638,10 @@ namespace patch
 
     void Renderer::upload_vobj_metadata(const VoxelObjectWorld *world)
     {
-        if (!vobj_resources_initialized_ || !world || !vobj_metadata_mapped_)
+        if (!vobj_resources_initialized_ || !world || !vobj_metadata_mapped_[current_frame_])
             return;
 
-        VoxelObjectGPU *gpu_data = static_cast<VoxelObjectGPU *>(vobj_metadata_mapped_);
+        VoxelObjectGPU *gpu_data = static_cast<VoxelObjectGPU *>(vobj_metadata_mapped_[current_frame_]);
 
         /* Extract view frustum for culling */
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
@@ -650,18 +659,6 @@ namespace patch
             float bounding_radius = half_size * 1.732051f;
             FrustumResult cull_result = frustum_test_sphere(&frustum, obj->position, bounding_radius);
             bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active;
-
-            /* Distance-based LOD culling: skip objects too small on screen */
-            if (visible)
-            {
-                float dist = vec3_length(vec3_sub(obj->position, camera_position_));
-                float screen_size = bounding_radius / (dist + 0.001f);
-                /* Skip if object covers less than ~1% of screen (0.01 threshold) */
-                if (screen_size < 0.005f)
-                {
-                    visible = false;
-                }
-            }
 
             float rot_mat[9];
             quat_to_mat3(obj->orientation, rot_mat);

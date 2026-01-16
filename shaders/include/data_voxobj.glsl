@@ -113,48 +113,55 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
 
 /*
  * Calculate LOD-adjusted max steps based on distance and rt_quality.
- * 
+ *
  * Distance thresholds (scaled by rt_quality 1-3):
  *   Near:  < 40/60/80 units  -> full steps (48)
  *   Mid:   < 80/120/160 units -> medium (32)
- *   Far:   >= threshold      -> coarse (16)
+ *   Far:   >= threshold      -> reduced (28)
+ *
+ * Minimum 28 steps required for diagonal traversal of 16³ grid (sqrt(3)*16≈28).
  */
 int vobj_calc_distance_lod_steps(float distance, int rt_quality, int base_steps) {
     float quality_scale = float(max(rt_quality, 1));
     float near_thresh = 40.0 * quality_scale;
     float far_thresh = 80.0 * quality_scale;
-    
+
+    int steps;
     if (distance < near_thresh) {
-        return base_steps;           // Full detail
+        steps = base_steps;           // Full detail
     } else if (distance < far_thresh) {
-        return (base_steps * 2) / 3; // ~32 steps for base 48
+        steps = (base_steps * 2) / 3; // ~32 steps for base 48
     } else {
-        return base_steps / 3;       // ~16 steps for base 48
+        steps = base_steps / 2;       // ~24 steps for base 48
     }
+    return max(steps, 28);            // Minimum for diagonal traversal
 }
 
 /*
  * Calculate LOD-adjusted max steps based on screen coverage.
  * Large objects covering more screen need fewer steps (voxels span multiple pixels).
  *
- * Aggressive coverage thresholds (optimized for close-up performance):
- *   > 50% screen -> ultra coarse (8 steps)
- *   > 30% screen -> very coarse (12 steps)
- *   > 15% screen -> coarse (16 steps)
- *   > 5% screen  -> medium (24 steps)
- *   <= 5%        -> high detail (32 steps, still reduced from base 48)
+ * Coverage thresholds (minimum 28 steps for diagonal traversal):
+ *   > 50% screen -> reduced (28 steps minimum)
+ *   > 30% screen -> reduced (28 steps minimum)
+ *   > 15% screen -> reduced (28 steps minimum)
+ *   > 5% screen  -> medium (28 steps)
+ *   <= 5%        -> high detail (32 steps)
  */
 int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
+    int steps;
     if (coverage > 0.5) {
-        return base_steps / 6;       // ~8 steps
+        steps = base_steps / 6;       // ~8 steps (will be clamped)
     } else if (coverage > 0.3) {
-        return base_steps / 4;       // ~12 steps
+        steps = base_steps / 4;       // ~12 steps (will be clamped)
     } else if (coverage > 0.15) {
-        return base_steps / 3;       // ~16 steps
+        steps = base_steps / 3;       // ~16 steps (will be clamped)
     } else if (coverage > 0.05) {
-        return base_steps / 2;       // ~24 steps
+        steps = base_steps / 2;       // ~24 steps (will be clamped)
+    } else {
+        steps = (base_steps * 2) / 3; // ~32 steps
     }
-    return (base_steps * 2) / 3;     // ~32 steps (high detail but not full)
+    return max(steps, 28);            // Minimum for diagonal traversal
 }
 
 /*
