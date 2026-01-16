@@ -1456,16 +1456,16 @@ namespace patch
         gbuffer_compute_dispatched_ = false;
     }
 
-    void Renderer::prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles)
+    void Renderer::prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects)
     {
         if (!gbuffer_initialized_ || !vol || !voxel_resources_initialized_)
             return;
 
-        /* Dispatch compute terrain if enabled (must be called before begin_gbuffer_pass)
-         * Skip compute when objects/particles exist - they need hardware depth buffer which compute can't fill */
-        if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_ && !has_objects_or_particles)
+        /* Dispatch compute terrain + objects if enabled (must be called before begin_gbuffer_pass) */
+        if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_)
         {
-            dispatch_gbuffer_compute(vol);
+            int32_t object_count = (objects && vobj_resources_initialized_) ? objects->object_count : 0;
+            dispatch_gbuffer_compute(vol, object_count);
         }
     }
 

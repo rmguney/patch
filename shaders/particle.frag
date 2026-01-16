@@ -73,9 +73,16 @@ void main() {
         discard;
     }
 
-    float t = max(t_hit.x, 0.001);
+    /* Use entry point if outside box, exit point if inside (camera inside particle) */
+    float t = t_hit.x > 0.0 ? t_hit.x : t_hit.y;
+    t = max(t, 0.001);
     vec3 hit_point = in_ray_origin + ray_dir * t;
+
+    /* Normal: use entry face if outside, exit face if inside */
     vec3 normal = box_normal(hit_point, box_min, box_max);
+    if (t_hit.x <= 0.0) {
+        normal = -normal; /* Flip normal when viewing from inside */
+    }
 
     float linear_depth = t;
 

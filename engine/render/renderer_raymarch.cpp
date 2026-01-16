@@ -989,7 +989,7 @@ namespace patch
         }
     }
 
-    void Renderer::dispatch_gbuffer_compute(const VoxelVolume *vol)
+    void Renderer::dispatch_gbuffer_compute(const VoxelVolume *vol, int32_t object_count)
     {
         if (!compute_resources_initialized_ || !gbuffer_compute_pipeline_ || !vol)
             return;
@@ -1096,7 +1096,7 @@ namespace patch
         pc.max_steps = 512;
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
-        pc.object_count = 0;
+        pc.object_count = object_count;
 
         vkCmdPushConstants(cmd, gbuffer_compute_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);

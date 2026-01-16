@@ -353,12 +353,26 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     }
     else
     {
-        /* Mouse not held - run pending connectivity analysis */
+        /* Mouse not held - run pending connectivity analysis with throttling */
         if (data->pending_connectivity && data->detach_ready && data->terrain && data->objects)
         {
-            DetachConfig cfg = detach_config_default();
-            detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, NULL);
-            data->pending_connectivity = false;
+            int64_t now_ticks = platform_get_ticks();
+            int64_t freq = platform_get_frequency();
+            double now = (double)now_ticks / (double)freq;
+            double cooldown_sec = 0.1; /* 100ms minimum between analyses */
+
+            /* Throttle: skip if too soon after last analysis or frame already over budget */
+            bool cooldown_ok = (now - data->last_connectivity_time) >= cooldown_sec;
+            bool budget_ok = profile_budget_used_pct() < 80.0f;
+
+            if (cooldown_ok && budget_ok)
+            {
+                DetachConfig cfg = detach_config_default();
+                detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, NULL);
+                data->pending_connectivity = false;
+                data->last_connectivity_time = now;
+            }
+            /* If over budget, keep pending_connectivity true to retry next frame */
         }
     }
 }

@@ -122,17 +122,18 @@ bool sample_shadow_mip2(ivec3 voxel_pos) {
     return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
 }
 
-float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
+/* Trace shadow ray, returns hit distance (max_dist if no hit) */
+float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
     vec2 box_hit = hdda_intersect_aabb(origin, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
-        return 1.0;
+        return max_dist;
     }
 
     float t_start = max(box_hit.x, 0.001);
     float t_end = min(box_hit.y, max_dist);
 
     if (t_start >= t_end) {
-        return 1.0;
+        return max_dist;
     }
 
     vec3 start_pos = origin + rd * t_start;
@@ -153,7 +154,7 @@ float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
-            return 1.0;
+            return max_dist;
         }
 
         /* Level 2: mip2 occupancy (8x8x8 voxels) */
@@ -187,7 +188,10 @@ float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
 
         /* Level 0: Per-voxel check against shadow volume */
         if (sample_shadow_volume(map_pos)) {
-            return 0.0;
+            /* Compute actual world distance to hit voxel center */
+            vec3 hit_grid = vec3(map_pos) + 0.5;
+            vec3 hit_world = pc.bounds_min + hit_grid * pc.voxel_size;
+            return length(hit_world - origin);
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
@@ -195,7 +199,12 @@ float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
         map_pos += ivec3(mask) * step_dir;
     }
 
-    return 1.0;
+    return max_dist;
+}
+
+/* Original interface for compatibility */
+float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
+    return trace_shadow_hdda_dist(origin, rd, max_dist) < max_dist ? 0.0 : 1.0;
 }
 
 void main() {
@@ -245,7 +254,22 @@ void main() {
         /* Scale samples: quality 1=4, 2=8, 3=12 samples for smoother soft shadows */
         int num_samples = pc.rt_quality * 4;
         float shadow_sum = 0.0;
-        float penumbra = 0.03 + 0.015 * float(pc.rt_quality);
+
+        /* Contact hardening only at quality >= 2 (good), otherwise use constant penumbra */
+        float base_penumbra = 0.04 + 0.02 * float(pc.rt_quality);
+        float penumbra = base_penumbra;
+
+        if (pc.rt_quality >= 2) {
+            /* Contact hardening: trace center ray to find occluder distance */
+            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
+
+            /* Scale penumbra: near occluder = sharper, far = softer
+               If center ray misses, use full penumbra (jittered rays may still hit) */
+            if (occluder_dist < SHADOW_MAX_DIST) {
+                float contact_factor = clamp(occluder_dist / 5.0, 0.3, 1.0);
+                penumbra = base_penumbra * contact_factor;
+            }
+        }
 
         for (int s = 0; s < num_samples; s++) {
             float noise = fract(temporal_noise + float(s) * 0.618);

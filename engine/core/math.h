@@ -573,6 +573,38 @@ extern "C"
     }
 
     /*
+     * Test sphere against frustum.
+     * Returns FRUSTUM_OUTSIDE if completely outside, FRUSTUM_INSIDE if completely inside,
+     * FRUSTUM_INTERSECT if partially visible.
+     */
+    static inline FrustumResult frustum_test_sphere(const Frustum *f, Vec3 center, float radius)
+    {
+        FrustumResult result = FRUSTUM_INSIDE;
+
+        for (int i = 0; i < 6; i++)
+        {
+            Vec4 p = f->planes[i];
+
+            /* Signed distance from sphere center to plane */
+            float dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
+
+            /* If center is more than radius behind plane, sphere is outside */
+            if (dist < -radius)
+            {
+                return FRUSTUM_OUTSIDE;
+            }
+
+            /* If center is within radius of plane, sphere intersects */
+            if (dist < radius)
+            {
+                result = FRUSTUM_INTERSECT;
+            }
+        }
+
+        return result;
+    }
+
+    /*
      * Test if AABB is entirely behind a plane (camera near plane for "behind camera" test).
      * Plane defined as point + normal (normal points toward visible space).
      */

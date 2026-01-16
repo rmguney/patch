@@ -136,22 +136,25 @@ int vobj_calc_distance_lod_steps(float distance, int rt_quality, int base_steps)
 /*
  * Calculate LOD-adjusted max steps based on screen coverage.
  * Large objects covering more screen need fewer steps (voxels span multiple pixels).
- * 
- * Coverage thresholds:
- *   > 40% screen -> very coarse (16 steps)
- *   > 20% screen -> coarse (24 steps)  
- *   > 10% screen -> medium (32 steps)
- *   <= 10%       -> full detail (base_steps)
+ *
+ * Aggressive coverage thresholds (optimized for close-up performance):
+ *   > 50% screen -> ultra coarse (8 steps)
+ *   > 30% screen -> very coarse (12 steps)
+ *   > 15% screen -> coarse (16 steps)
+ *   > 5% screen  -> medium (24 steps)
+ *   <= 5%        -> high detail (32 steps, still reduced from base 48)
  */
 int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
-    if (coverage > 0.4) {
+    if (coverage > 0.5) {
+        return base_steps / 6;       // ~8 steps
+    } else if (coverage > 0.3) {
+        return base_steps / 4;       // ~12 steps
+    } else if (coverage > 0.15) {
         return base_steps / 3;       // ~16 steps
-    } else if (coverage > 0.2) {
+    } else if (coverage > 0.05) {
         return base_steps / 2;       // ~24 steps
-    } else if (coverage > 0.1) {
-        return (base_steps * 2) / 3; // ~32 steps
     }
-    return base_steps;               // Full detail
+    return (base_steps * 2) / 3;     // ~32 steps (high detail but not full)
 }
 
 /*
@@ -226,7 +229,16 @@ HitInfo vobj_march_object(
             last_region = region;
             int region_idx = region.x + region.y * 2 + region.z * 4;
             if ((occupancy & (1u << region_idx)) == 0u) {
-                hdda_step(dda);
+                /* Skip to region boundary instead of stepping 1 voxel */
+                ivec3 region_min = region * 8;
+                ivec3 region_max = region_min + 7;
+                /* Calculate steps to exit region on each axis */
+                ivec3 exit_pos = mix(region_min - 1, region_max + 1, greaterThan(dda.step_dir, ivec3(0)));
+                vec3 steps_to_exit = vec3(exit_pos - dda.map_pos) / vec3(dda.step_dir);
+                steps_to_exit = max(steps_to_exit, vec3(1.0));
+                int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+                dda.map_pos += dda.step_dir * skip;
+                i += skip - 1; /* Account for loop increment */
                 continue;
             }
         }

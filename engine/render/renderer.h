@@ -102,7 +102,7 @@ namespace patch
         void end_frame(uint32_t image_index);
 
         /* Deferred rendering pass methods */
-        void prepare_gbuffer_compute(const VoxelVolume *vol, bool has_objects_or_particles); /* Call before begin_gbuffer_pass */
+        void prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects); /* Call before begin_gbuffer_pass */
         void begin_gbuffer_pass();
         void end_gbuffer_pass();
         void render_gbuffer_terrain(const VoxelVolume *vol);
@@ -549,7 +549,7 @@ namespace patch
         bool create_temporal_shadow_pipeline();
         bool create_temporal_shadow_descriptor_sets();
         void destroy_compute_raymarching_resources();
-        void dispatch_gbuffer_compute(const VoxelVolume *vol);
+        void dispatch_gbuffer_compute(const VoxelVolume *vol, int32_t object_count);
         void dispatch_shadow_compute();
         void dispatch_temporal_shadow_resolve();
 

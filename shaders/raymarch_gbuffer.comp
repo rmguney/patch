@@ -249,7 +249,8 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
-    /* March all voxel objects and keep closest (with ray-sphere early-out + distance LOD) */
+    /* March all voxel objects and keep closest (with ray-sphere early-out + combined LOD) */
+    float terrain_t = best_hit.t;
     for (int i = 0; i < pc.object_count; i++) {
         /* Quick ray-sphere rejection - skip objects ray cannot possibly hit */
         if (!vobj_ray_could_hit(ray_origin, ray_dir, i)) {
@@ -260,8 +261,19 @@ void main() {
         vec3 obj_pos = vobj_get_world_position(i);
         float dist = length(obj_pos - pc.camera_pos);
 
-        /* Distance-based LOD (no screen coverage in compute path) */
-        int max_steps = vobj_calc_distance_lod_steps(dist, pc.rt_quality, VOBJ_BASE_STEPS);
+        /* Early depth termination: skip objects entirely behind current best hit */
+        float obj_radius = vobj_get_bounding_radius(i);
+        float closest_possible_t = dist - obj_radius;
+        if (closest_possible_t > best_hit.t) {
+            continue;
+        }
+
+        /* Calculate screen coverage for LOD (approximate from object size and distance) */
+        float half_extent = vobj_get_half_extent(i);
+        float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
+
+        /* Combined LOD: distance + screen coverage */
+        int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.rt_quality, VOBJ_BASE_STEPS);
 
         HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
         if (obj_hit.hit && obj_hit.t < best_hit.t) {

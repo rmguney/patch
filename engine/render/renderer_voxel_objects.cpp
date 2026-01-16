@@ -634,6 +634,10 @@ namespace patch
 
         VoxelObjectGPU *gpu_data = static_cast<VoxelObjectGPU *>(vobj_metadata_mapped_);
 
+        /* Extract view frustum for culling */
+        Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
+        Frustum frustum = frustum_from_view_proj(view_proj);
+
         for (int32_t i = 0; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_); i++)
         {
             const VoxelObject *obj = &world->objects[i];
@@ -641,6 +645,23 @@ namespace patch
 
             float vs = obj->voxel_size;
             float half_size = vs * static_cast<float>(VOBJ_GRID_SIZE) * 0.5f;
+
+            /* Frustum culling: use bounding sphere (sqrt(3) * half_size for cube diagonal) */
+            float bounding_radius = half_size * 1.732051f;
+            FrustumResult cull_result = frustum_test_sphere(&frustum, obj->position, bounding_radius);
+            bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active;
+
+            /* Distance-based LOD culling: skip objects too small on screen */
+            if (visible)
+            {
+                float dist = vec3_length(vec3_sub(obj->position, camera_position_));
+                float screen_size = bounding_radius / (dist + 0.001f);
+                /* Skip if object covers less than ~1% of screen (0.01 threshold) */
+                if (screen_size < 0.005f)
+                {
+                    visible = false;
+                }
+            }
 
             float rot_mat[9];
             quat_to_mat3(obj->orientation, rot_mat);
@@ -693,7 +714,7 @@ namespace patch
             gpu->position[0] = obj->position.x;
             gpu->position[1] = obj->position.y;
             gpu->position[2] = obj->position.z;
-            gpu->position[3] = obj->active ? 1.0f : 0.0f;
+            gpu->position[3] = visible ? 1.0f : 0.0f; /* Mark invisible if culled */
 
             gpu->atlas_slice = static_cast<uint32_t>(i);
             gpu->material_base = 0;

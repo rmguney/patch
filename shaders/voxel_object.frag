@@ -18,6 +18,9 @@ layout(location = 2) out vec4 out_material;
 layout(location = 3) out float out_linear_depth;
 layout(location = 4) out vec2 out_motion_vector;
 
+/* Enable early-z: we only write depth >= interpolated bounding box depth */
+layout(depth_greater) out float gl_FragDepth;
+
 struct VoxelObjectGPU {
     mat4 world_to_local;
     mat4 local_to_world;

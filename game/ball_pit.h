@@ -46,6 +46,7 @@ extern "C"
         ConnectivityWorkBuffer detach_work;
         bool detach_ready;
         bool pending_connectivity;  /* Run connectivity on next frame when not destroying */
+        double last_connectivity_time; /* Time of last connectivity analysis (for throttling) */
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);
