@@ -124,7 +124,7 @@ namespace patch
         /* GPU raymarched particle rendering */
         void render_particles_raymarched(const ParticleSystem *sys);
 
-        /* GPU raymarched voxel object rendering (Phase 1.5) */
+        /* GPU raymarched voxel object rendering */
         void render_voxel_objects_raymarched(const VoxelObjectWorld *world);
         bool init_voxel_object_resources(uint32_t max_objects);
         void destroy_voxel_object_resources();
@@ -168,9 +168,6 @@ namespace patch
         const Frustum &get_frustum() const { return frustum_; }
         bool is_rt_supported() const { return rt_supported_; }
 
-        int get_rt_quality() const { return rt_quality_; }
-        void set_rt_quality(int level);
-
         void set_shadow_quality(int level);
         void set_shadow_contact_hardening(bool enabled);
         void set_ao_quality(int level);
@@ -183,6 +180,9 @@ namespace patch
         int get_reflection_quality() const { return reflection_quality_; }
         void set_denoise_quality(int level);
         int get_denoise_quality() const { return denoise_quality_; }
+        void set_gi_quality(int level);
+        int get_gi_quality() const { return gi_quality_; }
+        void init_gi_if_pending();
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -261,7 +261,7 @@ namespace patch
         std::vector<VkFramebuffer> framebuffers_;
 
         VkRenderPass render_pass_;
-        VkRenderPass render_pass_load_;   /* LOAD_OP_LOAD variant for UI after blit */
+        VkRenderPass render_pass_load_; /* LOAD_OP_LOAD variant for UI after blit */
         VkPipelineLayout pipeline_layout_;
         VkPipeline ui_pipeline_;
 
@@ -350,16 +350,16 @@ namespace patch
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;
-        int rt_quality_ = 1;                 /* 0=Off, 1=Fair, 2=Good, 3=High (legacy) */
-        bool adaptive_quality_ = true;       /* Dynamic quality adjustment (default on) */
-        int adaptive_cooldown_ = 0;          /* Frames until next quality change allowed */
+        bool adaptive_quality_ = true; /* Dynamic quality adjustment (default on) */
+        int adaptive_cooldown_ = 0;    /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
-        int shadow_quality_ = 2;             /* 0=None, 1=Fair, 2=Good, 3=High */
+        int shadow_quality_ = 2; /* 0=None, 1=Fair, 2=Good, 3=High */
         bool shadow_contact_hardening_ = true;
         int ao_quality_ = 1;                 /* 0=None, 1=Fair, 2=Good */
         int lod_quality_ = 1;                /* 0=Fair, 1=Good, 2=High */
         int reflection_quality_ = 1;         /* 0=Off, 1=Fair, 2=Good */
         int denoise_quality_ = 1;            /* 0=Off, 1=On */
+        int gi_quality_ = 0;                 /* 0=Off, 1=Low, 2=Medium, 3=High */
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -434,7 +434,7 @@ namespace patch
         VkPipeline reflection_compute_pipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout reflection_compute_layout_ = VK_NULL_HANDLE;
         VkDescriptorPool reflection_compute_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout reflection_compute_input_layout_ = VK_NULL_HANDLE;  /* Set 0: voxel data + shadow vol + materials */
+        VkDescriptorSetLayout reflection_compute_input_layout_ = VK_NULL_HANDLE; /* Set 0: voxel data + shadow vol + materials */
         VkDescriptorSetLayout reflection_compute_gbuffer_layout_ = VK_NULL_HANDLE;
         VkDescriptorSet reflection_compute_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
         VkDescriptorSet reflection_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT] = {};
@@ -486,6 +486,49 @@ namespace patch
 
         bool spatial_denoise_initialized_ = false;
 
+        /* Radiance cascade GI infrastructure */
+        static constexpr uint32_t GI_CASCADE_LEVELS = 4;
+        static constexpr uint32_t GI_CASCADE_BASE_DIM = 128; /* Level 0 resolution per axis */
+
+        struct RadianceCascade
+        {
+            VkImage image = VK_NULL_HANDLE;
+            VkDeviceMemory memory = VK_NULL_HANDLE;
+            VkImageView view = VK_NULL_HANDLE;
+            uint32_t dims[3] = {0, 0, 0};  /* Resolution for this level */
+            uint32_t voxels_per_texel = 1; /* How many world voxels per cascade texel */
+        };
+
+        RadianceCascade gi_cascades_[GI_CASCADE_LEVELS] = {};
+        VkSampler gi_cascade_sampler_ = VK_NULL_HANDLE;
+
+        /* Cascade dirty tracking (per-level bitmaps) */
+        static constexpr uint32_t GI_DIRTY_BITMAP_SIZE = (GI_CASCADE_BASE_DIM * GI_CASCADE_BASE_DIM * GI_CASCADE_BASE_DIM + 63) / 64;
+        uint64_t gi_dirty_bitmap_[GI_CASCADE_LEVELS][GI_DIRTY_BITMAP_SIZE] = {};
+        bool gi_cascade_needs_full_rebuild_ = true;
+
+        /* GI injection pipeline */
+        VkPipeline gi_inject_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_inject_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_inject_input_layout_ = VK_NULL_HANDLE;  /* Set 0: voxel data + shadow vol + materials */
+        VkDescriptorSetLayout gi_inject_output_layout_ = VK_NULL_HANDLE; /* Set 1: cascade output */
+        VkDescriptorPool gi_inject_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSet gi_inject_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet gi_inject_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        /* GI propagation pipeline */
+        VkPipeline gi_propagate_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_propagate_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_propagate_src_layout_ = VK_NULL_HANDLE; /* Set 0: source cascade sampler */
+        VkDescriptorSetLayout gi_propagate_dst_layout_ = VK_NULL_HANDLE; /* Set 1: dest cascade storage */
+        VkDescriptorPool gi_propagate_descriptor_pool_ = VK_NULL_HANDLE;
+        /* Descriptor sets for each propagation step: 0→1, 1→2, 2→3 */
+        static constexpr uint32_t GI_PROPAGATE_STEPS = GI_CASCADE_LEVELS - 1;
+        VkDescriptorSet gi_propagate_src_sets_[GI_PROPAGATE_STEPS] = {};
+        VkDescriptorSet gi_propagate_dst_sets_[GI_PROPAGATE_STEPS] = {};
+
+        bool gi_resources_initialized_ = false;
+
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
         bool gbuffer_compute_dispatched_ = false; /* Set when compute fills gbuffer this frame */
@@ -516,8 +559,8 @@ namespace patch
         VkImageView gbuffer_views_[GBUFFER_COUNT];
         VkSampler gbuffer_sampler_;
         VkRenderPass gbuffer_render_pass_;
-        VkRenderPass gbuffer_render_pass_load_;             /* Uses LOAD_OP_LOAD for colors, CLEAR for depth */
-        VkRenderPass gbuffer_render_pass_load_with_depth_;  /* Uses LOAD_OP_LOAD for colors AND depth */
+        VkRenderPass gbuffer_render_pass_load_;            /* Uses LOAD_OP_LOAD for colors, CLEAR for depth */
+        VkRenderPass gbuffer_render_pass_load_with_depth_; /* Uses LOAD_OP_LOAD for colors AND depth */
         bool depth_primed_this_frame_ = false;
         VkFramebuffer gbuffer_framebuffer_;
         VkDescriptorSetLayout gbuffer_descriptor_layout_;
@@ -568,7 +611,7 @@ namespace patch
         VkDeviceMemory motion_vector_memory_;
         VkImageView motion_vector_view_;
 
-        /* Voxel object GPU raymarching (Phase 1.5) */
+        /* Voxel object GPU raymarching */
         static constexpr uint32_t VOBJ_ATLAS_MAX_OBJECTS = 512;
         static constexpr uint32_t VOBJ_GRID_DIM = 16;
         VkImage vobj_atlas_image_ = VK_NULL_HANDLE;
@@ -696,6 +739,7 @@ namespace patch
         void dispatch_reflection_compute();
         void dispatch_temporal_reflection_resolve();
         void update_deferred_reflection_buffer_descriptor(uint32_t frame_index, VkImageView reflection_view);
+        void update_deferred_gi_cascade_descriptors();
 
         /* Spatial denoise compute infrastructure */
         bool create_lit_color_resources();
@@ -706,6 +750,20 @@ namespace patch
         void destroy_spatial_denoise_resources();
         void dispatch_spatial_denoise();
         void blit_denoised_to_swapchain(uint32_t image_index);
+
+        /* Radiance cascade GI infrastructure */
+        bool create_gi_cascade_resources();
+        void destroy_gi_cascade_resources();
+        void mark_gi_cascade_dirty(uint32_t level, uint32_t x, uint32_t y, uint32_t z);
+        void clear_gi_dirty_flags();
+        size_t get_gi_cascade_memory_usage() const;
+        bool create_gi_inject_pipeline();
+        bool create_gi_inject_descriptor_sets();
+        void update_gi_inject_descriptors();
+        void dispatch_gi_inject();
+        bool create_gi_propagate_pipeline();
+        bool create_gi_propagate_descriptor_sets();
+        void dispatch_gi_propagate();
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

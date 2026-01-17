@@ -101,18 +101,42 @@ static void create_terrain_features(VoxelVolume *vol, float floor_y)
     float cz = (vol->bounds.min_z + vol->bounds.max_z) * 0.5f;
     float wall_height = 4.0f;
 
+    /* Chrome floor section for reflection testing */
+    Vec3 chrome_min = vec3_create(cx - 2.0f, floor_y - 0.1f, cz - 2.0f);
+    Vec3 chrome_max = vec3_create(cx + 2.0f, floor_y + 0.1f, cz + 2.0f);
+    volume_fill_box(vol, chrome_min, chrome_max, MAT_CHROME);
+
+    /* Yellow pillar in center */
     float pillar_size = 0.5f;
     Vec3 pillar_min = vec3_create(cx - pillar_size, floor_y, cz - pillar_size);
     Vec3 pillar_max = vec3_create(cx + pillar_size, floor_y + wall_height, cz + pillar_size);
     volume_fill_box(vol, pillar_min, pillar_max, MAT_YELLOW);
 
+    /* Red wall (front) - for GI color bleeding */
     Vec3 front_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
     Vec3 front_wall_max = vec3_create(vol->bounds.max_x, floor_y + wall_height, vol->bounds.min_z + 0.5f);
-    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_PINK);
+    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_RED);
 
+    /* Green wall (left) - for GI color bleeding */
     Vec3 left_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
     Vec3 left_wall_max = vec3_create(vol->bounds.min_x + 0.5f, floor_y + wall_height, vol->bounds.max_z);
-    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_MINT);
+    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_GREEN);
+
+    /* Emissive glow blocks for GI light sources */
+    /* Corner light near red/green wall intersection */
+    Vec3 glow1_min = vec3_create(vol->bounds.min_x + 0.6f, floor_y + 1.0f, vol->bounds.min_z + 0.6f);
+    Vec3 glow1_max = vec3_create(vol->bounds.min_x + 1.2f, floor_y + 1.6f, vol->bounds.min_z + 1.2f);
+    volume_fill_box(vol, glow1_min, glow1_max, MAT_GLOW);
+
+    /* Second glow block on the green wall */
+    Vec3 glow2_min = vec3_create(vol->bounds.min_x + 0.6f, floor_y + 2.0f, cz - 0.3f);
+    Vec3 glow2_max = vec3_create(vol->bounds.min_x + 1.0f, floor_y + 2.6f, cz + 0.3f);
+    volume_fill_box(vol, glow2_min, glow2_max, MAT_GLOW);
+
+    /* Third glow block on the red wall */
+    Vec3 glow3_min = vec3_create(cx - 0.3f, floor_y + 2.0f, vol->bounds.min_z + 0.6f);
+    Vec3 glow3_max = vec3_create(cx + 0.3f, floor_y + 2.6f, vol->bounds.min_z + 1.0f);
+    volume_fill_box(vol, glow3_min, glow3_max, MAT_GLOW);
 }
 
 static void ball_pit_init(Scene *scene)

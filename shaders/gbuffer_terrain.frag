@@ -29,7 +29,7 @@ PUSH_CONSTANT uniform Constants {
     int total_chunks;
     ivec3 chunks_dim;
     int frame_count;
-    int rt_quality;
+    int _pad0;
     int debug_mode;
     int is_orthographic;
     int max_steps;

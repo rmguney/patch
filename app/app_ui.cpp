@@ -56,28 +56,35 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
     ui_menu_clear(menu, "GRAPHICS");
     bool adaptive_on = s->adaptive_quality != 0;
 
-    ui_menu_add_slider_labeled(menu, "ADAPTIVE", APP_ACTION_SETTING_ADAPTIVE,
+    /* Auto quality - controls settings below automatically */
+    ui_menu_add_slider_labeled(menu, "ADAPTIVE QUALITY", APP_ACTION_SETTING_ADAPTIVE,
                                s->adaptive_quality, 0, 1, TOGGLE_LABELS, 2);
-    ui_menu_add_slider_labeled(menu, "SHADOWS", APP_ACTION_SETTING_SHADOW_QUALITY,
+
+    ui_menu_add_label(menu, "--- SHADOWS ---");
+    ui_menu_add_slider_labeled(menu, "QUALITY", APP_ACTION_SETTING_SHADOW_QUALITY,
                                s->shadow_quality, 0, 3, QUALITY_4, 4);
     menu->items[menu->item_count - 1].enabled = !adaptive_on;
-
     ui_menu_add_slider_labeled(menu, "CONTACT HARDENING", APP_ACTION_SETTING_SHADOW_CONTACT,
                                s->shadow_contact_hardening, 0, 1, TOGGLE_LABELS, 2);
+
+    ui_menu_add_label(menu, "--- LIGHTING ---");
     ui_menu_add_slider_labeled(menu, "AMBIENT OCCLUSION", APP_ACTION_SETTING_AO_QUALITY,
                                s->ao_quality, 0, 2, QUALITY_3, 3);
     menu->items[menu->item_count - 1].enabled = !adaptive_on;
-
-    ui_menu_add_slider_labeled(menu, "LOD QUALITY", APP_ACTION_SETTING_LOD_QUALITY,
-                               s->lod_quality, 0, 2, QUALITY_LOD, 3);
-    menu->items[menu->item_count - 1].enabled = !adaptive_on;
-
     ui_menu_add_slider_labeled(menu, "REFLECTIONS", APP_ACTION_SETTING_REFLECTION_QUALITY,
                                s->reflection_quality, 0, 2, QUALITY_3, 3);
     menu->items[menu->item_count - 1].enabled = !adaptive_on;
+    ui_menu_add_slider_labeled(menu, "GLOBAL ILLUMINATION", APP_ACTION_SETTING_GI_QUALITY,
+                               s->gi_quality, 0, 3, QUALITY_4, 4);
+    menu->items[menu->item_count - 1].enabled = !adaptive_on;
 
+    ui_menu_add_label(menu, "--- UTILITY ---");
+    ui_menu_add_slider_labeled(menu, "LOD QUALITY", APP_ACTION_SETTING_LOD_QUALITY,
+                               s->lod_quality, 0, 2, QUALITY_LOD, 3);
+    menu->items[menu->item_count - 1].enabled = !adaptive_on;
     ui_menu_add_slider_labeled(menu, "SPATIAL DENOISE", APP_ACTION_SETTING_DENOISE_QUALITY,
                                s->denoise_quality, 0, 1, TOGGLE_LABELS, 2);
+
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
 }
@@ -95,14 +102,14 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
-    ui->settings.rt_quality = 2;                   /* Good by default (legacy) */
-    ui->settings.adaptive_quality = 1;             /* On by default */
-    ui->settings.shadow_quality = 2;               /* Good by default */
-    ui->settings.shadow_contact_hardening = 1;     /* On by default */
-    ui->settings.ao_quality = 1;                   /* Fair by default */
-    ui->settings.lod_quality = 1;                  /* Good by default */
-    ui->settings.reflection_quality = 1;           /* Fair by default */
-    ui->settings.denoise_quality = 1;              /* On by default */
+    ui->settings.adaptive_quality = 1;         /* On by default */
+    ui->settings.shadow_quality = 2;           /* Good by default */
+    ui->settings.shadow_contact_hardening = 1; /* On by default */
+    ui->settings.ao_quality = 1;               /* Fair by default */
+    ui->settings.lod_quality = 1;              /* Good by default */
+    ui->settings.reflection_quality = 1;       /* Fair by default */
+    ui->settings.denoise_quality = 1;          /* On by default */
+    ui->settings.gi_quality = 1;               /* Low by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -184,9 +191,6 @@ static void sync_graphics_from_menu(AppUI *ui)
                 needs_rebuild = true;
             }
             break;
-        case APP_ACTION_SETTING_RT_QUALITY:
-            ui->settings.rt_quality = item->slider_value;
-            break;
         case APP_ACTION_SETTING_SHADOW_QUALITY:
             ui->settings.shadow_quality = item->slider_value;
             break;
@@ -204,6 +208,9 @@ static void sync_graphics_from_menu(AppUI *ui)
             break;
         case APP_ACTION_SETTING_DENOISE_QUALITY:
             ui->settings.denoise_quality = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_GI_QUALITY:
+            ui->settings.gi_quality = item->slider_value;
             break;
         }
     }

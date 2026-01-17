@@ -201,6 +201,7 @@ set(ENGINE_RENDER_SOURCES
     engine/render/renderer_ao_init.cpp
     engine/render/renderer_reflection_init.cpp
     engine/render/renderer_denoise_init.cpp
+    engine/render/renderer_gi_init.cpp
     engine/render/renderer_voxel_objects.cpp
     engine/render/renderer_particles.cpp
     engine/render/ui_font.h
@@ -478,6 +479,7 @@ set_source_files_properties(
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_voxel_objects.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_vulkan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_denoise_init.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_gi_init.cpp
     PROPERTIES OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/generated/shaders_embedded.h
 )
 

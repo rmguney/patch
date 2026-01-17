@@ -305,6 +305,9 @@ namespace patch
             {
                 return;
             }
+
+            /* Initialize GI if it was requested before compute resources were ready */
+            init_gi_if_pending();
         }
 
         GPUMaterialPalette palette{};

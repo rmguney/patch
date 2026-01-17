@@ -16,32 +16,45 @@ static const char *TEMP_CSV = "profile_temp.csv";
 
 /*
  * Performance Budget Thresholds (RTX 4050M / mid-range laptop)
- * Based on Phase 1.9 analysis. Frame times in milliseconds.
  */
-struct PerfThreshold {
-    float pass_ms;   // Green: performance is good
-    float warn_ms;   // Yellow: approaching limit
-    float fail_ms;   // Red: regression detected
+struct PerfThreshold
+{
+    float pass_ms; // Green: performance is good
+    float warn_ms; // Yellow: approaching limit
+    float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50   = { 12.0f, 15.0f, 18.0f };
-static const PerfThreshold THRESHOLD_250  = { 14.0f, 16.67f, 20.0f };
-static const PerfThreshold THRESHOLD_500  = { 16.0f, 20.0f, 28.0f };
-static const PerfThreshold THRESHOLD_1000 = { 25.0f, 30.0f, 45.0f };
+static const PerfThreshold THRESHOLD_50 = {12.0f, 15.0f, 18.0f};
+static const PerfThreshold THRESHOLD_250 = {14.0f, 16.67f, 20.0f};
+static const PerfThreshold THRESHOLD_500 = {16.0f, 20.0f, 28.0f};
+static const PerfThreshold THRESHOLD_1000 = {25.0f, 30.0f, 45.0f};
 
-enum PerfStatus { PERF_PASS, PERF_WARN, PERF_FAIL };
+enum PerfStatus
+{
+    PERF_PASS,
+    PERF_WARN,
+    PERF_FAIL
+};
 
-static PerfStatus evaluate_perf(float frame_ms, const PerfThreshold &thresh) {
-    if (frame_ms <= thresh.pass_ms) return PERF_PASS;
-    if (frame_ms <= thresh.warn_ms) return PERF_WARN;
+static PerfStatus evaluate_perf(float frame_ms, const PerfThreshold &thresh)
+{
+    if (frame_ms <= thresh.pass_ms)
+        return PERF_PASS;
+    if (frame_ms <= thresh.warn_ms)
+        return PERF_WARN;
     return PERF_FAIL;
 }
 
-static const char* status_string(PerfStatus s) {
-    switch (s) {
-        case PERF_PASS: return "PASS";
-        case PERF_WARN: return "WARN";
-        case PERF_FAIL: return "FAIL";
+static const char *status_string(PerfStatus s)
+{
+    switch (s)
+    {
+    case PERF_PASS:
+        return "PASS";
+    case PERF_WARN:
+        return "WARN";
+    case PERF_FAIL:
+        return "FAIL";
     }
     return "UNKNOWN";
 }
@@ -241,10 +254,17 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
            status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
 
-    switch (status) {
-        case PERF_PASS: (*passed)++; break;
-        case PERF_WARN: (*warned)++; break;
-        case PERF_FAIL: (*failed)++; break;
+    switch (status)
+    {
+    case PERF_PASS:
+        (*passed)++;
+        break;
+    case PERF_WARN:
+        (*warned)++;
+        break;
+    case PERF_FAIL:
+        (*failed)++;
+        break;
     }
 
     return (status != PERF_FAIL);

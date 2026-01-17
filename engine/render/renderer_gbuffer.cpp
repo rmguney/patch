@@ -421,8 +421,8 @@ namespace patch
             PROFILE_END(PROFILE_RENDER_SHADOW);
         }
 
-        /* Dispatch AO compute after shadow (only if rt_quality >= 1) */
-        if (rt_quality_ >= 1 && ao_resources_initialized_ && ao_compute_pipeline_ && deferred_total_chunks_ > 0)
+        /* Dispatch AO compute after shadow (only if ao_quality >= 1) */
+        if (ao_quality_ >= 1 && ao_resources_initialized_ && ao_compute_pipeline_ && deferred_total_chunks_ > 0)
         {
             dispatch_ao_compute();
             dispatch_temporal_ao_resolve();
@@ -434,6 +434,17 @@ namespace patch
             dispatch_reflection_compute();
             dispatch_temporal_reflection_resolve();
         }
+
+        /* Dispatch GI light injection and propagation (only if gi_quality >= 1) */
+        if (gi_quality_ >= 1 && gi_resources_initialized_ && gi_inject_pipeline_ && deferred_total_chunks_ > 0)
+        {
+            dispatch_gi_inject();
+            if (gi_propagate_pipeline_)
+            {
+                dispatch_gi_propagate();
+            }
+        }
+
         gbuffer_compute_dispatched_ = false;
     }
 
@@ -508,7 +519,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = vol->chunks_x * CHUNK_SIZE;
         pc.grid_size[1] = vol->chunks_y * CHUNK_SIZE;
         pc.grid_size[2] = vol->chunks_z * CHUNK_SIZE;
@@ -517,7 +528,7 @@ namespace patch
         pc.chunks_dim[1] = vol->chunks_y;
         pc.chunks_dim[2] = vol->chunks_z;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -593,7 +604,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];
@@ -602,7 +613,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -710,6 +721,12 @@ namespace patch
         {
             fprintf(stderr, "Failed to create deferred lighting descriptor sets\n");
             return false;
+        }
+
+        /* Update GI cascade descriptors if GI resources were initialized before gbuffer */
+        if (gi_resources_initialized_)
+        {
+            update_deferred_gi_cascade_descriptors();
         }
 
         printf("  Deferred descriptor sets initialized\n");

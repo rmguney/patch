@@ -35,14 +35,14 @@ typedef enum
     APP_ACTION_SETTING_SPAWN_BATCH,
     APP_ACTION_SETTING_MAX_SPAWNS,
     APP_ACTION_SETTING_VOXEL_SIZE,
-    APP_ACTION_SETTING_RT_QUALITY,
     APP_ACTION_SETTING_ADAPTIVE,
     APP_ACTION_SETTING_SHADOW_QUALITY,
     APP_ACTION_SETTING_SHADOW_CONTACT,
     APP_ACTION_SETTING_AO_QUALITY,
     APP_ACTION_SETTING_LOD_QUALITY,
     APP_ACTION_SETTING_REFLECTION_QUALITY,
-    APP_ACTION_SETTING_DENOISE_QUALITY
+    APP_ACTION_SETTING_DENOISE_QUALITY,
+    APP_ACTION_SETTING_GI_QUALITY
 } AppAction;
 
 typedef struct
@@ -52,7 +52,6 @@ typedef struct
     int32_t spawn_batch;
     int32_t max_spawns;
     int32_t voxel_size_mm;
-    int32_t rt_quality;              /* 0=Off, 1=Fair, 2=Good, 3=High (legacy, derived from below) */
     int32_t adaptive_quality;        /* 0=Off, 1=On (default) */
     int32_t shadow_quality;          /* 0=None, 1=Fair, 2=Good, 3=High */
     int32_t shadow_contact_hardening;/* 0=Off, 1=On */
@@ -60,6 +59,7 @@ typedef struct
     int32_t lod_quality;             /* 0=Fair, 1=Good, 2=High */
     int32_t reflection_quality;      /* 0=Off, 1=Fair, 2=Good */
     int32_t denoise_quality;         /* 0=Off, 1=On */
+    int32_t gi_quality;              /* 0=Off, 1=Low, 2=Medium, 3=High */
 } AppSettings;
 
 typedef struct

@@ -64,7 +64,7 @@ layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
     int debug_mode;
-    int rt_quality;
+    int lod_quality;
     int pad2[2];
 } pc;
 
@@ -79,9 +79,9 @@ void main() {
 
     /* Calculate LOD-adjusted step count based on distance AND screen coverage */
     int max_steps = vobj_calc_combined_lod_steps(
-        in_distance, 
-        in_screen_coverage, 
-        pc.rt_quality, 
+        in_distance,
+        in_screen_coverage,
+        pc.lod_quality,
         VOBJ_BASE_STEPS
     );
 

@@ -79,7 +79,6 @@ _Static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
      * Stored in palette array indexed by material ID.
      * Layout: vec4 color (r,g,b,emissive), vec4 params (roughness, metallic, flags, pad)
      *
-     * Phase 1 expansion plan (48 bytes = 3 vec4s):
      *   vec4 color:   r, g, b, emissive
      *   vec4 params:  roughness, metallic, flags, transparency
      *   vec4 liquid:  ior, absorption_r, absorption_g, absorption_b
@@ -100,7 +99,6 @@ _Static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 byte
 #endif
 
     /*
-     * GPUMaterialColorExt: Extended material for liquid/transparency (Phase 1).
      * 48 bytes = 3 vec4s. Not yet used; placeholder for future expansion.
      */
     typedef struct

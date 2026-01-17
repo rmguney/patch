@@ -158,7 +158,7 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, total_chunks) == 188);
     ASSERT(offsetof(VoxelPushConstants, chunks_dim) == 192);
     ASSERT(offsetof(VoxelPushConstants, frame_count) == 204);
-    ASSERT(offsetof(VoxelPushConstants, rt_quality) == 208);
+    ASSERT(offsetof(VoxelPushConstants, _pad0) == 208);
     ASSERT(offsetof(VoxelPushConstants, debug_mode) == 212);
     ASSERT(offsetof(VoxelPushConstants, is_orthographic) == 216);
     ASSERT(offsetof(VoxelPushConstants, max_steps) == 220);

@@ -110,7 +110,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = vol->chunks_x * CHUNK_SIZE;
         pc.grid_size[1] = vol->chunks_y * CHUNK_SIZE;
         pc.grid_size[2] = vol->chunks_z * CHUNK_SIZE;
@@ -119,7 +119,7 @@ namespace patch
         pc.chunks_dim[1] = vol->chunks_y;
         pc.chunks_dim[2] = vol->chunks_z;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -218,7 +218,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];
@@ -227,7 +227,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -330,7 +330,7 @@ namespace patch
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = 0.1f;
@@ -339,7 +339,7 @@ namespace patch
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;
         pc.lod_quality = lod_quality_;
-        pc.history_valid = temporal_shadow_history_valid_ ? 1 : 0;
+        pc.history_valid = (temporal_shadow_history_valid_ ? 1 : 0) | (gi_quality_ << 8);
 
         vkCmdPushConstants(cmd, temporal_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 
@@ -423,7 +423,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];
@@ -432,7 +432,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -537,7 +537,7 @@ namespace patch
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = 0.1f;
@@ -546,7 +546,7 @@ namespace patch
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;
         pc.lod_quality = lod_quality_;
-        pc.history_valid = temporal_ao_history_valid_ ? 1 : 0;
+        pc.history_valid = (temporal_ao_history_valid_ ? 1 : 0) | (gi_quality_ << 8);
 
         vkCmdPushConstants(cmd, temporal_ao_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 
@@ -628,7 +628,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];
@@ -637,7 +637,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
@@ -742,7 +742,7 @@ namespace patch
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc.rt_quality = rt_quality_;
+        pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = 0.1f;
@@ -752,7 +752,7 @@ namespace patch
         pc.ao_quality = ao_quality_;
         pc.lod_quality = lod_quality_;
         pc.reflection_quality = reflection_quality_;
-        pc.history_valid = temporal_reflection_history_valid_ ? 1 : 0;
+        pc.history_valid = (temporal_reflection_history_valid_ ? 1 : 0) | (gi_quality_ << 8);
 
         vkCmdPushConstants(cmd, temporal_reflection_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 

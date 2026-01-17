@@ -783,7 +783,7 @@ namespace patch
             float near_plane;
             float far_plane;
             int32_t debug_mode;
-            int32_t rt_quality;
+            int32_t lod_quality;
             int32_t pad2[2];
         } pc;
 
@@ -798,7 +798,7 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.debug_mode = terrain_debug_mode_;
-        pc.rt_quality = rt_quality_;
+        pc.lod_quality = lod_quality_;
         pc.pad2[0] = pc.pad2[1] = 0;
 
         vkCmdPushConstants(command_buffers_[current_frame_], vobj_pipeline_layout_,

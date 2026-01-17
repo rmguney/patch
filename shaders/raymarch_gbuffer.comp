@@ -22,7 +22,7 @@ layout(push_constant) uniform Constants {
     int total_chunks;
     ivec3 chunks_dim;
     int frame_count;
-    int rt_quality;
+    int _pad0;
     int debug_mode;
     int is_orthographic;
     int max_steps;
@@ -277,7 +277,7 @@ void main() {
         float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
 
         /* Combined LOD: distance + screen coverage */
-        int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.rt_quality, VOBJ_BASE_STEPS);
+        int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, VOBJ_BASE_STEPS);
 
         HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
         if (obj_hit.hit && obj_hit.t < best_hit.t) {

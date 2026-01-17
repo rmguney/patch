@@ -190,7 +190,7 @@ namespace patch
 
     bool Renderer::create_deferred_lighting_pipeline()
     {
-        VkDescriptorSetLayoutBinding bindings[8]{};
+        VkDescriptorSetLayoutBinding bindings[12]{};
 
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -220,9 +220,18 @@ namespace patch
         bindings[7].descriptorCount = 1;
         bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        /* GI cascade samplers (bindings 9-12) */
+        for (uint32_t i = 0; i < GI_CASCADE_LEVELS; i++)
+        {
+            bindings[8 + i].binding = 9 + i;
+            bindings[8 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[8 + i].descriptorCount = 1;
+            bindings[8 + i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 8;
+        layout_info.bindingCount = 12;
         layout_info.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &layout_info, nullptr, &deferred_lighting_descriptor_layout_) != VK_SUCCESS)
@@ -485,7 +494,7 @@ namespace patch
     {
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 9; /* gbuffer(4) + shadow + blue_noise + ao + reflection */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 13; /* gbuffer(4) + shadow + blue_noise + ao + reflection + gi_cascades(4) */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
@@ -547,7 +556,16 @@ namespace patch
             reflection_buffer_info.imageView = reflection_output_view_ ? reflection_output_view_ : gbuffer_views_[0];
             reflection_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet writes[8]{};
+            /* GI cascade texture infos - use shadow_volume_view_ as fallback (3D texture) */
+            VkDescriptorImageInfo gi_cascade_infos[GI_CASCADE_LEVELS]{};
+            for (uint32_t c = 0; c < GI_CASCADE_LEVELS; c++)
+            {
+                gi_cascade_infos[c].sampler = gi_cascade_sampler_ ? gi_cascade_sampler_ : gbuffer_sampler_;
+                gi_cascade_infos[c].imageView = gi_cascades_[c].view ? gi_cascades_[c].view : shadow_volume_view_;
+                gi_cascade_infos[c].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+
+            VkWriteDescriptorSet writes[12]{};
 
             for (uint32_t g = 0; g < GBUFFER_COUNT; g++)
             {
@@ -587,7 +605,18 @@ namespace patch
             writes[7].descriptorCount = 1;
             writes[7].pImageInfo = &reflection_buffer_info;
 
-            vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
+            /* GI cascade textures (bindings 9-12) */
+            for (uint32_t c = 0; c < GI_CASCADE_LEVELS; c++)
+            {
+                writes[8 + c].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[8 + c].dstSet = deferred_lighting_descriptor_sets_[i];
+                writes[8 + c].dstBinding = 9 + c;
+                writes[8 + c].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                writes[8 + c].descriptorCount = 1;
+                writes[8 + c].pImageInfo = &gi_cascade_infos[c];
+            }
+
+            vkUpdateDescriptorSets(device_, 12, writes, 0, nullptr);
         }
 
         return true;

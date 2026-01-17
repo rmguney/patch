@@ -18,6 +18,12 @@ layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
 layout(SET_BINDING(0, 8)) uniform sampler2D reflection_buffer;
 
+/* GI radiance cascade samplers */
+layout(SET_BINDING(0, 9)) uniform sampler3D gi_cascade_0;
+layout(SET_BINDING(0, 10)) uniform sampler3D gi_cascade_1;
+layout(SET_BINDING(0, 11)) uniform sampler3D gi_cascade_2;
+layout(SET_BINDING(0, 12)) uniform sampler3D gi_cascade_3;
+
 layout(push_constant) uniform Constants {
     mat4 inv_view;
     mat4 inv_projection;
@@ -31,7 +37,7 @@ layout(push_constant) uniform Constants {
     int total_chunks;
     ivec3 chunks_dim;
     int frame_count;
-    int rt_quality;
+    int _pad0;
     int debug_mode;
     int is_orthographic;
     int max_steps;
@@ -54,6 +60,69 @@ vec3 aces_tonemap(vec3 x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+/* Extract GI quality from history_valid (packed in bits 8-15) */
+int get_gi_quality() {
+    return (pc.history_valid >> 8) & 0xFF;
+}
+
+/* Sample indirect radiance from GI cascades */
+vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
+    int gi_quality = get_gi_quality();
+    if (gi_quality == 0) {
+        return vec3(0.0);
+    }
+
+    vec3 bounds_size = pc.bounds_max - pc.bounds_min;
+    vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
+
+    /* Clamp to valid cascade range */
+    uvw = clamp(uvw, vec3(0.001), vec3(0.999));
+
+    /* Sample multiple cascade levels and blend based on distance from camera */
+    float dist_to_cam = length(world_pos - pc.cam_pos);
+
+    /* Cascade level selection based on distance:
+       Level 0: near (highest detail), Level 3: far (lowest detail) */
+    float level_f = clamp(dist_to_cam / 20.0, 0.0, 3.0);
+    int level_low = int(floor(level_f));
+    int level_high = min(level_low + 1, 3);
+    float blend = fract(level_f);
+
+    vec3 radiance_low, radiance_high;
+
+    /* Sample cascades (can't use arrays with samplers, so explicit switch) */
+    if (level_low == 0) {
+        radiance_low = texture(gi_cascade_0, uvw).rgb;
+    } else if (level_low == 1) {
+        radiance_low = texture(gi_cascade_1, uvw).rgb;
+    } else if (level_low == 2) {
+        radiance_low = texture(gi_cascade_2, uvw).rgb;
+    } else {
+        radiance_low = texture(gi_cascade_3, uvw).rgb;
+    }
+
+    if (level_high == 0) {
+        radiance_high = texture(gi_cascade_0, uvw).rgb;
+    } else if (level_high == 1) {
+        radiance_high = texture(gi_cascade_1, uvw).rgb;
+    } else if (level_high == 2) {
+        radiance_high = texture(gi_cascade_2, uvw).rgb;
+    } else {
+        radiance_high = texture(gi_cascade_3, uvw).rgb;
+    }
+
+    vec3 radiance = mix(radiance_low, radiance_high, blend);
+
+    /* Apply hemisphere weighting based on normal */
+    float hemisphere_weight = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0) * 0.5 + 0.5;
+    radiance *= hemisphere_weight;
+
+    /* Quality-based intensity scaling */
+    float gi_strength = float(gi_quality) * 0.33; /* 1=0.33, 2=0.66, 3=1.0 */
+
+    return radiance * gi_strength;
 }
 
 void main() {
@@ -111,6 +180,13 @@ void main() {
         return;
     }
 
+    /* DEBUG: Show GI radiance contribution */
+    if (pc.debug_mode == 15) {
+        vec3 gi = sample_gi_radiance(g.world_pos, N);
+        out_color = vec4(gi, 1.0);
+        return;
+    }
+
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
@@ -145,6 +221,10 @@ void main() {
     vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);
     vec3 ground_ambient = vec3(0.42, 0.36, 0.32) * (0.5 - N.y * 0.5);
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
+
+    /* Add GI indirect radiance to ambient */
+    vec3 gi_radiance = sample_gi_radiance(g.world_pos, N);
+    ambient_light += gi_radiance * ao;
 
     vec3 H = normalize(key_light_dir + V);
     float spec_power = mix(128.0, 4.0, g.roughness * g.roughness);
