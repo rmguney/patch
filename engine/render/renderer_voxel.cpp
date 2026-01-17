@@ -289,6 +289,14 @@ namespace patch
                     {
                         fprintf(stderr, "Warning: Temporal AO descriptors failed\n");
                     }
+                    if (!create_reflection_compute_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: Reflection compute descriptors failed\n");
+                    }
+                    if (!create_temporal_reflection_descriptor_sets())
+                    {
+                        fprintf(stderr, "Warning: Temporal reflection descriptors failed\n");
+                    }
                 }
             }
 

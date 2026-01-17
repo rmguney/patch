@@ -33,7 +33,7 @@ struct VoxelPushConstants
     float bounds_max[3];
     float chunk_size;
     float camera_pos[3];
-    float pad1;
+    int32_t history_valid;
     int32_t grid_size[3];
     int32_t total_chunks;
     int32_t chunks_dim[3];
@@ -49,7 +49,7 @@ struct VoxelPushConstants
     int32_t shadow_contact;
     int32_t ao_quality;
     int32_t lod_quality;
-    int32_t reserved;
+    int32_t reflection_quality;
 };
 
 /*

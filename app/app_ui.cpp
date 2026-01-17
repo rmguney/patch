@@ -69,6 +69,8 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
                                s->ao_quality, 0, 2, QUALITY_3, 3);
     ui_menu_add_slider_labeled(menu, "LOD QUALITY", APP_ACTION_SETTING_LOD_QUALITY,
                                s->lod_quality, 0, 2, QUALITY_LOD, 3);
+    ui_menu_add_slider_labeled(menu, "REFLECTIONS", APP_ACTION_SETTING_REFLECTION_QUALITY,
+                               s->reflection_quality, 0, 2, QUALITY_3, 3);
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
 }
@@ -92,6 +94,7 @@ void app_ui_init(AppUI *ui)
     ui->settings.shadow_contact_hardening = 1;     /* On by default */
     ui->settings.ao_quality = 1;                   /* Fair by default */
     ui->settings.lod_quality = 1;                  /* Good by default */
+    ui->settings.reflection_quality = 1;           /* Fair by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -187,6 +190,9 @@ static void sync_graphics_from_menu(AppUI *ui)
             break;
         case APP_ACTION_SETTING_LOD_QUALITY:
             ui->settings.lod_quality = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_REFLECTION_QUALITY:
+            ui->settings.reflection_quality = item->slider_value;
             break;
         }
     }

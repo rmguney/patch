@@ -16,6 +16,7 @@ layout(SET_BINDING(0, 3)) uniform sampler2D gbuffer_depth;
 layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
+layout(SET_BINDING(0, 8)) uniform sampler2D reflection_buffer;
 
 layout(push_constant) uniform Constants {
     mat4 inv_view;
@@ -25,7 +26,7 @@ layout(push_constant) uniform Constants {
     vec3 bounds_max;
     float chunk_size;
     vec3 cam_pos;
-    float pad1;
+    int history_valid;
     ivec3 grid_size;
     int total_chunks;
     ivec3 chunks_dim;
@@ -41,7 +42,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reserved;
+    int reflection_quality;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -103,6 +104,13 @@ void main() {
         return;
     }
 
+    /* DEBUG: Show reflection buffer (RGB=reflection color, A=blend weight) */
+    if (pc.debug_mode == 14) {
+        vec4 refl = texture(reflection_buffer, in_uv);
+        out_color = vec4(refl.rgb, 1.0);
+        return;
+    }
+
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
@@ -160,6 +168,18 @@ void main() {
 
     vec3 emissive_color = g.albedo * g.emissive * 2.0;
     color += emissive_color;
+
+    /* Sample reflection buffer and blend */
+    vec4 reflection = texture(reflection_buffer, in_uv);
+    if (reflection.a > 0.001) {
+        /* For metals: reflection contributes more, replacing some diffuse
+           For dielectrics: additive reflection with Fresnel weight */
+        float metallic_blend = 0.5 + 0.5 * g.metallic;
+        float blend = reflection.a * metallic_blend;
+        /* Metals get reflection mixed with ambient, dielectrics get additive */
+        color = mix(color, reflection.rgb + ambient_light, blend * g.metallic)
+              + reflection.rgb * blend * (1.0 - g.metallic);
+    }
 
     float exposure = 1.0;
     color *= exposure;

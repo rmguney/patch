@@ -16,7 +16,7 @@ layout(push_constant) uniform Constants {
     vec3 bounds_max;
     float chunk_size;
     vec3 camera_pos;
-    float pad1;
+    int history_valid;
     ivec3 grid_size;
     int total_chunks;
     ivec3 chunks_dim;
@@ -32,7 +32,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reserved;
+    int reflection_quality;
 } pc;
 
 /* Set 0: inputs */
@@ -60,8 +60,7 @@ void main()
 
     float current_shadow = texelFetch(shadow_current, pixel, 0).r;
 
-    int history_valid = pc.reserved;
-    if (history_valid == 0)
+    if (pc.history_valid == 0)
     {
         imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
         return;

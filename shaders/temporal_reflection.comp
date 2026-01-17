@@ -35,30 +35,33 @@ layout(push_constant) uniform Constants {
     int reflection_quality;
 } pc;
 
+/* Set 0: inputs */
 layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
 layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
 layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
-layout(SET_BINDING(0, 3)) uniform sampler2D ao_current;
-layout(SET_BINDING(0, 4)) uniform sampler2D ao_history;
+layout(SET_BINDING(0, 3)) uniform sampler2D gbuffer_material;
+layout(SET_BINDING(0, 4)) uniform sampler2D reflection_current;
+layout(SET_BINDING(0, 5)) uniform sampler2D reflection_history;
 
-layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_ao_resolved;
+/* Set 1: output */
+layout(rgba8, SET_BINDING(1, 0)) writeonly uniform image2D out_reflection_resolved;
 
-const float HISTORY_BLEND_MAX = 0.8;
+const float HISTORY_BLEND_MAX = 0.85;
 const float DEPTH_REJECT_THRESHOLD = 0.02;
 const float NORMAL_REJECT_THRESHOLD = 0.9;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 size = imageSize(out_ao_resolved);
+    ivec2 size = imageSize(out_reflection_resolved);
     if (pixel.x >= size.x || pixel.y >= size.y)
         return;
 
     vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
 
-    float current_ao = texelFetch(ao_current, pixel, 0).r;
+    vec4 current_reflection = texelFetch(reflection_current, pixel, 0);
 
     if (pc.history_valid == 0) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_reflection_resolved, pixel, current_reflection);
         return;
     }
 
@@ -66,7 +69,7 @@ void main() {
     vec2 prev_uv = uv + motion;
 
     if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)))) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_reflection_resolved, pixel, current_reflection);
         return;
     }
 
@@ -74,22 +77,32 @@ void main() {
     float reproj_depth = texture(gbuffer_linear_depth, prev_uv).r;
     float depth_diff = abs(current_depth - reproj_depth) / max(current_depth, 0.001);
     if (depth_diff > DEPTH_REJECT_THRESHOLD) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_reflection_resolved, pixel, current_reflection);
         return;
     }
 
     vec3 current_normal = texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0;
     vec3 reproj_normal = texture(gbuffer_normal, prev_uv).xyz * 2.0 - 1.0;
     if (dot(current_normal, reproj_normal) < NORMAL_REJECT_THRESHOLD) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_reflection_resolved, pixel, current_reflection);
         return;
     }
 
+    /* Get roughness for roughness-aware blending */
+    float roughness = texelFetch(gbuffer_material, pixel, 0).r;
+
+    /* Roughness-aware history blend: rough surfaces use less history to avoid ghosting */
+    float roughness_factor = 1.0 - roughness * roughness * 0.5;
+
     float motion_len = length(motion * vec2(size));
     float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
-    float history_blend = mix(HISTORY_BLEND_MAX, 0.3, velocity_weight);
+    float history_blend = mix(HISTORY_BLEND_MAX * roughness_factor, 0.3, velocity_weight);
 
-    float history_ao = texture(ao_history, prev_uv).r;
-    float resolved = mix(current_ao, history_ao, history_blend);
-    imageStore(out_ao_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
+    vec4 history_reflection = texture(reflection_history, prev_uv);
+
+    /* Blend RGB and alpha separately */
+    vec3 resolved_color = mix(current_reflection.rgb, history_reflection.rgb, history_blend);
+    float resolved_alpha = mix(current_reflection.a, history_reflection.a, history_blend);
+
+    imageStore(out_reflection_resolved, pixel, vec4(resolved_color, resolved_alpha));
 }

@@ -24,7 +24,7 @@ PUSH_CONSTANT uniform Constants {
     vec3 bounds_max;
     float chunk_size;
     vec3 camera_pos;
-    float pad1;
+    int history_valid;
     ivec3 grid_size;
     int total_chunks;
     ivec3 chunks_dim;
@@ -40,7 +40,7 @@ PUSH_CONSTANT uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reserved;
+    int reflection_quality;
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {

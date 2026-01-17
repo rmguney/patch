@@ -175,10 +175,12 @@ namespace patch
         void set_shadow_contact_hardening(bool enabled);
         void set_ao_quality(int level);
         void set_lod_quality(int level);
+        void set_reflection_quality(int level);
         int get_shadow_quality() const { return shadow_quality_; }
         bool get_shadow_contact_hardening() const { return shadow_contact_hardening_; }
         int get_ao_quality() const { return ao_quality_; }
         int get_lod_quality() const { return lod_quality_; }
+        int get_reflection_quality() const { return reflection_quality_; }
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -353,6 +355,7 @@ namespace patch
         bool shadow_contact_hardening_ = true;
         int ao_quality_ = 1;                 /* 0=None, 1=Fair, 2=Good */
         int lod_quality_ = 1;                /* 0=Fair, 1=Good, 2=High */
+        int reflection_quality_ = 1;         /* 0=Off, 1=Fair, 2=Good */
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -422,6 +425,38 @@ namespace patch
         VkDescriptorSet temporal_ao_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
 
         bool ao_resources_initialized_ = false;
+
+        /* Reflection compute infrastructure */
+        VkPipeline reflection_compute_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout reflection_compute_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool reflection_compute_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout reflection_compute_input_layout_ = VK_NULL_HANDLE;  /* Set 0: voxel data + shadow vol + materials */
+        VkDescriptorSetLayout reflection_compute_gbuffer_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSet reflection_compute_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet reflection_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet reflection_compute_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        /* Reflection output buffer (RGBA8) */
+        VkImage reflection_output_image_ = VK_NULL_HANDLE;
+        VkDeviceMemory reflection_output_memory_ = VK_NULL_HANDLE;
+        VkImageView reflection_output_view_ = VK_NULL_HANDLE;
+
+        /* Reflection history buffers for temporal accumulation */
+        VkImage reflection_history_images_[2] = {};
+        VkDeviceMemory reflection_history_memory_[2] = {};
+        VkImageView reflection_history_views_[2] = {};
+        bool temporal_reflection_history_valid_ = false;
+        int reflection_history_write_index_ = 0;
+
+        /* Temporal reflection pipeline */
+        VkPipeline temporal_reflection_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout temporal_reflection_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool temporal_reflection_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout temporal_reflection_input_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSet temporal_reflection_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet temporal_reflection_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        bool reflection_resources_initialized_ = false;
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -620,6 +655,19 @@ namespace patch
         void dispatch_ao_compute();
         void dispatch_temporal_ao_resolve();
         void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
+
+        /* Reflection compute infrastructure */
+        bool create_reflection_output_resources();
+        bool create_reflection_history_resources();
+        bool create_reflection_compute_pipeline();
+        bool create_temporal_reflection_pipeline();
+        bool create_reflection_compute_descriptor_sets();
+        bool create_temporal_reflection_descriptor_sets();
+        void destroy_reflection_resources();
+        void update_reflection_volume_descriptor();
+        void dispatch_reflection_compute();
+        void dispatch_temporal_reflection_resolve();
+        void update_deferred_reflection_buffer_descriptor(uint32_t frame_index, VkImageView reflection_view);
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

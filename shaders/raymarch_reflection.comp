@@ -41,6 +41,7 @@ ivec3 pc_grid_size;
 ivec3 pc_chunks_dim;
 int pc_total_chunks;
 
+/* Set 0: Voxel data + shadow volume + materials */
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
     uint voxel_data[];
 };
@@ -51,16 +52,26 @@ layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
 
 layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
 
+layout(std140, SET_BINDING(0, 3)) uniform MaterialPalette {
+    vec4 materials[512];
+};
+
+#include "include/materials.glsl"
 #include "include/data_terrain.glsl"
 
+/* Set 1: G-buffer inputs */
 layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
 layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
-layout(SET_BINDING(1, 2)) uniform sampler2D blue_noise_tex;
+layout(SET_BINDING(1, 2)) uniform sampler2D gbuffer_albedo;
+layout(SET_BINDING(1, 3)) uniform sampler2D gbuffer_material;
+layout(SET_BINDING(1, 4)) uniform sampler2D blue_noise_tex;
 
-layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_ao;
+/* Set 2: Output */
+layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_reflection;
 
-const int MAX_AO_STEPS = 64;
-const float AO_MAX_DIST = 4.0;
+const int MAX_REFLECTION_STEPS = 128;
+const float REFLECTION_MAX_DIST = 50.0;
+const vec3 SKY_COLOR = vec3(0.6, 0.75, 0.95);
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
@@ -107,17 +118,43 @@ bool sample_shadow_mip2(ivec3 voxel_pos) {
     return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
 }
 
-float trace_ao_ray(vec3 origin, vec3 rd) {
+/* Fresnel-Schlick approximation */
+vec3 fresnel_schlick(float cos_theta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
+/* Sample material color from voxel grid at hit position */
+vec3 sample_hit_color(ivec3 map_pos) {
+    uint mat = sample_material(map_pos);
+    if (mat == 0u) {
+        return vec3(0.5);
+    }
+    return get_material_color(mat);
+}
+
+/* Trace reflection ray, returns hit color and distance */
+struct ReflectionHit {
+    vec3 color;
+    float dist;
+    bool hit;
+};
+
+ReflectionHit trace_reflection_ray(vec3 origin, vec3 rd) {
+    ReflectionHit result;
+    result.hit = false;
+    result.color = SKY_COLOR;
+    result.dist = REFLECTION_MAX_DIST;
+
     vec2 box_hit = hdda_intersect_aabb(origin, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
-        return 1.0;
+        return result;
     }
 
     float t_start = max(box_hit.x, 0.001);
-    float t_end = min(box_hit.y, AO_MAX_DIST);
+    float t_end = min(box_hit.y, REFLECTION_MAX_DIST);
 
     if (t_start >= t_end) {
-        return 1.0;
+        return result;
     }
 
     vec3 start_pos = origin + rd * t_start;
@@ -134,18 +171,18 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
     bool mip2_empty = false;
     bool mip1_empty = false;
 
-    for (int i = 0; i < MAX_AO_STEPS; i++) {
+    for (int i = 0; i < MAX_REFLECTION_STEPS; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
-            return 1.0;
+            return result;
         }
 
         vec3 hit_grid = vec3(map_pos) + 0.5;
         vec3 hit_world = pc.bounds_min + hit_grid * pc.voxel_size;
         float dist = length(hit_world - origin);
-        if (dist > AO_MAX_DIST) {
-            return 1.0;
+        if (dist > REFLECTION_MAX_DIST) {
+            return result;
         }
 
         ivec3 current_mip2 = map_pos >> 3;
@@ -176,8 +213,10 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         }
 
         if (sample_shadow_volume(map_pos)) {
-            float ao = dist / AO_MAX_DIST;
-            return ao;
+            result.hit = true;
+            result.color = sample_hit_color(map_pos);
+            result.dist = dist;
+            return result;
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
@@ -185,13 +224,23 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         map_pos += ivec3(mask) * step_dir;
     }
 
-    return 1.0;
+    return result;
 }
 
-vec3 cosine_weighted_hemisphere(vec2 xi, vec3 N) {
-    float phi = 2.0 * 3.14159265 * xi.y;
-    float cos_theta = sqrt(1.0 - xi.x);
-    float sin_theta = sqrt(xi.x);
+/* Generate roughness-based cone jitter direction */
+vec3 jitter_reflection(vec3 reflect_dir, float roughness, vec2 noise) {
+    if (roughness < 0.01) {
+        return reflect_dir;
+    }
+
+    vec3 up = abs(reflect_dir.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, reflect_dir));
+    vec3 bitangent = cross(reflect_dir, tangent);
+
+    float cone_angle = roughness * roughness * 0.5;
+    float phi = 2.0 * 3.14159265 * noise.x;
+    float cos_theta = 1.0 - noise.y * cone_angle;
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
 
     vec3 local_dir = vec3(
         cos(phi) * sin_theta,
@@ -199,11 +248,7 @@ vec3 cosine_weighted_hemisphere(vec2 xi, vec3 N) {
         cos_theta
     );
 
-    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(up, N));
-    vec3 bitangent = cross(N, tangent);
-
-    return tangent * local_dir.x + bitangent * local_dir.y + N * local_dir.z;
+    return normalize(tangent * local_dir.x + bitangent * local_dir.y + reflect_dir * local_dir.z);
 }
 
 void main() {
@@ -212,48 +257,81 @@ void main() {
     pc_total_chunks = pc.total_chunks;
 
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 screen_size = imageSize(out_ao);
+    ivec2 screen_size = imageSize(out_reflection);
 
     if (pixel.x >= screen_size.x || pixel.y >= screen_size.y) {
         return;
     }
 
-    GBufferSample g = sample_gbuffer_shadow(
-        pixel, screen_size,
-        gbuffer_depth, gbuffer_normal,
+    /* Early out if reflections disabled */
+    if (pc.reflection_quality == 0) {
+        imageStore(out_reflection, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    /* Sample G-buffer */
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(screen_size);
+    float linear_depth = texelFetch(gbuffer_depth, pixel, 0).r;
+
+    bool is_sky = (linear_depth > 1e9);
+    if (is_sky) {
+        imageStore(out_reflection, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    vec3 normal = normalize(texelFetch(gbuffer_normal, pixel, 0).rgb * 2.0 - 1.0);
+    vec3 albedo = texelFetch(gbuffer_albedo, pixel, 0).rgb;
+    vec4 material = texelFetch(gbuffer_material, pixel, 0);
+    float roughness = material.r;
+    float metallic = material.g;
+
+    /* Reconstruct world position */
+    vec3 world_pos = camera_reconstruct_world_pos(
+        uv, linear_depth,
         pc.inv_view, pc.inv_projection, pc.camera_pos,
         pc.is_orthographic != 0
     );
 
-    if (g.is_sky) {
-        imageStore(out_ao, pixel, vec4(1.0));
+    /* Calculate view direction */
+    vec3 V = normalize(pc.camera_pos - world_pos);
+    float NdotV = max(dot(normal, V), 0.0);
+
+    /* Fresnel: F0 = mix(0.04, albedo, metallic) */
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 fresnel = fresnel_schlick(NdotV, F0);
+
+    /* Skip very rough or non-reflective surfaces */
+    float reflectivity = max(max(fresnel.r, fresnel.g), fresnel.b);
+    if (reflectivity < 0.02 || roughness > 0.9) {
+        imageStore(out_reflection, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         return;
     }
 
-    vec3 normal = normalize(g.normal);
+    /* Calculate reflection direction */
+    vec3 reflect_dir = reflect(-V, normal);
 
+    /* Apply roughness-based jitter */
     vec2 noise_uv = vec2(pixel) / 128.0;
     float spatial_noise = texture(blue_noise_tex, noise_uv).r;
     float temporal_offset = float(pc.frame_count) * 0.6180339887;
+    vec2 noise = vec2(
+        fract(spatial_noise + temporal_offset),
+        fract(spatial_noise * 1.618 + temporal_offset)
+    );
+    vec3 jittered_dir = jitter_reflection(reflect_dir, roughness, noise);
 
+    /* Bias origin along reflection direction */
     float bias = pc.voxel_size * 0.6;
-    vec3 ao_origin = g.world_pos + normal * bias;
+    vec3 ray_origin = world_pos + reflect_dir * bias + normal * pc.voxel_size * 0.1;
 
-    int num_samples = (pc.ao_quality >= 2) ? 2 : 1;
-    float ao_sum = 0.0;
+    /* Trace reflection ray */
+    ReflectionHit hit = trace_reflection_ray(ray_origin, jittered_dir);
 
-    for (int s = 0; s < num_samples; s++) {
-        float noise = fract(spatial_noise + temporal_offset + float(s) * 0.5);
-        float noise2 = fract(spatial_noise * 1.618 + temporal_offset + float(s) * 0.309);
+    /* Calculate blend weight based on fresnel and roughness */
+    float roughness_fade = 1.0 - roughness * roughness;
+    float blend_weight = reflectivity * roughness_fade;
 
-        vec2 xi = vec2(noise, noise2);
-
-        vec3 ao_dir = cosine_weighted_hemisphere(xi, normal);
-
-        ao_sum += trace_ao_ray(ao_origin, ao_dir);
-    }
-
-    float ao = ao_sum / float(num_samples);
-
-    imageStore(out_ao, pixel, vec4(ao, 0.0, 0.0, 0.0));
+    /* Output: RGB = reflection color weighted by fresnel, A = blend weight */
+    vec3 reflection_color = hit.color * fresnel;
+    imageStore(out_reflection, pixel, vec4(reflection_color, blend_weight));
 }

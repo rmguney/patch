@@ -40,7 +40,8 @@ typedef enum
     APP_ACTION_SETTING_SHADOW_QUALITY,
     APP_ACTION_SETTING_SHADOW_CONTACT,
     APP_ACTION_SETTING_AO_QUALITY,
-    APP_ACTION_SETTING_LOD_QUALITY
+    APP_ACTION_SETTING_LOD_QUALITY,
+    APP_ACTION_SETTING_REFLECTION_QUALITY
 } AppAction;
 
 typedef struct
@@ -56,6 +57,7 @@ typedef struct
     int32_t shadow_contact_hardening;/* 0=Off, 1=On */
     int32_t ao_quality;              /* 0=None, 1=Fair, 2=Good */
     int32_t lod_quality;             /* 0=Fair, 1=Good, 2=High */
+    int32_t reflection_quality;      /* 0=Off, 1=Fair, 2=Good */
 } AppSettings;
 
 typedef struct

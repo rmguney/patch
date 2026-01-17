@@ -427,6 +427,13 @@ namespace patch
             dispatch_ao_compute();
             dispatch_temporal_ao_resolve();
         }
+
+        /* Dispatch reflection compute (only if reflection_quality >= 1) */
+        if (reflection_quality_ >= 1 && reflection_resources_initialized_ && reflection_compute_pipeline_ && deferred_total_chunks_ > 0)
+        {
+            dispatch_reflection_compute();
+            dispatch_temporal_reflection_resolve();
+        }
         gbuffer_compute_dispatched_ = false;
     }
 
@@ -501,7 +508,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.pad1 = 0.0f;
+        pc.history_valid = 0;
         pc.grid_size[0] = vol->chunks_x * CHUNK_SIZE;
         pc.grid_size[1] = vol->chunks_y * CHUNK_SIZE;
         pc.grid_size[2] = vol->chunks_z * CHUNK_SIZE;
@@ -583,7 +590,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.pad1 = 0.0f;
+        pc.history_valid = 0;
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];

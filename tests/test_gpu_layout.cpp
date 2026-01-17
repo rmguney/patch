@@ -153,6 +153,7 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, bounds_max) == 144);
     ASSERT(offsetof(VoxelPushConstants, chunk_size) == 156);
     ASSERT(offsetof(VoxelPushConstants, camera_pos) == 160);
+    ASSERT(offsetof(VoxelPushConstants, history_valid) == 172);
     ASSERT(offsetof(VoxelPushConstants, grid_size) == 176);
     ASSERT(offsetof(VoxelPushConstants, total_chunks) == 188);
     ASSERT(offsetof(VoxelPushConstants, chunks_dim) == 192);
@@ -168,7 +169,7 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, shadow_contact) == 240);
     ASSERT(offsetof(VoxelPushConstants, ao_quality) == 244);
     ASSERT(offsetof(VoxelPushConstants, lod_quality) == 248);
-    ASSERT(offsetof(VoxelPushConstants, reserved) == 252);
+    ASSERT(offsetof(VoxelPushConstants, reflection_quality) == 252);
     return 1;
 }
 

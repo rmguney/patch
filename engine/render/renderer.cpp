@@ -84,6 +84,11 @@ namespace patch
         lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
     }
 
+    void Renderer::set_reflection_quality(int level)
+    {
+        reflection_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+    }
+
     void Renderer::set_adaptive_quality(bool enabled)
     {
         adaptive_quality_ = enabled;
