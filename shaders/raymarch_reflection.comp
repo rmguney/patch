@@ -69,9 +69,13 @@ layout(SET_BINDING(1, 4)) uniform sampler2D blue_noise_tex;
 /* Set 2: Output */
 layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_reflection;
 
-const int MAX_REFLECTION_STEPS = 128;
 const float REFLECTION_MAX_DIST = 50.0;
 const vec3 SKY_COLOR = vec3(0.6, 0.75, 0.95);
+
+/* Quality-scaled max steps: 1=64, 2=128, 3=192 */
+int get_max_reflection_steps() {
+    return 64 * pc.reflection_quality;
+}
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
@@ -123,11 +127,12 @@ vec3 fresnel_schlick(float cos_theta, vec3 F0) {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
-/* Sample material color from voxel grid at hit position */
+/* Sample material color from voxel grid at hit position.
+   Returns sky color if no material (e.g., hit object/particle not in terrain data). */
 vec3 sample_hit_color(ivec3 map_pos) {
     uint mat = sample_material(map_pos);
     if (mat == 0u) {
-        return vec3(0.5);
+        return SKY_COLOR; /* No terrain material at this position */
     }
     return get_material_color(mat);
 }
@@ -166,12 +171,9 @@ ReflectionHit trace_reflection_ray(vec3 origin, vec3 rd) {
     ivec3 step_dir = ivec3(sign(rd));
     vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
 
-    ivec3 last_mip2_pos = ivec3(-1000);
-    ivec3 last_mip1_pos = ivec3(-1000);
-    bool mip2_empty = false;
-    bool mip1_empty = false;
-
-    for (int i = 0; i < MAX_REFLECTION_STEPS; i++) {
+    /* DEBUG: Increased max steps since we disabled hierarchical skip */
+    int max_steps = 512;
+    for (int i = 0; i < max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
@@ -185,13 +187,8 @@ ReflectionHit trace_reflection_ray(vec3 origin, vec3 rd) {
             return result;
         }
 
-        ivec3 current_mip2 = map_pos >> 3;
-        if (current_mip2 != last_mip2_pos) {
-            last_mip2_pos = current_mip2;
-            mip2_empty = !sample_shadow_mip2(map_pos);
-            last_mip1_pos = ivec3(-1000);
-        }
-
+        /* Hierarchical skip using shadow volume mips */
+        bool mip2_empty = !sample_shadow_mip2(map_pos);
         if (mip2_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
             side_dist += vec3(mask) * delta_dist;
@@ -199,12 +196,7 @@ ReflectionHit trace_reflection_ray(vec3 origin, vec3 rd) {
             continue;
         }
 
-        ivec3 current_mip1 = map_pos >> 2;
-        if (current_mip1 != last_mip1_pos) {
-            last_mip1_pos = current_mip1;
-            mip1_empty = !sample_shadow_mip1(map_pos);
-        }
-
+        bool mip1_empty = !sample_shadow_mip1(map_pos);
         if (mip1_empty) {
             bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
             side_dist += vec3(mask) * delta_dist;
@@ -212,9 +204,12 @@ ReflectionHit trace_reflection_ray(vec3 origin, vec3 rd) {
             continue;
         }
 
-        if (sample_shadow_volume(map_pos)) {
+        /* Use terrain material data directly for hit detection instead of shadow volume.
+           Skip hits within 1.5 voxels of origin to prevent self-intersection. */
+        uint mat = sample_material(map_pos);
+        if (mat != 0u && dist > pc.voxel_size * 1.5) {
             result.hit = true;
-            result.color = sample_hit_color(map_pos);
+            result.color = get_material_color(mat);
             result.dist = dist;
             return result;
         }
@@ -279,7 +274,14 @@ void main() {
         return;
     }
 
-    vec3 normal = normalize(texelFetch(gbuffer_normal, pixel, 0).rgb * 2.0 - 1.0);
+    /* Decode normal and snap near-axis components to reduce quantization noise.
+       RGB8 storage causes ±0.004 error on zero components, which creates grazing angle flicker. */
+    vec3 raw_normal = texelFetch(gbuffer_normal, pixel, 0).rgb * 2.0 - 1.0;
+    vec3 normal = normalize(vec3(
+        abs(raw_normal.x) < 0.01 ? 0.0 : raw_normal.x,
+        abs(raw_normal.y) < 0.01 ? 0.0 : raw_normal.y,
+        abs(raw_normal.z) < 0.01 ? 0.0 : raw_normal.z
+    ));
     vec3 albedo = texelFetch(gbuffer_albedo, pixel, 0).rgb;
     vec4 material = texelFetch(gbuffer_material, pixel, 0);
     float roughness = material.r;
@@ -293,16 +295,23 @@ void main() {
     );
 
     /* Calculate view direction */
-    vec3 V = normalize(pc.camera_pos - world_pos);
+    vec3 V = (pc.is_orthographic != 0)
+        ? -normalize((pc.inv_view * vec4(0.0, 0.0, -1.0, 0.0)).xyz)
+        : normalize(pc.camera_pos - world_pos);
     float NdotV = max(dot(normal, V), 0.0);
 
     /* Fresnel: F0 = mix(0.04, albedo, metallic) */
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
     vec3 fresnel = fresnel_schlick(NdotV, F0);
 
-    /* Skip very rough or non-reflective surfaces */
+    /* Skip very rough or non-reflective surfaces
+       Quality scales roughness threshold: 1=0.7, 2=0.85, 3=0.95 (widened for visibility) */
+    float max_roughness = 0.55 + 0.15 * float(pc.reflection_quality);
     float reflectivity = max(max(fresnel.r, fresnel.g), fresnel.b);
-    if (reflectivity < 0.02 || roughness > 0.9) {
+    /* Soft falloff instead of hard threshold to prevent grazing angle flicker */
+    float roughness_atten = 1.0 - smoothstep(max_roughness - 0.1, max_roughness, roughness);
+    reflectivity *= roughness_atten;
+    if (reflectivity < 0.005) {
         imageStore(out_reflection, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         return;
     }
@@ -310,28 +319,31 @@ void main() {
     /* Calculate reflection direction */
     vec3 reflect_dir = reflect(-V, normal);
 
-    /* Apply roughness-based jitter */
-    vec2 noise_uv = vec2(pixel) / 128.0;
-    float spatial_noise = texture(blue_noise_tex, noise_uv).r;
-    float temporal_offset = float(pc.frame_count) * 0.6180339887;
-    vec2 noise = vec2(
-        fract(spatial_noise + temporal_offset),
-        fract(spatial_noise * 1.618 + temporal_offset)
-    );
-    vec3 jittered_dir = jitter_reflection(reflect_dir, roughness, noise);
+    /* No jitter - use mirror reflections. Glossy blur via jitter caused flickering
+       that temporal accumulation couldn't smooth. Sharp reflections look better
+       for voxel aesthetics anyway. */
+    vec3 jittered_dir = reflect_dir;
 
-    /* Bias origin along reflection direction */
-    float bias = pc.voxel_size * 0.6;
-    vec3 ray_origin = world_pos + reflect_dir * bias + normal * pc.voxel_size * 0.1;
+    /* At grazing angles (NdotV small), aggressive normal bias prevents self-intersection.
+       The reflect_dir is nearly parallel to surface at grazing - biasing along it doesn't help.
+       Instead, push the ray origin away from the surface along the normal. */
+    float grazing = 1.0 - NdotV; /* 0 at head-on, 1 at grazing */
+    float normal_bias = pc.voxel_size * (0.4 + grazing * grazing * 2.0); /* 0.4 to 2.4 */
+    float reflect_bias = pc.voxel_size * 0.5;
+    vec3 ray_origin = world_pos + reflect_dir * reflect_bias + normal * normal_bias;
 
     /* Trace reflection ray */
     ReflectionHit hit = trace_reflection_ray(ray_origin, jittered_dir);
 
-    /* Calculate blend weight based on fresnel and roughness */
+    /* Calculate blend weight based on fresnel and roughness.
+       Fade out at extreme grazing angles to hide remaining self-intersection artifacts.
+       Wide smoothstep range (0.05-0.25) prevents flicker from NdotV quantization noise. */
     float roughness_fade = 1.0 - roughness * roughness;
-    float blend_weight = reflectivity * roughness_fade;
+    float grazing_fade = smoothstep(0.05, 0.25, NdotV);
+    float blend_weight = reflectivity * roughness_fade * grazing_fade;
 
     /* Output: RGB = reflection color weighted by fresnel, A = blend weight */
     vec3 reflection_color = hit.color * fresnel;
+
     imageStore(out_reflection, pixel, vec4(reflection_color, blend_weight));
 }

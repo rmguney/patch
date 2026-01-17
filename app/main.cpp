@@ -267,14 +267,14 @@ int patch_main(int argc, char *argv[])
         bool f3_pressed = f3_down && !f3_was_down;
         f3_was_down = f3_down;
 
-        /* F4: Terrain debug mode next */
+        /* F4: Terrain debug mode next (0-15, 16 total modes) */
         bool f4_down = window.keys().f4;
         bool f4_pressed = f4_down && !f4_was_down;
         f4_was_down = f4_down;
         if (f4_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 13);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 16);
         }
 
         /* F5: Terrain debug mode previous */
@@ -284,7 +284,7 @@ int patch_main(int argc, char *argv[])
         if (f5_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 12) % 13);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 15) % 16);
         }
 
         /* Mouse click detection */

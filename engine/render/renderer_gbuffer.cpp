@@ -729,6 +729,15 @@ namespace patch
             update_deferred_gi_cascade_descriptors();
         }
 
+        /* Update reflection descriptor if reflection resources were initialized before gbuffer */
+        if (reflection_resources_initialized_ && reflection_output_view_)
+        {
+            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                update_deferred_reflection_buffer_descriptor(i, reflection_output_view_);
+            }
+        }
+
         printf("  Deferred descriptor sets initialized\n");
         return true;
     }

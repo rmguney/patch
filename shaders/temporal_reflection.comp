@@ -46,9 +46,9 @@ layout(SET_BINDING(0, 5)) uniform sampler2D reflection_history;
 /* Set 1: output */
 layout(rgba8, SET_BINDING(1, 0)) writeonly uniform image2D out_reflection_resolved;
 
-const float HISTORY_BLEND_MAX = 0.85;
-const float DEPTH_REJECT_THRESHOLD = 0.02;
-const float NORMAL_REJECT_THRESHOLD = 0.9;
+const float HISTORY_BLEND_MAX = 0.92;  /* Higher = more temporal smoothing */
+const float DEPTH_REJECT_THRESHOLD = 0.08;
+const float NORMAL_REJECT_THRESHOLD = 0.8;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -95,8 +95,8 @@ void main() {
     float roughness_factor = 1.0 - roughness * roughness * 0.5;
 
     float motion_len = length(motion * vec2(size));
-    float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
-    float history_blend = mix(HISTORY_BLEND_MAX * roughness_factor, 0.3, velocity_weight);
+    float velocity_weight = clamp(motion_len / 4.0, 0.0, 1.0);  /* Less sensitive to motion */
+    float history_blend = mix(HISTORY_BLEND_MAX * roughness_factor, 0.6, velocity_weight);  /* Higher min blend */
 
     vec4 history_reflection = texture(reflection_history, prev_uv);
 

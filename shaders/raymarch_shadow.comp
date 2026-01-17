@@ -271,7 +271,7 @@ void main() {
             /* Scale penumbra: near occluder = sharper, far = softer
                If center ray misses, use full penumbra (jittered rays may still hit) */
             if (occluder_dist < SHADOW_MAX_DIST) {
-                float contact_factor = clamp(occluder_dist / 5.0, 0.3, 1.0);
+                float contact_factor = smoothstep(0.0, 8.0, occluder_dist) * 0.7 + 0.3;
                 penumbra = base_penumbra * contact_factor;
             }
         }
@@ -287,7 +287,8 @@ void main() {
         }
 
         shadow = shadow_sum / float(num_samples);
-        shadow = mix(0.3, 1.0, shadow);
+        /* Remap shadow: 0.05 minimum prevents pure black while maintaining contrast */
+        shadow = mix(0.05, 1.0, shadow);
     }
 
     imageStore(out_shadow, pixel, vec4(shadow, 0.0, 0.0, 0.0));

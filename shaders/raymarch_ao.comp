@@ -232,6 +232,12 @@ void main() {
 
     vec3 normal = normalize(g.normal);
 
+    /* Quality 0 = disabled (return full visibility) */
+    if (pc.ao_quality == 0) {
+        imageStore(out_ao, pixel, vec4(1.0));
+        return;
+    }
+
     vec2 noise_uv = vec2(pixel) / 128.0;
     float spatial_noise = texture(blue_noise_tex, noise_uv).r;
     float temporal_offset = float(pc.frame_count) * 0.6180339887;
@@ -239,7 +245,9 @@ void main() {
     float bias = pc.voxel_size * 0.6;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-    int num_samples = (pc.ao_quality >= 2) ? 2 : 1;
+    /* Quality-scaled samples: 1=1, 2=2, 3=3 samples per pixel
+       Temporal accumulation smooths out noise over frames */
+    int num_samples = pc.ao_quality;
     float ao_sum = 0.0;
 
     for (int s = 0; s < num_samples; s++) {

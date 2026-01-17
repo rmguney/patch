@@ -67,24 +67,8 @@ int get_gi_quality() {
     return (pc.history_valid >> 8) & 0xFF;
 }
 
-/* Sample indirect radiance from GI cascades */
-vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
-    int gi_quality = get_gi_quality();
-    if (gi_quality == 0) {
-        return vec3(0.0);
-    }
-
-    vec3 bounds_size = pc.bounds_max - pc.bounds_min;
-    vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
-
-    /* Clamp to valid cascade range */
-    uvw = clamp(uvw, vec3(0.001), vec3(0.999));
-
-    /* Sample multiple cascade levels and blend based on distance from camera */
-    float dist_to_cam = length(world_pos - pc.cam_pos);
-
-    /* Cascade level selection based on distance:
-       Level 0: near (highest detail), Level 3: far (lowest detail) */
+/* Sample GI cascade at a position, selecting level based on distance */
+vec3 sample_cascade_at(vec3 uvw, float dist_to_cam) {
     float level_f = clamp(dist_to_cam / 20.0, 0.0, 3.0);
     int level_low = int(floor(level_f));
     int level_high = min(level_low + 1, 3);
@@ -92,7 +76,6 @@ vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
 
     vec3 radiance_low, radiance_high;
 
-    /* Sample cascades (can't use arrays with samplers, so explicit switch) */
     if (level_low == 0) {
         radiance_low = texture(gi_cascade_0, uvw).rgb;
     } else if (level_low == 1) {
@@ -113,14 +96,49 @@ vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
         radiance_high = texture(gi_cascade_3, uvw).rgb;
     }
 
-    vec3 radiance = mix(radiance_low, radiance_high, blend);
+    return mix(radiance_low, radiance_high, blend);
+}
+
+/* Sample indirect radiance from GI cascades with neighborhood sampling for color bleeding */
+vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
+    int gi_quality = get_gi_quality();
+    if (gi_quality == 0) {
+        return vec3(0.0);
+    }
+
+    vec3 bounds_size = pc.bounds_max - pc.bounds_min;
+    vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
+    uvw = clamp(uvw, vec3(0.001), vec3(0.999));
+
+    float dist_to_cam = length(world_pos - pc.cam_pos);
+
+    /* Sample center */
+    vec3 radiance = sample_cascade_at(uvw, dist_to_cam);
+
+    /* Sample neighbors in the direction of the normal for color bleeding.
+       This picks up color from nearby walls/surfaces. */
+    float spread = 0.03; /* How far to sample for bleeding (in UVW space) */
+    vec3 offset_x = vec3(spread, 0.0, 0.0);
+    vec3 offset_y = vec3(0.0, spread, 0.0);
+    vec3 offset_z = vec3(0.0, 0.0, spread);
+
+    /* Sample 6 neighbors and weight by how much they face the surface */
+    radiance += sample_cascade_at(clamp(uvw + offset_x, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.x, 0.0);
+    radiance += sample_cascade_at(clamp(uvw - offset_x, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.x, 0.0);
+    radiance += sample_cascade_at(clamp(uvw + offset_y, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.y, 0.0);
+    radiance += sample_cascade_at(clamp(uvw - offset_y, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.y, 0.0);
+    radiance += sample_cascade_at(clamp(uvw + offset_z, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.z, 0.0);
+    radiance += sample_cascade_at(clamp(uvw - offset_z, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.z, 0.0);
+
+    /* Normalize (center weight 1.0, neighbors weighted by normal component ~0-1 each) */
+    radiance /= 2.0;
 
     /* Apply hemisphere weighting based on normal */
     float hemisphere_weight = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0) * 0.5 + 0.5;
     radiance *= hemisphere_weight;
 
     /* Quality-based intensity scaling */
-    float gi_strength = float(gi_quality) * 0.33; /* 1=0.33, 2=0.66, 3=1.0 */
+    float gi_strength = 0.4 + float(gi_quality) * 0.2;
 
     return radiance * gi_strength;
 }
@@ -139,10 +157,12 @@ void main() {
         return;
     }
 
-    gl_FragDepth = camera_linear_depth_to_ndc(max(g.linear_depth, pc.near_plane), pc.near_plane, pc.far_plane);
+    bool is_ortho = pc.is_orthographic != 0;
+    gl_FragDepth = camera_linear_depth_to_ndc_ortho(max(g.linear_depth, pc.near_plane), pc.near_plane, pc.far_plane, is_ortho);
 
     vec3 N = normalize(g.normal);
-    vec3 V = normalize(pc.cam_pos - g.world_pos);
+    /* View direction: for perspective, from surface to camera; for ortho, use negative camera forward */
+    vec3 V = is_ortho ? -camera_get_forward(pc.inv_view) : normalize(pc.cam_pos - g.world_pos);
 
     /* DEBUG: Visualize world position (should be stable when camera moves) */
     if (pc.debug_mode == 10) {
@@ -196,11 +216,11 @@ void main() {
 
     vec3 fill_light_dir = normalize(vec3(0.45, 0.5, -0.65));
     vec3 fill_color = vec3(0.7, 0.8, 1.0);
-    float fill_strength = 0.45;
+    float fill_strength = 0.25;
 
     vec3 back_light_dir = normalize(vec3(-0.35, 0.28, 0.9));
     vec3 back_color = vec3(0.95, 0.9, 0.85);
-    float back_strength = 0.25;
+    float back_strength = 0.12;
 
     float key_dot = max(dot(N, key_light_dir), 0.0);
     float fill_dot = max(dot(N, fill_light_dir), 0.0);
@@ -217,7 +237,7 @@ void main() {
     /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
     float ao = texture(ao_buffer, in_uv).r;
 
-    float ambient = 0.4;
+    float ambient = 0.28;
     vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);
     vec3 ground_ambient = vec3(0.42, 0.36, 0.32) * (0.5 - N.y * 0.5);
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
@@ -238,7 +258,7 @@ void main() {
 
     float floor_y = pc.bounds_min.y;
     float ground_dist = g.world_pos.y - floor_y;
-    float ground_ao = smoothstep(0.0, 1.5, ground_dist) * 0.3 + 0.7;
+    float ground_ao = smoothstep(0.0, 1.5, ground_dist) * 0.45 + 0.55;
 
     vec3 color = (g.albedo * ambient_light + diffuse + specular) * ground_ao;
 
@@ -252,13 +272,15 @@ void main() {
     /* Sample reflection buffer and blend */
     vec4 reflection = texture(reflection_buffer, in_uv);
     if (reflection.a > 0.001) {
-        /* For metals: reflection contributes more, replacing some diffuse
-           For dielectrics: additive reflection with Fresnel weight */
-        float metallic_blend = 0.5 + 0.5 * g.metallic;
-        float blend = reflection.a * metallic_blend;
-        /* Metals get reflection mixed with ambient, dielectrics get additive */
-        color = mix(color, reflection.rgb + ambient_light, blend * g.metallic)
-              + reflection.rgb * blend * (1.0 - g.metallic);
+        /* Boost reflection blend for visibility (alpha contains fresnel weight)
+           Metals: replace diffuse with reflection
+           Dielectrics: additive reflection scaled for visibility */
+        float base_blend = reflection.a * 2.5; /* Boost base fresnel for visibility */
+        float metal_blend = mix(base_blend, reflection.a * 0.8, g.metallic);
+
+        /* Metals: reflection replaces diffuse, Dielectrics: additive blend */
+        color = mix(color, reflection.rgb, metal_blend * g.metallic)
+              + reflection.rgb * base_blend * (1.0 - g.metallic);
     }
 
     float exposure = 1.0;

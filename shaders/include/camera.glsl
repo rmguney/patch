@@ -119,11 +119,31 @@ vec3 camera_reconstruct_world_pos(
 /*
  * Convert linear depth to NDC depth for gl_FragDepth.
  *
- * Uses reverse-Z mapping for better depth precision:
- * ndc = (far - near * far / linear) / (far - near)
+ * Perspective uses reverse-Z mapping for better depth precision.
+ * Orthographic uses linear mapping since depth is distance from near plane.
  */
+float camera_linear_depth_to_ndc_ortho(float linear_depth, float near, float far, bool is_orthographic) {
+    if (is_orthographic) {
+        /* Ortho: depth is distance from near plane, maps linearly to [0,1] */
+        return clamp(linear_depth / (far - near), 0.0, 1.0);
+    } else {
+        /* Perspective: reverse-Z for better precision */
+        return (far - near * far / linear_depth) / (far - near);
+    }
+}
+
+/* Legacy overload for shaders without orthographic flag - assumes perspective */
 float camera_linear_depth_to_ndc(float linear_depth, float near, float far) {
     return (far - near * far / linear_depth) / (far - near);
+}
+
+/*
+ * Get camera forward direction in world space.
+ * For orthographic projection, this is the ray direction (same for all pixels).
+ */
+vec3 camera_get_forward(mat4 inv_view) {
+    /* Camera looks down -Z in view space, transform to world space */
+    return normalize((inv_view * vec4(0.0, 0.0, -1.0, 0.0)).xyz);
 }
 
 #endif /* CAMERA_GLSL */

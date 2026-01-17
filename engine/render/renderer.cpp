@@ -71,17 +71,17 @@ namespace patch
 
     void Renderer::set_ao_quality(int level)
     {
-        ao_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+        ao_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
     void Renderer::set_lod_quality(int level)
     {
-        lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+        lod_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
     void Renderer::set_reflection_quality(int level)
     {
-        reflection_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+        reflection_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
     void Renderer::set_adaptive_quality(bool enabled)

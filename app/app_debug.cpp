@@ -264,9 +264,16 @@ bool draw_overlay(patch::Renderer &renderer, float fps, const BallPitStats *stat
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 0.5f), 1.0f, line);
 
         y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d  DRAWS: %d",
+        const char *mode_names[] = {
+            "Normal", "Normals", "Albedo", "Depth", "UVW", "Material", "Roughness",
+            "Metallic", "ObjectID", "---", "WorldPos", "ShadowUVW", "Shadow",
+            "AO", "Reflection", "GI"
+        };
+        const char *mode_name = (dbg->terrain_debug_mode >= 0 && dbg->terrain_debug_mode < 16)
+            ? mode_names[dbg->terrain_debug_mode] : "?";
+        snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d (%s)  DRAWS: %d",
                  dbg->camera_pos[0], dbg->camera_pos[1], dbg->camera_pos[2],
-                 dbg->terrain_debug_mode, dbg->terrain_draw_count);
+                 dbg->terrain_debug_mode, mode_name, dbg->terrain_draw_count);
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 1.0f), 1.0f, line);
 
         y_px += unit * 12.0f;

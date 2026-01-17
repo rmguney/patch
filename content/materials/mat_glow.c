@@ -5,7 +5,7 @@
 
 const MaterialDescriptor g_mat_glow = {
     .name = "glow",
-    .r = 255, .g = 220, .b = 180,
+    .r = 255, .g = 140, .b = 0,
     .flags = MAT_FLAG_SOLID,
     .density = 1.0f,
     .hardness = 0.3f,

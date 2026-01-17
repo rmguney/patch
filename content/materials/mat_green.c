@@ -1,11 +1,13 @@
 /*
- * mat_green.c - Bright green material for GI color bleeding tests
+ * mat_green.c - Pastel green material for GI color bleeding tests
  */
 #include "content/materials.h"
 
 const MaterialDescriptor g_mat_green = {
     .name = "green",
-    .r = 50, .g = 200, .b = 50,
+    .r = 147,
+    .g = 197,
+    .b = 114,
     .flags = MAT_FLAG_SOLID | MAT_FLAG_BREAKABLE,
     .density = 2.0f,
     .hardness = 0.5f,

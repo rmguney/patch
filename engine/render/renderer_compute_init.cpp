@@ -106,6 +106,15 @@ namespace patch
         temporal_reflection_history_valid_ = false;
         reflection_resources_initialized_ = true;
 
+        /* Update deferred lighting descriptor to use actual reflection buffer */
+        if (gbuffer_initialized_ && reflection_output_view_)
+        {
+            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                update_deferred_reflection_buffer_descriptor(i, reflection_output_view_);
+            }
+        }
+
         /* Initialize spatial denoise resources */
         if (!create_lit_color_resources())
         {

@@ -593,6 +593,7 @@ namespace patch
 
         /* Update shadow compute descriptor with new shadow volume texture */
         update_shadow_volume_descriptor();
+        update_reflection_volume_descriptor();
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)

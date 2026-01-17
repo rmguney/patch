@@ -199,11 +199,16 @@ void main() {
     vec3 albedo = get_material_color(mat);
     float emissive = get_material_emissive(mat);
 
-    /* Start with emissive contribution */
-    vec3 radiance = albedo * emissive * 2.0;
+    /* Start with emissive contribution (boosted for visible color bleeding) */
+    vec3 radiance = albedo * emissive * 3.0;
 
     /* Estimate surface normal */
     vec3 N = estimate_surface_normal(voxel_pos);
+
+    /* Add ambient contribution so ALL surfaces bleed some color (not just sun-lit) */
+    vec3 ambient_color = vec3(0.5, 0.6, 0.8); /* Sky-ish ambient */
+    float ambient_strength = 0.3;
+    radiance += albedo * ambient_color * ambient_strength;
 
     /* Check if surface faces the light */
     float NdotL = dot(N, KEY_LIGHT_DIR);
