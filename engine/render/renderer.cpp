@@ -64,6 +64,26 @@ namespace patch
         rt_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
+    void Renderer::set_shadow_quality(int level)
+    {
+        shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+    }
+
+    void Renderer::set_shadow_contact_hardening(bool enabled)
+    {
+        shadow_contact_hardening_ = enabled;
+    }
+
+    void Renderer::set_ao_quality(int level)
+    {
+        ao_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+    }
+
+    void Renderer::set_lod_quality(int level)
+    {
+        lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+    }
+
     void Renderer::set_adaptive_quality(bool enabled)
     {
         adaptive_quality_ = enabled;
@@ -87,6 +107,8 @@ namespace patch
         if (frame_time_ms > HIGH_MS && rt_quality_ > 1)
         {
             rt_quality_--;
+            shadow_quality_ = rt_quality_ + 1;
+            ao_quality_ = rt_quality_ > 0 ? rt_quality_ : 1;
             adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
         }
     }

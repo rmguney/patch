@@ -28,7 +28,11 @@ layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
     int object_count;
-    int reserved[5];
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int reserved;
 } pc;
 
 /* Set 0: inputs */
@@ -56,7 +60,7 @@ void main()
 
     float current_shadow = texelFetch(shadow_current, pixel, 0).r;
 
-    int history_valid = pc.reserved[0];
+    int history_valid = pc.reserved;
     if (history_valid == 0)
     {
         imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));

@@ -126,6 +126,10 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.object_count = object_count;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
 
         vkCmdPushConstants(cmd, gbuffer_compute_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
@@ -230,6 +234,10 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.object_count = 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
 
         vkCmdPushConstants(cmd, shadow_compute_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
@@ -327,7 +335,11 @@ namespace patch
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
-        pc.reserved[0] = temporal_shadow_history_valid_ ? 1 : 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
+        pc.reserved = temporal_shadow_history_valid_ ? 1 : 0;
 
         vkCmdPushConstants(cmd, temporal_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 
@@ -427,6 +439,10 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.object_count = 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
 
         vkCmdPushConstants(cmd, ao_compute_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
@@ -526,7 +542,11 @@ namespace patch
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
-        pc.reserved[0] = temporal_ao_history_valid_ ? 1 : 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
+        pc.reserved = temporal_ao_history_valid_ ? 1 : 0;
 
         vkCmdPushConstants(cmd, temporal_ao_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 

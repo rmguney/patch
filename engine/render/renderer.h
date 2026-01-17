@@ -171,6 +171,15 @@ namespace patch
         int get_rt_quality() const { return rt_quality_; }
         void set_rt_quality(int level);
 
+        void set_shadow_quality(int level);
+        void set_shadow_contact_hardening(bool enabled);
+        void set_ao_quality(int level);
+        void set_lod_quality(int level);
+        int get_shadow_quality() const { return shadow_quality_; }
+        bool get_shadow_contact_hardening() const { return shadow_contact_hardening_; }
+        int get_ao_quality() const { return ao_quality_; }
+        int get_lod_quality() const { return lod_quality_; }
+
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
 
@@ -336,10 +345,14 @@ namespace patch
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;
-        int rt_quality_ = 1;                 /* 0=Off, 1=Fair, 2=Good, 3=High */
+        int rt_quality_ = 1;                 /* 0=Off, 1=Fair, 2=Good, 3=High (legacy) */
         bool adaptive_quality_ = true;       /* Dynamic quality adjustment (default on) */
         int adaptive_cooldown_ = 0;          /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
+        int shadow_quality_ = 2;             /* 0=None, 1=Fair, 2=Good, 3=High */
+        bool shadow_contact_hardening_ = true;
+        int ao_quality_ = 1;                 /* 0=None, 1=Fair, 2=Good */
+        int lod_quality_ = 1;                /* 0=Fair, 1=Good, 2=High */
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */

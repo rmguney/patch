@@ -28,7 +28,11 @@ layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
     int object_count;
-    int reserved[5];
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int reserved;
 } pc;
 
 layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
@@ -53,7 +57,7 @@ void main() {
 
     float current_ao = texelFetch(ao_current, pixel, 0).r;
 
-    int history_valid = pc.reserved[0];
+    int history_valid = pc.reserved;
     if (history_valid == 0) {
         imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
         return;

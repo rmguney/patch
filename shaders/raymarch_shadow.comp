@@ -29,7 +29,11 @@ layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
     int object_count;
-    int reserved[5];
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int reserved;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -237,7 +241,7 @@ void main() {
 
     float shadow = 1.0;
 
-    if (pc.rt_quality > 0) {
+    if (pc.shadow_quality > 0) {
         vec2 noise_uv = vec2(pixel) / 128.0;
         float spatial_noise = texture(blue_noise_tex, noise_uv).r;
         float temporal_noise = fract(spatial_noise + float(pc.frame_count) * 0.6180339887);
@@ -253,14 +257,14 @@ void main() {
         vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
         /* Scale samples: quality 1=4, 2=8, 3=12 samples for smoother soft shadows */
-        int num_samples = pc.rt_quality * 4;
+        int num_samples = pc.shadow_quality * 4;
         float shadow_sum = 0.0;
 
-        /* Contact hardening only at quality >= 2 (good), otherwise use constant penumbra */
-        float base_penumbra = 0.04 + 0.02 * float(pc.rt_quality);
+        /* Contact hardening only when enabled, otherwise use constant penumbra */
+        float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
         float penumbra = base_penumbra;
 
-        if (pc.rt_quality >= 2) {
+        if (pc.shadow_contact != 0) {
             /* Contact hardening: trace center ray to find occluder distance */
             float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
 

@@ -517,6 +517,10 @@ namespace patch
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
         pc.object_count = 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
 
         vkCmdPushConstants(command_buffers_[current_frame_], gbuffer_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -593,6 +597,10 @@ namespace patch
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = 512;
         pc.object_count = 0;
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        pc.lod_quality = lod_quality_;
 
         vkCmdPushConstants(command_buffers_[current_frame_], deferred_lighting_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

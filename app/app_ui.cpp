@@ -1,6 +1,11 @@
 #include "app_ui.h"
 #include <string.h>
 
+static const char *const QUALITY_4[] = {"NONE", "FAIR", "GOOD", "HIGH"};
+static const char *const QUALITY_3[] = {"NONE", "FAIR", "GOOD"};
+static const char *const QUALITY_LOD[] = {"FAIR", "GOOD", "HIGH"};
+static const char *const TOGGLE_LABELS[] = {"OFF", "ON"};
+
 static void init_main_menu(UIMenu *menu)
 {
     ui_menu_clear(menu, "PATCH");
@@ -40,15 +45,31 @@ static void init_settings_menu(UIMenu *menu, const AppSettings *s)
                        s->max_spawns, 50, 1024, 50);
     ui_menu_add_slider(menu, "VOXEL SIZE (MM)", APP_ACTION_SETTING_VOXEL_SIZE,
                        s->voxel_size_mm, 50, 200, 10);
-    ui_menu_add_toggle(menu, "ADAPTIVE QUALITY", APP_ACTION_SETTING_ADAPTIVE,
-                       s->adaptive_quality != 0);
+    ui_menu_add_label(menu, NULL);
+    ui_menu_add_button(menu, "GRAPHICS", APP_ACTION_GRAPHICS);
+    ui_menu_add_button(menu, "RUN STRESS TEST", APP_ACTION_RUN_STRESS_TEST);
+    ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
+}
+
+static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
+{
+    ui_menu_clear(menu, "GRAPHICS");
+    ui_menu_add_slider_labeled(menu, "ADAPTIVE", APP_ACTION_SETTING_ADAPTIVE,
+                               s->adaptive_quality, 0, 1, TOGGLE_LABELS, 2);
     if (!s->adaptive_quality)
     {
-        ui_menu_add_slider(menu, "RT QUALITY", APP_ACTION_SETTING_RT_QUALITY,
-                           s->rt_quality, 0, 3, 1);
+        ui_menu_add_slider_labeled(menu, "RT QUALITY", APP_ACTION_SETTING_RT_QUALITY,
+                                   s->rt_quality, 0, 3, QUALITY_4, 4);
     }
+    ui_menu_add_slider_labeled(menu, "SHADOWS", APP_ACTION_SETTING_SHADOW_QUALITY,
+                               s->shadow_quality, 0, 3, QUALITY_4, 4);
+    ui_menu_add_slider_labeled(menu, "CONTACT HARDENING", APP_ACTION_SETTING_SHADOW_CONTACT,
+                               s->shadow_contact_hardening, 0, 1, TOGGLE_LABELS, 2);
+    ui_menu_add_slider_labeled(menu, "AMBIENT OCCLUSION", APP_ACTION_SETTING_AO_QUALITY,
+                               s->ao_quality, 0, 2, QUALITY_3, 3);
+    ui_menu_add_slider_labeled(menu, "LOD QUALITY", APP_ACTION_SETTING_LOD_QUALITY,
+                               s->lod_quality, 0, 2, QUALITY_LOD, 3);
     ui_menu_add_label(menu, NULL);
-    ui_menu_add_button(menu, "RUN STRESS TEST", APP_ACTION_RUN_STRESS_TEST);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
 }
 
@@ -65,13 +86,18 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
-    ui->settings.rt_quality = 1;       /* Fair by default */
-    ui->settings.adaptive_quality = 1; /* On by default */
+    ui->settings.rt_quality = 2;                   /* Good by default (legacy) */
+    ui->settings.adaptive_quality = 1;             /* On by default */
+    ui->settings.shadow_quality = 2;               /* Good by default */
+    ui->settings.shadow_contact_hardening = 1;     /* On by default */
+    ui->settings.ao_quality = 1;                   /* Fair by default */
+    ui->settings.lod_quality = 1;                  /* Good by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
     init_scene_menu(&ui->scene_menu);
     init_settings_menu(&ui->settings_menu, &ui->settings);
+    init_graphics_menu(&ui->graphics_menu, &ui->settings);
 }
 
 void app_ui_show_screen(AppUI *ui, AppScreen screen)
@@ -99,22 +125,6 @@ void app_ui_hide(AppUI *ui)
 static void sync_settings_from_menu(AppUI *ui)
 {
     UIMenu *menu = &ui->settings_menu;
-    bool needs_rebuild = false;
-
-    for (int32_t i = 0; i < menu->item_count; i++)
-    {
-        UIMenuItem *item = &menu->items[i];
-        if (item->type == UI_ITEM_TOGGLE &&
-            item->action_id == APP_ACTION_SETTING_ADAPTIVE)
-        {
-            int32_t new_val = item->toggle_state ? 1 : 0;
-            if (ui->settings.adaptive_quality != new_val)
-            {
-                ui->settings.adaptive_quality = new_val;
-                needs_rebuild = true;
-            }
-        }
-    }
 
     for (int32_t i = 0; i < menu->item_count; i++)
     {
@@ -139,14 +149,50 @@ static void sync_settings_from_menu(AppUI *ui)
         case APP_ACTION_SETTING_VOXEL_SIZE:
             ui->settings.voxel_size_mm = item->slider_value;
             break;
+        }
+    }
+}
+
+static void sync_graphics_from_menu(AppUI *ui)
+{
+    UIMenu *menu = &ui->graphics_menu;
+    bool needs_rebuild = false;
+
+    for (int32_t i = 0; i < menu->item_count; i++)
+    {
+        UIMenuItem *item = &menu->items[i];
+        if (item->type != UI_ITEM_SLIDER)
+            continue;
+
+        switch (item->action_id)
+        {
+        case APP_ACTION_SETTING_ADAPTIVE:
+            if (ui->settings.adaptive_quality != item->slider_value)
+            {
+                ui->settings.adaptive_quality = item->slider_value;
+                needs_rebuild = true;
+            }
+            break;
         case APP_ACTION_SETTING_RT_QUALITY:
             ui->settings.rt_quality = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_SHADOW_QUALITY:
+            ui->settings.shadow_quality = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_SHADOW_CONTACT:
+            ui->settings.shadow_contact_hardening = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_AO_QUALITY:
+            ui->settings.ao_quality = item->slider_value;
+            break;
+        case APP_ACTION_SETTING_LOD_QUALITY:
+            ui->settings.lod_quality = item->slider_value;
             break;
         }
     }
 
     if (needs_rebuild)
-        init_settings_menu(menu, &ui->settings);
+        init_graphics_menu(menu, &ui->settings);
 }
 
 void app_ui_update(AppUI *ui, float dt, float mouse_x, float mouse_y, bool mouse_down,
@@ -163,6 +209,10 @@ void app_ui_update(AppUI *ui, float dt, float mouse_x, float mouse_y, bool mouse
     if (ui->current_screen == APP_SCREEN_SETTINGS)
     {
         sync_settings_from_menu(ui);
+    }
+    else if (ui->current_screen == APP_SCREEN_GRAPHICS)
+    {
+        sync_graphics_from_menu(ui);
     }
 
     if (action != 0)
@@ -195,6 +245,8 @@ UIMenu *app_ui_get_active_menu(AppUI *ui)
         return &ui->scene_menu;
     case APP_SCREEN_SETTINGS:
         return &ui->settings_menu;
+    case APP_SCREEN_GRAPHICS:
+        return &ui->graphics_menu;
     default:
         return NULL;
     }
@@ -208,4 +260,9 @@ const AppSettings *app_ui_get_settings(const AppUI *ui)
 void app_ui_refresh_settings_menu(AppUI *ui)
 {
     init_settings_menu(&ui->settings_menu, &ui->settings);
+}
+
+void app_ui_refresh_graphics_menu(AppUI *ui)
+{
+    init_graphics_menu(&ui->graphics_menu, &ui->settings);
 }

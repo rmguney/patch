@@ -85,16 +85,16 @@ namespace patch
         const float h = (float)((ctx->window_height > 0) ? ctx->window_height : 1);
         const float min_dim = w < h ? w : h;
 
-        const float title_h_px = clampf_local(min_dim * 0.09f, 36.0f, 86.0f);
-        const float item_h_px = clampf_local(min_dim * 0.032f, 14.0f, 26.0f);
-        const float label_h_px = clampf_local(item_h_px * 0.85f, 12.0f, 22.0f);
+        const float title_h_px = clampf_local(min_dim * 0.06f, 28.0f, 56.0f);
+        const float item_h_px = clampf_local(min_dim * 0.024f, 12.0f, 20.0f);
+        const float label_h_px = clampf_local(item_h_px * 0.85f, 10.0f, 18.0f);
         const float unit = item_h_px / 7.0f;
 
         draw_title_px(ctx, menu->title, title_h_px);
 
-        const float button_w_px = clampf_local(w * 0.44f, 240.0f, 720.0f);
-        const float button_h_px = clampf_local(item_h_px * 2.0f, 28.0f, 64.0f);
-        const float spacing_px = clampf_local(button_h_px * 0.55f, 12.0f, 40.0f);
+        const float button_w_px = clampf_local(w * 0.32f, 200.0f, 480.0f);
+        const float button_h_px = clampf_local(item_h_px * 1.8f, 22.0f, 40.0f);
+        const float spacing_px = clampf_local(button_h_px * 0.35f, 6.0f, 16.0f);
 
         const float cx_px = w * 0.5f;
         const float center_y_px = h * 0.55f;
@@ -131,7 +131,16 @@ namespace patch
             else if (item->type == UI_ITEM_SLIDER)
             {
                 char display_text[UI_MAX_TEXT_LEN + 16];
-                snprintf(display_text, sizeof(display_text), "%s: %d", item->text, item->slider_value);
+                if (item->slider_labels && item->slider_label_count > 0 &&
+                    item->slider_value >= 0 && item->slider_value < item->slider_label_count)
+                {
+                    snprintf(display_text, sizeof(display_text), "%s: %s",
+                             item->text, item->slider_labels[item->slider_value]);
+                }
+                else
+                {
+                    snprintf(display_text, sizeof(display_text), "%s: %d", item->text, item->slider_value);
+                }
 
                 Vec3 bg_color = item->hovered ? color_secondary : color_panel;
                 Vec3 border_color = item->hovered ? color_hover : color_primary;

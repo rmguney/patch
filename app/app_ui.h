@@ -14,7 +14,8 @@ typedef enum
     APP_SCREEN_MAIN_MENU,
     APP_SCREEN_PAUSE,
     APP_SCREEN_SCENE_SELECT,
-    APP_SCREEN_SETTINGS
+    APP_SCREEN_SETTINGS,
+    APP_SCREEN_GRAPHICS
 } AppScreen;
 
 typedef enum
@@ -26,6 +27,7 @@ typedef enum
     APP_ACTION_QUIT,
     APP_ACTION_SCENE_SELECT,
     APP_ACTION_SETTINGS,
+    APP_ACTION_GRAPHICS,
     APP_ACTION_BACK,
     APP_ACTION_RUN_STRESS_TEST,
     APP_ACTION_SETTING_INITIAL_SPAWNS = 100,
@@ -34,7 +36,11 @@ typedef enum
     APP_ACTION_SETTING_MAX_SPAWNS,
     APP_ACTION_SETTING_VOXEL_SIZE,
     APP_ACTION_SETTING_RT_QUALITY,
-    APP_ACTION_SETTING_ADAPTIVE
+    APP_ACTION_SETTING_ADAPTIVE,
+    APP_ACTION_SETTING_SHADOW_QUALITY,
+    APP_ACTION_SETTING_SHADOW_CONTACT,
+    APP_ACTION_SETTING_AO_QUALITY,
+    APP_ACTION_SETTING_LOD_QUALITY
 } AppAction;
 
 typedef struct
@@ -44,8 +50,12 @@ typedef struct
     int32_t spawn_batch;
     int32_t max_spawns;
     int32_t voxel_size_mm;
-    int32_t rt_quality;       /* 0=Off, 1=Fair, 2=Good, 3=High */
-    int32_t adaptive_quality; /* 0=Off, 1=On (default) */
+    int32_t rt_quality;              /* 0=Off, 1=Fair, 2=Good, 3=High (legacy, derived from below) */
+    int32_t adaptive_quality;        /* 0=Off, 1=On (default) */
+    int32_t shadow_quality;          /* 0=None, 1=Fair, 2=Good, 3=High */
+    int32_t shadow_contact_hardening;/* 0=Off, 1=On */
+    int32_t ao_quality;              /* 0=None, 1=Fair, 2=Good */
+    int32_t lod_quality;             /* 0=Fair, 1=Good, 2=High */
 } AppSettings;
 
 typedef struct
@@ -58,6 +68,7 @@ typedef struct
     UIMenu pause_menu;
     UIMenu scene_menu;
     UIMenu settings_menu;
+    UIMenu graphics_menu;
 
     AppSettings settings;
 } AppUI;
@@ -72,6 +83,7 @@ bool app_ui_is_blocking(const AppUI *ui);
 UIMenu *app_ui_get_active_menu(AppUI *ui);
 const AppSettings *app_ui_get_settings(const AppUI *ui);
 void app_ui_refresh_settings_menu(AppUI *ui);
+void app_ui_refresh_graphics_menu(AppUI *ui);
 
 #ifdef __cplusplus
 }

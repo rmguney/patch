@@ -164,7 +164,11 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, near_plane) == 224);
     ASSERT(offsetof(VoxelPushConstants, far_plane) == 228);
     ASSERT(offsetof(VoxelPushConstants, object_count) == 232);
-    ASSERT(offsetof(VoxelPushConstants, reserved) == 236);
+    ASSERT(offsetof(VoxelPushConstants, shadow_quality) == 236);
+    ASSERT(offsetof(VoxelPushConstants, shadow_contact) == 240);
+    ASSERT(offsetof(VoxelPushConstants, ao_quality) == 244);
+    ASSERT(offsetof(VoxelPushConstants, lod_quality) == 248);
+    ASSERT(offsetof(VoxelPushConstants, reserved) == 252);
     return 1;
 }
 

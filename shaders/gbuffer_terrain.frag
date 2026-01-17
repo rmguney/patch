@@ -36,7 +36,11 @@ PUSH_CONSTANT uniform Constants {
     float near_plane;
     float far_plane;
     int object_count;
-    int reserved[5];
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int reserved;
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {

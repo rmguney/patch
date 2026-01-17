@@ -112,17 +112,17 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
 }
 
 /*
- * Calculate LOD-adjusted max steps based on distance and rt_quality.
+ * Calculate LOD-adjusted max steps based on distance and lod_quality.
  *
- * Distance thresholds (scaled by rt_quality 1-3):
+ * Distance thresholds (scaled by lod_quality 0-2):
  *   Near:  < 40/60/80 units  -> full steps (48)
  *   Mid:   < 80/120/160 units -> medium (32)
  *   Far:   >= threshold      -> reduced (28)
  *
  * Minimum 28 steps required for diagonal traversal of 16³ grid (sqrt(3)*16≈28).
  */
-int vobj_calc_distance_lod_steps(float distance, int rt_quality, int base_steps) {
-    float quality_scale = float(max(rt_quality, 1));
+int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps) {
+    float quality_scale = float(max(lod_quality + 1, 1));
     float near_thresh = 40.0 * quality_scale;
     float far_thresh = 80.0 * quality_scale;
 
@@ -168,8 +168,8 @@ int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
  * Combined LOD: take minimum of distance and coverage LOD.
  * This ensures large close objects get reduced steps.
  */
-int vobj_calc_combined_lod_steps(float distance, float coverage, int rt_quality, int base_steps) {
-    int dist_steps = vobj_calc_distance_lod_steps(distance, rt_quality, base_steps);
+int vobj_calc_combined_lod_steps(float distance, float coverage, int lod_quality, int base_steps) {
+    int dist_steps = vobj_calc_distance_lod_steps(distance, lod_quality, base_steps);
     int cov_steps = vobj_calc_coverage_lod_steps(coverage, base_steps);
     return min(dist_steps, cov_steps);
 }

@@ -33,6 +33,8 @@ typedef struct
     int32_t slider_min;
     int32_t slider_max;
     int32_t slider_step;
+    const char *const *slider_labels;
+    int32_t slider_label_count;
 } UIMenuItem;
 
 typedef struct
@@ -49,6 +51,9 @@ void ui_menu_add_label(UIMenu *menu, const char *text);
 void ui_menu_add_toggle(UIMenu *menu, const char *text, int32_t action_id, bool initial);
 void ui_menu_add_slider(UIMenu *menu, const char *text, int32_t action_id,
                         int32_t value, int32_t min_val, int32_t max_val, int32_t step);
+void ui_menu_add_slider_labeled(UIMenu *menu, const char *text, int32_t action_id,
+                                int32_t value, int32_t min_val, int32_t max_val,
+                                const char *const *labels, int32_t label_count);
 
 typedef struct
 {

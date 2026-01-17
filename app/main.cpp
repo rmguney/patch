@@ -355,8 +355,24 @@ int patch_main(int argc, char *argv[])
             app_ui_show_screen(&ui, APP_SCREEN_SETTINGS);
             break;
 
+        case APP_ACTION_GRAPHICS:
+            app_ui_show_screen(&ui, APP_SCREEN_GRAPHICS);
+            break;
+
         case APP_ACTION_BACK:
-            app_ui_show_screen(&ui, ui.previous_screen != APP_SCREEN_NONE ? ui.previous_screen : APP_SCREEN_MAIN_MENU);
+            if (ui.current_screen == APP_SCREEN_GRAPHICS)
+            {
+                app_ui_show_screen(&ui, APP_SCREEN_SETTINGS);
+            }
+            else if (ui.current_screen == APP_SCREEN_SETTINGS)
+            {
+                AppScreen target = (ui.previous_screen == APP_SCREEN_PAUSE) ? APP_SCREEN_PAUSE : APP_SCREEN_MAIN_MENU;
+                app_ui_show_screen(&ui, target);
+            }
+            else
+            {
+                app_ui_show_screen(&ui, ui.previous_screen != APP_SCREEN_NONE ? ui.previous_screen : APP_SCREEN_MAIN_MENU);
+            }
             break;
 
         case APP_ACTION_MAIN_MENU:
@@ -474,7 +490,13 @@ int patch_main(int argc, char *argv[])
         const AppSettings *settings = app_ui_get_settings(&ui);
         renderer.set_adaptive_quality(settings->adaptive_quality != 0);
         if (!settings->adaptive_quality)
-            renderer.set_rt_quality(settings->rt_quality);
+        {
+            renderer.set_shadow_quality(settings->shadow_quality);
+            renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
+            renderer.set_ao_quality(settings->ao_quality);
+            renderer.set_lod_quality(settings->lod_quality);
+            renderer.set_rt_quality(settings->shadow_quality > 0 ? settings->shadow_quality : 1);
+        }
 
         PROFILE_BEGIN(PROFILE_RENDER_TOTAL);
 

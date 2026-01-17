@@ -79,6 +79,29 @@ void ui_menu_add_slider(UIMenu *menu, const char *text, int32_t action_id,
     item->slider_step = step;
     item->enabled = true;
     item->hovered = false;
+    item->slider_labels = NULL;
+    item->slider_label_count = 0;
+}
+
+void ui_menu_add_slider_labeled(UIMenu *menu, const char *text, int32_t action_id,
+                                int32_t value, int32_t min_val, int32_t max_val,
+                                const char *const *labels, int32_t label_count)
+{
+    if (menu->item_count >= UI_MAX_MENU_ITEMS)
+        return;
+
+    UIMenuItem *item = &menu->items[menu->item_count++];
+    item->type = UI_ITEM_SLIDER;
+    snprintf(item->text, UI_MAX_TEXT_LEN, "%s", text);
+    item->action_id = action_id;
+    item->slider_value = value;
+    item->slider_min = min_val;
+    item->slider_max = max_val;
+    item->slider_step = 1;
+    item->enabled = true;
+    item->hovered = false;
+    item->slider_labels = labels;
+    item->slider_label_count = label_count;
 }
 
 void ui_context_init(UIContext *ctx)
@@ -151,10 +174,10 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
         h = 1.0f;
     const float min_dim = w < h ? w : h;
 
-    const float item_h_px = clampf_local(min_dim * 0.032f, 14.0f, 26.0f);
-    const float button_w_px = clampf_local(w * 0.44f, 240.0f, 720.0f);
-    const float button_h_px = clampf_local(item_h_px * 2.0f, 28.0f, 64.0f);
-    const float spacing_px = clampf_local(button_h_px * 0.55f, 12.0f, 40.0f);
+    const float item_h_px = clampf_local(min_dim * 0.024f, 12.0f, 20.0f);
+    const float button_w_px = clampf_local(w * 0.32f, 200.0f, 480.0f);
+    const float button_h_px = clampf_local(item_h_px * 1.8f, 22.0f, 40.0f);
+    const float spacing_px = clampf_local(button_h_px * 0.35f, 6.0f, 16.0f);
 
     const float cx_px = w * 0.5f;
     const float center_y_px = h * 0.55f;
@@ -192,7 +215,10 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
                 if (rel_x > 1.0f)
                     rel_x = 1.0f;
 
-                int32_t new_value = item->slider_min + (int32_t)(rel_x * (float)(item->slider_max - item->slider_min));
+                int32_t range = item->slider_max - item->slider_min;
+                int32_t new_value = item->slider_min + (int32_t)(rel_x * (float)range + 0.5f);
+                if (new_value > item->slider_max)
+                    new_value = item->slider_max;
                 new_value = (new_value / item->slider_step) * item->slider_step;
                 item->slider_value = new_value;
             }

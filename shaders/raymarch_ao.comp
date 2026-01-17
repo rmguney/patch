@@ -28,7 +28,11 @@ layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
     int object_count;
-    int reserved[5];
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int reserved;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -235,7 +239,7 @@ void main() {
     float bias = pc.voxel_size * 0.6;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-    int num_samples = (pc.rt_quality >= 2) ? 2 : 1;
+    int num_samples = (pc.ao_quality >= 2) ? 2 : 1;
     float ao_sum = 0.0;
 
     for (int s = 0; s < num_samples; s++) {
