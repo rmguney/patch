@@ -106,6 +106,39 @@ namespace patch
         temporal_reflection_history_valid_ = false;
         reflection_resources_initialized_ = true;
 
+        /* Initialize spatial denoise resources */
+        if (!create_lit_color_resources())
+        {
+            fprintf(stderr, "Failed to create lit color resources\n");
+            return false;
+        }
+
+        if (!create_denoised_color_resources())
+        {
+            fprintf(stderr, "Failed to create denoised color resources\n");
+            return false;
+        }
+
+        if (!create_spatial_denoise_pipeline())
+        {
+            fprintf(stderr, "Failed to create spatial denoise pipeline\n");
+            return false;
+        }
+
+        if (!create_spatial_denoise_descriptor_sets())
+        {
+            fprintf(stderr, "Failed to create spatial denoise descriptor sets\n");
+            return false;
+        }
+
+        if (!create_deferred_lighting_intermediate_fb())
+        {
+            fprintf(stderr, "Failed to create deferred lighting intermediate framebuffer\n");
+            return false;
+        }
+
+        spatial_denoise_initialized_ = true;
+
         compute_resources_initialized_ = true;
         printf("  Compute raymarching pipelines initialized\n");
         return true;

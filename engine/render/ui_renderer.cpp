@@ -142,9 +142,10 @@ namespace patch
                     snprintf(display_text, sizeof(display_text), "%s: %d", item->text, item->slider_value);
                 }
 
-                Vec3 bg_color = item->hovered ? color_secondary : color_panel;
-                Vec3 border_color = item->hovered ? color_hover : color_primary;
-                Vec3 text_color = item->hovered ? color_hover : color_text;
+                bool can_interact = item->enabled && item->hovered;
+                Vec3 bg_color = can_interact ? color_secondary : color_panel;
+                Vec3 border_color = can_interact ? color_hover : (item->enabled ? color_primary : color_text_dim);
+                Vec3 text_color = item->enabled ? (can_interact ? color_hover : color_text) : color_text_dim;
 
                 const float border_px = clampf_local(unit * 0.7f, 1.0f, 4.0f);
                 const float x_px = cx_px - button_w_px * 0.5f;

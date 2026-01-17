@@ -541,6 +541,9 @@ namespace patch
         if (!gbuffer_initialized_ || !deferred_lighting_pipeline_)
             return;
 
+        bool use_denoise = denoise_quality_ >= 1 && spatial_denoise_initialized_ &&
+                           deferred_lighting_intermediate_fb_ != VK_NULL_HANDLE;
+
         VkClearValue clear_values[2]{};
         clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}}; /* Light pastel baby blue */
         clear_values[1].depthStencil = {1.0f, 0};
@@ -548,7 +551,7 @@ namespace patch
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rp_info.renderPass = render_pass_;
-        rp_info.framebuffer = framebuffers_[image_index];
+        rp_info.framebuffer = use_denoise ? deferred_lighting_intermediate_fb_ : framebuffers_[image_index];
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = swapchain_extent_;
         rp_info.clearValueCount = 2;
@@ -614,6 +617,38 @@ namespace patch
                            0, sizeof(pc), &pc);
 
         vkCmdDraw(command_buffers_[current_frame_], 3, 1, 0, 0);
+
+        if (use_denoise)
+        {
+            vkCmdEndRenderPass(command_buffers_[current_frame_]);
+
+            dispatch_spatial_denoise();
+            blit_denoised_to_swapchain(image_index);
+
+            /* Start new render pass for UI rendering (loads color, keeps depth) */
+            VkClearValue clear_ui[2]{};
+            clear_ui[1].depthStencil = {1.0f, 0};
+
+            VkRenderPassBeginInfo ui_rp_info{};
+            ui_rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            ui_rp_info.renderPass = render_pass_load_;
+            ui_rp_info.framebuffer = framebuffers_[image_index];
+            ui_rp_info.renderArea.offset = {0, 0};
+            ui_rp_info.renderArea.extent = swapchain_extent_;
+            ui_rp_info.clearValueCount = 2;
+            ui_rp_info.pClearValues = clear_ui;
+
+            vkCmdBeginRenderPass(command_buffers_[current_frame_], &ui_rp_info, VK_SUBPASS_CONTENTS_INLINE);
+
+            VkViewport vp{};
+            vp.width = static_cast<float>(swapchain_extent_.width);
+            vp.height = static_cast<float>(swapchain_extent_.height);
+            vp.maxDepth = 1.0f;
+            VkRect2D sc{};
+            sc.extent = swapchain_extent_;
+            vkCmdSetViewport(command_buffers_[current_frame_], 0, 1, &vp);
+            vkCmdSetScissor(command_buffers_[current_frame_], 0, 1, &sc);
+        }
     }
 
     bool Renderer::init_deferred_pipeline()

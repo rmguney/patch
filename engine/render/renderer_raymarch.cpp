@@ -869,7 +869,141 @@ namespace patch
         /* Destroy reflection resources */
         destroy_reflection_resources();
 
+        /* Destroy spatial denoise resources */
+        destroy_spatial_denoise_resources();
+
         compute_resources_initialized_ = false;
+    }
+
+    void Renderer::dispatch_spatial_denoise()
+    {
+        if (!spatial_denoise_initialized_ || !spatial_denoise_pipeline_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        /* Barrier: lit_color to SHADER_READ, denoised_color to GENERAL */
+        /* Note: render_pass_ transitions color attachment to PRESENT_SRC_KHR */
+        VkImageMemoryBarrier barriers[2]{};
+        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].image = lit_color_image_;
+        barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[1].srcAccessMask = 0;
+        barriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[1].image = denoised_color_image_;
+        barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 2, barriers);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, spatial_denoise_pipeline_);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, spatial_denoise_layout_,
+                                0, 1, &spatial_denoise_input_sets_[current_frame_], 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, spatial_denoise_layout_,
+                                1, 1, &spatial_denoise_output_sets_[current_frame_], 0, nullptr);
+
+        Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
+        Mat4 inv_proj = mat4_inverse(projection_matrix_);
+
+        VoxelPushConstants pc{};
+        pc.inv_view = inv_view;
+        pc.inv_projection = inv_proj;
+        pc.near_plane = 0.1f;
+        pc.far_plane = 1000.0f;
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.debug_mode = 0;
+
+        vkCmdPushConstants(cmd, spatial_denoise_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        uint32_t groups_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t groups_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, groups_x, groups_y, 1);
+
+        /* Barrier: denoised_color ready for transfer */
+        VkImageMemoryBarrier transfer_barrier{};
+        transfer_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        transfer_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        transfer_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        transfer_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        transfer_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        transfer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        transfer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        transfer_barrier.image = denoised_color_image_;
+        transfer_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &transfer_barrier);
+    }
+
+    void Renderer::blit_denoised_to_swapchain(uint32_t image_index)
+    {
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        /* Transition swapchain to TRANSFER_DST */
+        VkImageMemoryBarrier dst_barrier{};
+        dst_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        dst_barrier.srcAccessMask = 0;
+        dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dst_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        dst_barrier.image = swapchain_images_[image_index];
+        dst_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &dst_barrier);
+
+        /* Blit denoised to swapchain */
+        VkImageBlit blit_region{};
+        blit_region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit_region.srcOffsets[0] = {0, 0, 0};
+        blit_region.srcOffsets[1] = {static_cast<int32_t>(swapchain_extent_.width),
+                                     static_cast<int32_t>(swapchain_extent_.height), 1};
+        blit_region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit_region.dstOffsets[0] = {0, 0, 0};
+        blit_region.dstOffsets[1] = {static_cast<int32_t>(swapchain_extent_.width),
+                                     static_cast<int32_t>(swapchain_extent_.height), 1};
+
+        vkCmdBlitImage(cmd,
+                       denoised_color_image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       swapchain_images_[image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit_region, VK_FILTER_NEAREST);
+
+        /* Transition swapchain to COLOR_ATTACHMENT for UI */
+        VkImageMemoryBarrier present_barrier{};
+        present_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        present_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        present_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        present_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        present_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        present_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        present_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        present_barrier.image = swapchain_images_[image_index];
+        present_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &present_barrier);
     }
 
 }

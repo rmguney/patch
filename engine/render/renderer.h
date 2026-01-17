@@ -181,6 +181,8 @@ namespace patch
         int get_ao_quality() const { return ao_quality_; }
         int get_lod_quality() const { return lod_quality_; }
         int get_reflection_quality() const { return reflection_quality_; }
+        void set_denoise_quality(int level);
+        int get_denoise_quality() const { return denoise_quality_; }
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -259,6 +261,7 @@ namespace patch
         std::vector<VkFramebuffer> framebuffers_;
 
         VkRenderPass render_pass_;
+        VkRenderPass render_pass_load_;   /* LOAD_OP_LOAD variant for UI after blit */
         VkPipelineLayout pipeline_layout_;
         VkPipeline ui_pipeline_;
 
@@ -356,6 +359,7 @@ namespace patch
         int ao_quality_ = 1;                 /* 0=None, 1=Fair, 2=Good */
         int lod_quality_ = 1;                /* 0=Fair, 1=Good, 2=High */
         int reflection_quality_ = 1;         /* 0=Off, 1=Fair, 2=Good */
+        int denoise_quality_ = 1;            /* 0=Off, 1=On */
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -457,6 +461,30 @@ namespace patch
         VkDescriptorSet temporal_reflection_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
 
         bool reflection_resources_initialized_ = false;
+
+        /* Spatial denoise compute infrastructure */
+        VkPipeline spatial_denoise_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout spatial_denoise_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool spatial_denoise_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout spatial_denoise_input_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout spatial_denoise_output_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSet spatial_denoise_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet spatial_denoise_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        /* Intermediate lit color buffer (lighting output before denoise) */
+        VkImage lit_color_image_ = VK_NULL_HANDLE;
+        VkDeviceMemory lit_color_memory_ = VK_NULL_HANDLE;
+        VkImageView lit_color_view_ = VK_NULL_HANDLE;
+
+        /* Denoised color buffer (denoise output) */
+        VkImage denoised_color_image_ = VK_NULL_HANDLE;
+        VkDeviceMemory denoised_color_memory_ = VK_NULL_HANDLE;
+        VkImageView denoised_color_view_ = VK_NULL_HANDLE;
+
+        /* Intermediate framebuffer for lighting pass targeting lit_color_image_ */
+        VkFramebuffer deferred_lighting_intermediate_fb_ = VK_NULL_HANDLE;
+
+        bool spatial_denoise_initialized_ = false;
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -668,6 +696,16 @@ namespace patch
         void dispatch_reflection_compute();
         void dispatch_temporal_reflection_resolve();
         void update_deferred_reflection_buffer_descriptor(uint32_t frame_index, VkImageView reflection_view);
+
+        /* Spatial denoise compute infrastructure */
+        bool create_lit_color_resources();
+        bool create_denoised_color_resources();
+        bool create_spatial_denoise_pipeline();
+        bool create_spatial_denoise_descriptor_sets();
+        bool create_deferred_lighting_intermediate_fb();
+        void destroy_spatial_denoise_resources();
+        void dispatch_spatial_denoise();
+        void blit_denoised_to_swapchain(uint32_t image_index);
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

@@ -285,7 +285,7 @@ namespace patch
         create_info.imageColorSpace = surface_format.colorSpace;
         create_info.imageExtent = swapchain_extent_;
         create_info.imageArrayLayers = 1;
-        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
         uint32_t queue_family_indices[] = {graphics_family_, present_family_};
         if (graphics_family_ != present_family_)
@@ -385,7 +385,18 @@ namespace patch
         render_pass_info.dependencyCount = 1;
         render_pass_info.pDependencies = &dependency;
 
-        return vkCreateRenderPass(device_, &render_pass_info, nullptr, &render_pass_) == VK_SUCCESS;
+        if (vkCreateRenderPass(device_, &render_pass_info, nullptr, &render_pass_) != VK_SUCCESS)
+            return false;
+
+        /* Create LOAD variant for UI rendering after blit (preserves blitted content) */
+        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        /* Depth can stay cleared since UI doesn't use it after blit path */
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        return vkCreateRenderPass(device_, &render_pass_info, nullptr, &render_pass_load_) == VK_SUCCESS;
     }
 
     bool Renderer::create_depth_resources()
@@ -777,6 +788,12 @@ namespace patch
         {
             vkDestroyRenderPass(device_, render_pass_, nullptr);
             render_pass_ = VK_NULL_HANDLE;
+        }
+
+        if (render_pass_load_)
+        {
+            vkDestroyRenderPass(device_, render_pass_load_, nullptr);
+            render_pass_load_ = VK_NULL_HANDLE;
         }
 
         for (auto view : swapchain_image_views_)

@@ -1,14 +1,6 @@
 # Patch
 
-Raymarched voxel engine with real-time destruction simulation.
-
-## Features
-
-- **Destructible voxel terrain** - Everything can be broken into pieces
-- **Soft shadows** - Smooth, natural-looking shadows that update in real-time
-- **Particle debris** - Destroyed voxels turn into physics-driven particles
-- **Voxel objects** - Independent objects that can move and rotate
-- **60 FPS target** - Optimized for smooth performance
+Raymarched voxel engine with real-time destruction simulation
 
 ## Sample Scenes (legacy scenes, under .github/legacy)
 
@@ -23,7 +15,9 @@ Raymarched voxel engine with real-time destruction simulation.
 
 - Windows
 - CMake 3.21+
-- C/C++ compiler (MSVC recommended)
+- C/C++ compiler
+- Ninja build system (available via CMake)
+- Vulkan SDK (for building shaders, alternatively prebuilt shaders included)
 
 ### Build & Run
 
@@ -39,11 +33,6 @@ cmake --build build
 cmake -B build -G Ninja -DPATCH_USE_PREBUILT_SHADERS=ON
 cmake --build build
 ```
-
-## Controls
-
-- **Mouse** - Look around / interact
-- **F3** - Toggle performance overlay
 
 ## Project Structure
 

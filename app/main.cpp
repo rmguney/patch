@@ -489,10 +489,11 @@ int patch_main(int argc, char *argv[])
 
         const AppSettings *settings = app_ui_get_settings(&ui);
         renderer.set_adaptive_quality(settings->adaptive_quality != 0);
+        renderer.set_denoise_quality(settings->denoise_quality);
+        renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
         if (!settings->adaptive_quality)
         {
             renderer.set_shadow_quality(settings->shadow_quality);
-            renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
             renderer.set_ao_quality(settings->ao_quality);
             renderer.set_lod_quality(settings->lod_quality);
             renderer.set_reflection_quality(settings->reflection_quality);
