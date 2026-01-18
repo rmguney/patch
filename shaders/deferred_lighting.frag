@@ -13,6 +13,7 @@ layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_albedo;
 layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
 layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_material;
 layout(SET_BINDING(0, 3)) uniform sampler2D gbuffer_depth;
+layout(SET_BINDING(0, 4)) uniform sampler2D gbuffer_world_pos;
 layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
@@ -51,6 +52,7 @@ layout(push_constant) uniform Constants {
     int reflection_quality;
 } pc;
 
+#include "include/camera.glsl"
 #include "include/gbuffer_sample.glsl"
 
 vec3 aces_tonemap(vec3 x) {
@@ -99,7 +101,7 @@ vec3 sample_cascade_at(vec3 uvw, float dist_to_cam) {
     return mix(radiance_low, radiance_high, blend);
 }
 
-/* Sample indirect radiance from GI cascades with neighborhood sampling for color bleeding */
+/* Sample indirect radiance from GI cascades with normal-directed color bleeding. */
 vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
     int gi_quality = get_gi_quality();
     if (gi_quality == 0) {
@@ -108,37 +110,30 @@ vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
 
     vec3 bounds_size = pc.bounds_max - pc.bounds_min;
     vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
-    uvw = clamp(uvw, vec3(0.001), vec3(0.999));
 
     float dist_to_cam = length(world_pos - pc.cam_pos);
 
-    /* Sample center */
-    vec3 radiance = sample_cascade_at(uvw, dist_to_cam);
+    /* Sample at surface position */
+    vec3 radiance = sample_cascade_at(clamp(uvw, vec3(0.001), vec3(0.999)), dist_to_cam);
 
-    /* Sample neighbors in the direction of the normal for color bleeding.
-       This picks up color from nearby walls/surfaces. */
-    float spread = 0.03; /* How far to sample for bleeding (in UVW space) */
-    vec3 offset_x = vec3(spread, 0.0, 0.0);
-    vec3 offset_y = vec3(0.0, spread, 0.0);
-    vec3 offset_z = vec3(0.0, 0.0, spread);
+    /* Color bleeding: sample in the direction the surface is facing.
+       A floor (normal up) samples above itself to pick up wall colors.
+       A wall (normal sideways) samples in front of itself.
+       This naturally picks up light from nearby colored surfaces. */
+    float bleed_dist = 2.0; /* World units to offset for bleeding sample */
+    vec3 bleed_offset = normal * bleed_dist / bounds_size;
+    vec3 bleed_uvw = clamp(uvw + bleed_offset, vec3(0.001), vec3(0.999));
 
-    /* Sample 6 neighbors and weight by how much they face the surface */
-    radiance += sample_cascade_at(clamp(uvw + offset_x, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.x, 0.0);
-    radiance += sample_cascade_at(clamp(uvw - offset_x, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.x, 0.0);
-    radiance += sample_cascade_at(clamp(uvw + offset_y, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.y, 0.0);
-    radiance += sample_cascade_at(clamp(uvw - offset_y, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.y, 0.0);
-    radiance += sample_cascade_at(clamp(uvw + offset_z, vec3(0.001), vec3(0.999)), dist_to_cam) * max(-normal.z, 0.0);
-    radiance += sample_cascade_at(clamp(uvw - offset_z, vec3(0.001), vec3(0.999)), dist_to_cam) * max(normal.z, 0.0);
+    /* Sample bleeding contribution from propagated levels (more spread) */
+    vec3 bleed_sample = texture(gi_cascade_1, bleed_uvw).rgb * 0.6 +
+                        texture(gi_cascade_2, bleed_uvw).rgb * 0.4;
 
-    /* Normalize (center weight 1.0, neighbors weighted by normal component ~0-1 each) */
-    radiance /= 2.0;
-
-    /* Apply hemisphere weighting based on normal */
-    float hemisphere_weight = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0) * 0.5 + 0.5;
-    radiance *= hemisphere_weight;
+    /* Blend bleeding based on quality and distance */
+    float bleed_strength = 0.4 * float(gi_quality);
+    radiance += bleed_sample * bleed_strength;
 
     /* Quality-based intensity scaling */
-    float gi_strength = 0.4 + float(gi_quality) * 0.2;
+    float gi_strength = 0.3 + float(gi_quality) * 0.15;
 
     return radiance * gi_strength;
 }
@@ -147,8 +142,7 @@ void main() {
     GBufferSample g = sample_gbuffer(
         in_uv,
         gbuffer_albedo, gbuffer_normal, gbuffer_material, gbuffer_depth,
-        pc.inv_view, pc.inv_projection, pc.cam_pos,
-        pc.is_orthographic != 0
+        gbuffer_world_pos
     );
 
     if (g.is_sky) {

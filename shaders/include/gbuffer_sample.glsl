@@ -4,8 +4,6 @@
 /* RAY REUSE CONTRACT: Downstream passes must sample G-buffer via these functions,
    never re-cast primary rays. Primary rays are cast once in raymarch_gbuffer.comp. */
 
-#include "camera.glsl"
-
 struct GBufferSample {
     vec3 world_pos;
     vec3 normal;
@@ -23,10 +21,7 @@ GBufferSample sample_gbuffer(
     sampler2D gbuffer_normal,
     sampler2D gbuffer_material,
     sampler2D gbuffer_depth,
-    mat4 inv_view,
-    mat4 inv_projection,
-    vec3 camera_pos,
-    bool is_orthographic
+    sampler2D gbuffer_world_pos
 ) {
     GBufferSample s;
 
@@ -42,16 +37,7 @@ GBufferSample sample_gbuffer(
     s.emissive = material.b;
 
     s.linear_depth = texture(gbuffer_depth, uv).r;
-
-    if (!s.is_sky) {
-        s.world_pos = camera_reconstruct_world_pos(
-            uv, s.linear_depth,
-            inv_view, inv_projection, camera_pos,
-            is_orthographic
-        );
-    } else {
-        s.world_pos = vec3(0.0);
-    }
+    s.world_pos = texture(gbuffer_world_pos, uv).xyz;
 
     return s;
 }
@@ -59,13 +45,9 @@ GBufferSample sample_gbuffer(
 /* Shadow pass variant using texelFetch with integer pixel coordinates */
 GBufferSample sample_gbuffer_shadow(
     ivec2 pixel,
-    ivec2 screen_size,
     sampler2D gbuffer_depth,
     sampler2D gbuffer_normal,
-    mat4 inv_view,
-    mat4 inv_projection,
-    vec3 camera_pos,
-    bool is_orthographic
+    sampler2D gbuffer_world_pos
 ) {
     GBufferSample s;
 
@@ -73,22 +55,12 @@ GBufferSample sample_gbuffer_shadow(
     s.is_sky = (s.linear_depth > 1e9);
 
     s.normal = texelFetch(gbuffer_normal, pixel, 0).rgb * 2.0 - 1.0;
+    s.world_pos = texelFetch(gbuffer_world_pos, pixel, 0).xyz;
 
     s.albedo = vec3(0.0);
     s.roughness = 0.0;
     s.metallic = 0.0;
     s.emissive = 0.0;
-
-    if (!s.is_sky) {
-        vec2 uv = (vec2(pixel) + 0.5) / vec2(screen_size);
-        s.world_pos = camera_reconstruct_world_pos(
-            uv, s.linear_depth,
-            inv_view, inv_projection, camera_pos,
-            is_orthographic
-        );
-    } else {
-        s.world_pos = vec3(0.0);
-    }
 
     return s;
 }

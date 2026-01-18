@@ -16,7 +16,8 @@ layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_material;
 layout(location = 3) out float out_linear_depth;
-layout(location = 4) out vec2 out_motion_vector;
+layout(location = 4) out vec4 out_world_pos;
+layout(location = 5) out vec2 out_motion_vector;
 
 /*
  * NOTE: We cannot use depth_greater here because when the camera is close to
@@ -102,6 +103,7 @@ void main() {
     out_normal = vec4(hit.normal * 0.5 + 0.5, 1.0);
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
     out_linear_depth = hit.t;
+    out_world_pos = vec4(hit.pos, 1.0);
 
     /* Motion vectors for temporal effects */
     vec4 curr_clip = pc.view_proj * vec4(hit.pos, 1.0);

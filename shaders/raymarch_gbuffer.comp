@@ -88,7 +88,8 @@ layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
 layout(rgb10_a2, SET_BINDING(2, 1)) writeonly uniform image2D out_normal;
 layout(rgba8, SET_BINDING(2, 2)) writeonly uniform image2D out_material;
 layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
-layout(rg16f, SET_BINDING(2, 4)) writeonly uniform image2D out_motion_vector;
+layout(rgba32f, SET_BINDING(2, 4)) writeonly uniform image2D out_world_pos;
+layout(rg16f, SET_BINDING(2, 5)) writeonly uniform image2D out_motion_vector;
 
 const int DEFAULT_MAX_STEPS = 512;
 const int VOBJ_BASE_STEPS = 48;
@@ -298,6 +299,7 @@ void main() {
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
         imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));
+        imageStore(out_world_pos, pixel, vec4(best_hit.pos, 1.0));
 
         /* Motion vectors for temporal effects */
         vec2 curr_uv = (vec2(pixel) + 0.5) / vec2(screen_size);
@@ -310,6 +312,7 @@ void main() {
         imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
         imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
         imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
+        imageStore(out_world_pos, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
     }
 }

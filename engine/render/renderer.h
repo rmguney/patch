@@ -71,7 +71,8 @@ namespace patch
         static constexpr uint32_t GBUFFER_NORMAL = 1;
         static constexpr uint32_t GBUFFER_MATERIAL = 2;
         static constexpr uint32_t GBUFFER_LINEAR_DEPTH = 3;
-        static constexpr uint32_t GBUFFER_COUNT = 4;
+        static constexpr uint32_t GBUFFER_WORLD_POS = 4;
+        static constexpr uint32_t GBUFFER_COUNT = 5;
 
         Renderer(Window &window);
         ~Renderer();
@@ -350,16 +351,16 @@ namespace patch
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;
-        bool adaptive_quality_ = true; /* Dynamic quality adjustment (default on) */
-        int adaptive_cooldown_ = 0;    /* Frames until next quality change allowed */
+        bool adaptive_quality_ = false; /* Dynamic quality adjustment (default off) */
+        int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
-        int shadow_quality_ = 2; /* 0=None, 1=Fair, 2=Good, 3=High */
+        int shadow_quality_ = 3; /* 0=None, 1=Fair, 2=Good, 3=High */
         bool shadow_contact_hardening_ = true;
-        int ao_quality_ = 1;                 /* 0=None, 1=Fair, 2=Good */
-        int lod_quality_ = 1;                /* 0=Fair, 1=Good, 2=High */
-        int reflection_quality_ = 1;         /* 0=Off, 1=Fair, 2=Good */
+        int ao_quality_ = 2;                 /* 0=None, 1=Fair, 2=Good */
+        int lod_quality_ = 2;                /* 0=Fair, 1=Good, 2=High */
+        int reflection_quality_ = 2;         /* 0=Off, 1=Fair, 2=Good */
         int denoise_quality_ = 1;            /* 0=Off, 1=On */
-        int gi_quality_ = 0;                 /* 0=Off, 1=Low, 2=Medium, 3=High */
+        int gi_quality_ = 3;                 /* 0=Off, 1=Low, 2=Medium, 3=High */
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */

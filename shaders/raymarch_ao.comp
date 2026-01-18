@@ -55,7 +55,8 @@ layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
 
 layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
 layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
-layout(SET_BINDING(1, 2)) uniform sampler2D blue_noise_tex;
+layout(SET_BINDING(1, 2)) uniform sampler2D gbuffer_world_pos;
+layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
 
 layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_ao;
 
@@ -219,10 +220,8 @@ void main() {
     }
 
     GBufferSample g = sample_gbuffer_shadow(
-        pixel, screen_size,
-        gbuffer_depth, gbuffer_normal,
-        pc.inv_view, pc.inv_projection, pc.camera_pos,
-        pc.is_orthographic != 0
+        pixel,
+        gbuffer_depth, gbuffer_normal, gbuffer_world_pos
     );
 
     if (g.is_sky) {

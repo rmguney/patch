@@ -45,7 +45,8 @@ layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
 /* Set 1: output */
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
 
-const float HISTORY_BLEND_MAX = 0.8;
+const float HISTORY_BLEND_MAX = 0.75;
+const float HISTORY_BLEND_MIN = 0.15;  /* Aggressive rejection during motion */
 const float DEPTH_REJECT_THRESHOLD = 0.05;
 const float NORMAL_REJECT_THRESHOLD = 0.85;
 
@@ -93,8 +94,8 @@ void main()
     }
 
     float motion_len = length(motion * vec2(size));
-    float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
-    float history_blend = mix(HISTORY_BLEND_MAX, 0.5, velocity_weight);
+    float velocity_weight = clamp(motion_len / 1.0, 0.0, 1.0);  /* More sensitive to motion */
+    float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
 
     float history_shadow = texture(shadow_history, prev_uv).r;
     float resolved = mix(current_shadow, history_shadow, history_blend);

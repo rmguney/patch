@@ -11,7 +11,8 @@ namespace patch
         VK_FORMAT_R8G8B8A8_UNORM,
         VK_FORMAT_A2B10G10R10_UNORM_PACK32,
         VK_FORMAT_R8G8B8A8_UNORM,
-        VK_FORMAT_R32_SFLOAT};
+        VK_FORMAT_R32_SFLOAT,
+        VK_FORMAT_R32G32B32A32_SFLOAT};
 
     bool Renderer::create_gbuffer_resources()
     {
@@ -103,18 +104,19 @@ namespace patch
             return false;
         }
 
-        VkImageView fb_attachments[6] = {
+        VkImageView fb_attachments[7] = {
             gbuffer_views_[GBUFFER_ALBEDO],
             gbuffer_views_[GBUFFER_NORMAL],
             gbuffer_views_[GBUFFER_MATERIAL],
             gbuffer_views_[GBUFFER_LINEAR_DEPTH],
+            gbuffer_views_[GBUFFER_WORLD_POS],
             motion_vector_view_,
             depth_image_view_};
 
         VkFramebufferCreateInfo fb_info{};
         fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fb_info.renderPass = gbuffer_render_pass_;
-        fb_info.attachmentCount = 6;
+        fb_info.attachmentCount = 7;
         fb_info.pAttachments = fb_attachments;
         fb_info.width = swapchain_extent_.width;
         fb_info.height = swapchain_extent_.height;
@@ -133,7 +135,7 @@ namespace patch
 
     bool Renderer::create_gbuffer_render_pass()
     {
-        VkAttachmentDescription attachments[6]{};
+        VkAttachmentDescription attachments[7]{};
 
         attachments[0].format = GBUFFER_FORMATS[GBUFFER_ALBEDO];
         attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -171,8 +173,7 @@ namespace patch
         attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        /* Motion vectors (RG16F) */
-        attachments[4].format = VK_FORMAT_R16G16_SFLOAT;
+        attachments[4].format = GBUFFER_FORMATS[GBUFFER_WORLD_POS];
         attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
         attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -181,27 +182,38 @@ namespace patch
         attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[4].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        attachments[5].format = VK_FORMAT_D32_SFLOAT;
+        /* Motion vectors (RG16F) */
+        attachments[5].format = VK_FORMAT_R16G16_SFLOAT;
         attachments[5].samples = VK_SAMPLE_COUNT_1_BIT;
         attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[5].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachments[5].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         attachments[5].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachments[5].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[5].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments[5].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkAttachmentReference color_refs[5] = {
+        attachments[6].format = VK_FORMAT_D32_SFLOAT;
+        attachments[6].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[6].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[6].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[6].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[6].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[6].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference color_refs[6] = {
             {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
             {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
             {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
             {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-            {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+            {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {5, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
 
-        VkAttachmentReference depth_ref{5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depth_ref{6, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 5;
+        subpass.colorAttachmentCount = 6;
         subpass.pColorAttachments = color_refs;
         subpass.pDepthStencilAttachment = &depth_ref;
 
@@ -223,7 +235,7 @@ namespace patch
 
         VkRenderPassCreateInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp_info.attachmentCount = 6;
+        rp_info.attachmentCount = 7;
         rp_info.pAttachments = attachments;
         rp_info.subpassCount = 1;
         rp_info.pSubpasses = &subpass;
@@ -237,13 +249,13 @@ namespace patch
         }
 
         /* Create load render pass for post-compute (loads colors, clears depth) */
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 6; i++)
         {
             attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             attachments[i].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
-        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[5].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[6].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_) != VK_SUCCESS)
         {
@@ -252,8 +264,8 @@ namespace patch
         }
 
         /* Create load render pass with depth primed (loads colors AND depth) */
-        attachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        attachments[5].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments[6].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachments[6].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         if (vkCreateRenderPass(device_, &rp_info, nullptr, &gbuffer_render_pass_load_with_depth_) != VK_SUCCESS)
         {
@@ -366,13 +378,14 @@ namespace patch
         if (!gbuffer_initialized_)
             return;
 
-        VkClearValue clear_values[6]{};
+        VkClearValue clear_values[7]{};
         clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[1].color = {{0.5f, 0.5f, 0.5f, 0.0f}};
         clear_values[2].color = {{1.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[3].color = {{1000.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        clear_values[5].depthStencil = {1.0f, 0};
+        clear_values[5].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        clear_values[6].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -386,7 +399,7 @@ namespace patch
         rp_info.framebuffer = gbuffer_framebuffer_;
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = swapchain_extent_;
-        rp_info.clearValueCount = 6;
+        rp_info.clearValueCount = 7;
         rp_info.pClearValues = clear_values;
 
         vkCmdBeginRenderPass(command_buffers_[current_frame_], &rp_info, VK_SUBPASS_CONTENTS_INLINE);

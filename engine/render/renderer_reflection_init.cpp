@@ -164,9 +164,9 @@ namespace patch
             return false;
         }
 
-        /* Create G-buffer layout with 5 bindings: depth, normal, albedo, material, blue_noise */
-        VkDescriptorSetLayoutBinding gbuffer_bindings[5]{};
-        for (int i = 0; i < 5; i++)
+        /* Create G-buffer layout with 6 bindings: depth, normal, albedo, material, blue_noise, world_pos */
+        VkDescriptorSetLayoutBinding gbuffer_bindings[6]{};
+        for (int i = 0; i < 6; i++)
         {
             gbuffer_bindings[i].binding = i;
             gbuffer_bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -176,7 +176,7 @@ namespace patch
 
         VkDescriptorSetLayoutCreateInfo gbuffer_layout_info{};
         gbuffer_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        gbuffer_layout_info.bindingCount = 5;
+        gbuffer_layout_info.bindingCount = 6;
         gbuffer_layout_info.pBindings = gbuffer_bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &gbuffer_layout_info, nullptr, &reflection_compute_gbuffer_layout_) != VK_SUCCESS)
@@ -289,7 +289,7 @@ namespace patch
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 6;
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 7; /* depth, normal, albedo, material, noise, world_pos, shadow_volume */
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1;
         pool_sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -401,7 +401,7 @@ namespace patch
                 input_write_count = shadow_volume_view_ ? 3 : 2;
             vkUpdateDescriptorSets(device_, input_write_count, input_writes, 0, nullptr);
 
-            /* Set 1: G-buffer samplers (depth, normal, albedo, material, blue_noise) */
+            /* Set 1: G-buffer samplers (depth, normal, albedo, material, blue_noise, world_pos) */
             VkDescriptorImageInfo depth_info{};
             depth_info.sampler = gbuffer_sampler_;
             depth_info.imageView = gbuffer_views_[GBUFFER_LINEAR_DEPTH];
@@ -427,7 +427,12 @@ namespace patch
             noise_info.imageView = blue_noise_view_ ? blue_noise_view_ : gbuffer_views_[0];
             noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet gbuffer_writes[5]{};
+            VkDescriptorImageInfo world_pos_info{};
+            world_pos_info.sampler = gbuffer_sampler_;
+            world_pos_info.imageView = gbuffer_views_[GBUFFER_WORLD_POS];
+            world_pos_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet gbuffer_writes[6]{};
             gbuffer_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             gbuffer_writes[0].dstSet = reflection_compute_gbuffer_sets_[i];
             gbuffer_writes[0].dstBinding = 0;
@@ -463,7 +468,14 @@ namespace patch
             gbuffer_writes[4].descriptorCount = 1;
             gbuffer_writes[4].pImageInfo = &noise_info;
 
-            vkUpdateDescriptorSets(device_, 5, gbuffer_writes, 0, nullptr);
+            gbuffer_writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            gbuffer_writes[5].dstSet = reflection_compute_gbuffer_sets_[i];
+            gbuffer_writes[5].dstBinding = 5;
+            gbuffer_writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            gbuffer_writes[5].descriptorCount = 1;
+            gbuffer_writes[5].pImageInfo = &world_pos_info;
+
+            vkUpdateDescriptorSets(device_, 6, gbuffer_writes, 0, nullptr);
 
             /* Set 2: Reflection output */
             VkDescriptorImageInfo output_info{};

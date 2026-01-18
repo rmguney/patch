@@ -102,14 +102,14 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
-    ui->settings.adaptive_quality = 1;         /* On by default */
-    ui->settings.shadow_quality = 2;           /* Good by default */
+    ui->settings.adaptive_quality = 0;         /* Off by default */
+    ui->settings.shadow_quality = 3;           /* High by default */
     ui->settings.shadow_contact_hardening = 1; /* On by default */
-    ui->settings.ao_quality = 1;               /* Fair by default */
-    ui->settings.lod_quality = 1;              /* Good by default */
-    ui->settings.reflection_quality = 1;       /* Fair by default */
+    ui->settings.ao_quality = 2;               /* Good by default */
+    ui->settings.lod_quality = 2;              /* High by default */
+    ui->settings.reflection_quality = 2;       /* Good by default */
     ui->settings.denoise_quality = 1;          /* On by default */
-    ui->settings.gi_quality = 1;               /* Low by default */
+    ui->settings.gi_quality = 3;               /* High by default */
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);

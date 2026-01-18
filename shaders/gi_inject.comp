@@ -167,6 +167,33 @@ vec3 estimate_surface_normal(ivec3 voxel_pos) {
     return normal / len;
 }
 
+/* Calculate radiance for a solid voxel (direct + ambient lighting) */
+vec3 calculate_solid_radiance(ivec3 voxel_pos, uint mat, vec3 world_pos, out vec3 out_normal) {
+    vec3 albedo = get_material_color(mat);
+    float emissive = get_material_emissive(mat);
+
+    /* Estimate surface normal */
+    vec3 N = estimate_surface_normal(voxel_pos);
+    out_normal = N;
+
+    /* Emissive contribution - reduced to limit bleed through walls.
+       Direct emissive is handled separately in deferred_lighting. */
+    vec3 radiance = albedo * emissive * 1.5;
+
+    /* Ambient - subtle sky tint */
+    vec3 ambient = vec3(0.15, 0.18, 0.22);
+    radiance += albedo * ambient;
+
+    /* Direct lighting */
+    float NdotL = dot(N, KEY_LIGHT_DIR);
+    if (NdotL > 0.0) {
+        float shadow = trace_shadow_to_light(world_pos);
+        radiance += albedo * KEY_LIGHT_COLOR * KEY_LIGHT_STRENGTH * NdotL * shadow;
+    }
+
+    return radiance;
+}
+
 void main() {
     ivec3 cascade_pos = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 cascade_size = imageSize(out_cascade);
@@ -181,50 +208,22 @@ void main() {
     pc_chunks_dim = pc.chunks_dim;
     pc_total_chunks = pc.total_chunks;
 
-    /* Map cascade position to voxel grid position
-       Cascade level 0 has 1:1 correspondence with voxel grid (scaled) */
+    /* Map cascade position to voxel grid position */
     vec3 bounds_size = pc.bounds_max - pc.bounds_min;
     vec3 cascade_uvw = (vec3(cascade_pos) + 0.5) / vec3(cascade_size);
     vec3 world_pos = pc.bounds_min + cascade_uvw * bounds_size;
     ivec3 voxel_pos = ivec3(floor((world_pos - pc.bounds_min) / pc.voxel_size));
 
-    /* Check if this voxel is solid */
+    /* Only inject radiance for solid voxels */
     uint mat = sample_material(voxel_pos);
     if (mat == 0u) {
         imageStore(out_cascade, cascade_pos, vec4(0.0));
         return;
     }
 
-    /* Get material properties */
-    vec3 albedo = get_material_color(mat);
-    float emissive = get_material_emissive(mat);
+    vec3 N;
+    vec3 radiance = calculate_solid_radiance(voxel_pos, mat, world_pos, N);
 
-    /* Start with emissive contribution (boosted for visible color bleeding) */
-    vec3 radiance = albedo * emissive * 3.0;
-
-    /* Estimate surface normal */
-    vec3 N = estimate_surface_normal(voxel_pos);
-
-    /* Add ambient contribution so ALL surfaces bleed some color (not just sun-lit) */
-    vec3 ambient_color = vec3(0.5, 0.6, 0.8); /* Sky-ish ambient */
-    float ambient_strength = 0.3;
-    radiance += albedo * ambient_color * ambient_strength;
-
-    /* Check if surface faces the light */
-    float NdotL = dot(N, KEY_LIGHT_DIR);
-    if (NdotL > 0.0) {
-        /* Trace shadow ray */
-        float shadow = trace_shadow_to_light(world_pos);
-
-        /* Add direct lighting contribution */
-        radiance += albedo * KEY_LIGHT_COLOR * KEY_LIGHT_STRENGTH * NdotL * shadow;
-    }
-
-    /* Encode radiance with dominant direction (packed in alpha as hemisphere index) */
-    float dir_encode = 0.0;
-    if (length(radiance) > 0.001) {
-        dir_encode = (N.y + 1.0) * 0.5;
-    }
-
+    float dir_encode = (N.y + 1.0) * 0.5;
     imageStore(out_cascade, cascade_pos, vec4(radiance, dir_encode));
 }

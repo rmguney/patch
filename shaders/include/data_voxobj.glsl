@@ -260,9 +260,17 @@ HitInfo vobj_march_object(
             vec2 voxel_t = hdda_intersect_aabb(local_origin, local_dir, voxel_min_local, voxel_max_local);
             float hit_t_local = max(voxel_t.x, 0.0);
 
-            vec3 local_normal = hdda_compute_normal(dda.last_mask, local_dir);
+            /* Local transform is pure rotation+translation (no scale in world_to_local),
+               so hit_t_local equals world t-value. Compute world pos directly on world ray. */
             vec3 hit_world = world_origin + world_dir * hit_t_local;
-            vec3 world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
+
+            /* Transform normal from local to world space via rotation matrix */
+            vec3 local_normal = hdda_compute_normal(dda.last_mask, local_dir);
+            vec3 R_col0 = normalize(obj.local_to_world[0].xyz);
+            vec3 R_col1 = normalize(obj.local_to_world[1].xyz);
+            vec3 R_col2 = normalize(obj.local_to_world[2].xyz);
+            mat3 R = mat3(R_col0, R_col1, R_col2);
+            vec3 world_normal = normalize(R * local_normal);
 
             info.hit = true;
             info.material_id = mat;

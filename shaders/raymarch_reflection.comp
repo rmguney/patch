@@ -35,7 +35,7 @@ layout(push_constant) uniform Constants {
     int reflection_quality;
 } pc;
 
-#include "include/gbuffer_sample.glsl"
+#include "include/camera.glsl"
 
 ivec3 pc_grid_size;
 ivec3 pc_chunks_dim;
@@ -65,6 +65,7 @@ layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
 layout(SET_BINDING(1, 2)) uniform sampler2D gbuffer_albedo;
 layout(SET_BINDING(1, 3)) uniform sampler2D gbuffer_material;
 layout(SET_BINDING(1, 4)) uniform sampler2D blue_noise_tex;
+layout(SET_BINDING(1, 5)) uniform sampler2D gbuffer_world_pos;
 
 /* Set 2: Output */
 layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_reflection;
@@ -287,12 +288,8 @@ void main() {
     float roughness = material.r;
     float metallic = material.g;
 
-    /* Reconstruct world position */
-    vec3 world_pos = camera_reconstruct_world_pos(
-        uv, linear_depth,
-        pc.inv_view, pc.inv_projection, pc.camera_pos,
-        pc.is_orthographic != 0
-    );
+    /* Sample world position from G-buffer (stored directly, no reconstruction needed) */
+    vec3 world_pos = texelFetch(gbuffer_world_pos, pixel, 0).xyz;
 
     /* Calculate view direction */
     vec3 V = (pc.is_orthographic != 0)

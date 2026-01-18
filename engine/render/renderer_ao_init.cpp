@@ -219,7 +219,7 @@ namespace patch
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4;
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 5; /* depth, normal, world_pos, noise, shadow_volume */
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1;
 
@@ -314,7 +314,7 @@ namespace patch
 
             vkUpdateDescriptorSets(device_, shadow_volume_view_ ? 3 : 2, input_writes, 0, nullptr);
 
-            /* Set 1: G-buffer samplers */
+            /* Set 1: G-buffer samplers (depth, normal, world_pos, noise) */
             VkDescriptorImageInfo depth_info{};
             depth_info.sampler = gbuffer_sampler_;
             depth_info.imageView = gbuffer_views_[GBUFFER_LINEAR_DEPTH];
@@ -325,12 +325,17 @@ namespace patch
             normal_info.imageView = gbuffer_views_[GBUFFER_NORMAL];
             normal_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+            VkDescriptorImageInfo world_pos_info{};
+            world_pos_info.sampler = gbuffer_sampler_;
+            world_pos_info.imageView = gbuffer_views_[GBUFFER_WORLD_POS];
+            world_pos_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
             VkDescriptorImageInfo noise_info{};
             noise_info.sampler = blue_noise_sampler_ ? blue_noise_sampler_ : gbuffer_sampler_;
             noise_info.imageView = blue_noise_view_ ? blue_noise_view_ : gbuffer_views_[0];
             noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet gbuffer_writes[3]{};
+            VkWriteDescriptorSet gbuffer_writes[4]{};
             gbuffer_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             gbuffer_writes[0].dstSet = ao_compute_gbuffer_sets_[i];
             gbuffer_writes[0].dstBinding = 0;
@@ -350,9 +355,16 @@ namespace patch
             gbuffer_writes[2].dstBinding = 2;
             gbuffer_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             gbuffer_writes[2].descriptorCount = 1;
-            gbuffer_writes[2].pImageInfo = &noise_info;
+            gbuffer_writes[2].pImageInfo = &world_pos_info;
 
-            vkUpdateDescriptorSets(device_, 3, gbuffer_writes, 0, nullptr);
+            gbuffer_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            gbuffer_writes[3].dstSet = ao_compute_gbuffer_sets_[i];
+            gbuffer_writes[3].dstBinding = 3;
+            gbuffer_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            gbuffer_writes[3].descriptorCount = 1;
+            gbuffer_writes[3].pImageInfo = &noise_info;
+
+            vkUpdateDescriptorSets(device_, 4, gbuffer_writes, 0, nullptr);
 
             /* Set 2: AO output */
             VkDescriptorImageInfo output_info{};

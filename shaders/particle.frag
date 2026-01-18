@@ -17,7 +17,8 @@ layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_material;
 layout(location = 3) out float out_linear_depth;
-layout(location = 4) out vec2 out_motion_vector;
+layout(location = 4) out vec4 out_world_pos;
+layout(location = 5) out vec2 out_motion_vector;
 
 struct ParticleGPU {
     vec4 position_radius;  // xyz = position, w = radius
@@ -90,6 +91,7 @@ void main() {
     out_normal = vec4(normal * 0.5 + 0.5, 1.0);
     out_material = vec4(0.8, 0.0, 0.0, 0.0);  // roughness=0.8, metallic=0, emissive=0
     out_linear_depth = linear_depth;
+    out_world_pos = vec4(hit_point, 1.0);
     out_motion_vector = vec2(0.0);
 
     gl_FragDepth = clamp(camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane), 0.0, 1.0);
