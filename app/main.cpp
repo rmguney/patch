@@ -1,6 +1,7 @@
 #include "engine/platform/window.h"
 #include "engine/platform/platform.h"
 #include "engine/render/renderer.h"
+#include "engine/render/voxel_push_constants.h"
 #include "engine/render/ui_renderer.h"
 #include "engine/sim/scene.h"
 #include "app/app_ui.h"
@@ -142,6 +143,14 @@ int patch_main(int argc, char *argv[])
             scene_init(active_scene);
             app_state = AppState::Playing;
             app_ui_hide(&ui);
+
+            ui.settings.master_preset = QUALITY_PRESET_FAIR;
+            ui.settings.adaptive_quality = 0;
+            ui.settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
+            ui.settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
+            ui.settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
+            ui.settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
+            ui.settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
 
             if (current_scene == ActiveScene::BallPit)
             {
@@ -352,10 +361,12 @@ int patch_main(int argc, char *argv[])
             break;
 
         case APP_ACTION_SETTINGS:
+            app_ui_refresh_settings_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_SETTINGS);
             break;
 
         case APP_ACTION_GRAPHICS:
+            app_ui_refresh_graphics_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_GRAPHICS);
             break;
 
@@ -488,14 +499,23 @@ int patch_main(int argc, char *argv[])
         renderer.begin_frame(&image_index);
 
         const AppSettings *settings = app_ui_get_settings(&ui);
+        renderer.set_master_preset(settings->master_preset);
         renderer.set_adaptive_quality(settings->adaptive_quality != 0);
-        renderer.set_denoise_quality(settings->denoise_quality);
-        renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
-        if (!settings->adaptive_quality)
+
+        if (!renderer.get_adaptive_quality())
         {
-            renderer.set_shadow_quality(settings->shadow_quality);
-            renderer.set_ao_quality(settings->ao_quality);
-            renderer.set_lod_quality(settings->lod_quality);
+            if (settings->master_preset < QUALITY_PRESET_CUSTOM)
+            {
+                renderer.apply_preset(settings->master_preset);
+            }
+            else
+            {
+                renderer.set_shadow_quality(settings->shadow_quality);
+                renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
+                renderer.set_ao_quality(settings->ao_quality);
+                renderer.set_lod_quality(settings->lod_quality);
+                renderer.set_denoise_quality(settings->denoise_quality);
+            }
         }
 
         PROFILE_BEGIN(PROFILE_RENDER_TOTAL);

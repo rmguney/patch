@@ -82,10 +82,35 @@ namespace patch
 
     void Renderer::set_adaptive_quality(bool enabled)
     {
+        bool was_enabled = adaptive_quality_;
         adaptive_quality_ = enabled;
-        if (enabled && lod_quality_ < 1)
-            lod_quality_ = 1; /* Minimum quality 1 when adaptive is on */
-        adaptive_cooldown_ = 0;
+        if (enabled && !was_enabled)
+        {
+            adaptive_preset_ = target_preset_;
+            adaptive_cooldown_ = 0;
+        }
+    }
+
+    void Renderer::set_master_preset(int preset)
+    {
+        int clamped = preset < 0 ? 0 : (preset > QUALITY_PRESET_HIGH ? QUALITY_PRESET_HIGH : preset);
+        if (target_preset_ != clamped)
+        {
+            target_preset_ = clamped;
+            adaptive_preset_ = clamped;
+            adaptive_cooldown_ = 0;
+        }
+    }
+
+    void Renderer::apply_preset(int preset)
+    {
+        if (preset < 0 || preset > QUALITY_PRESET_HIGH)
+            return;
+        shadow_quality_ = QUALITY_PRESETS[preset].shadow;
+        shadow_contact_hardening_ = QUALITY_PRESETS[preset].shadow_contact != 0;
+        ao_quality_ = QUALITY_PRESETS[preset].ao;
+        lod_quality_ = QUALITY_PRESETS[preset].lod;
+        denoise_quality_ = QUALITY_PRESETS[preset].denoise;
     }
 
     void Renderer::update_adaptive_quality(float frame_time_ms)
@@ -98,13 +123,20 @@ namespace patch
             return;
         }
 
-        constexpr float HIGH_MS = 20.0f;
+        constexpr float TARGET_MS = 16.67f;  /* 60 FPS target */
+        constexpr float HIGH_MS = TARGET_MS + 2.0f;  /* 18.67ms - decrease quality */
+        constexpr float LOW_MS = TARGET_MS - 4.0f;   /* 12.67ms - increase quality */
 
-        if (frame_time_ms > HIGH_MS && lod_quality_ > 0)
+        if (frame_time_ms > HIGH_MS && adaptive_preset_ > QUALITY_PRESET_DEFAULT)
         {
-            lod_quality_--;
-            shadow_quality_ = lod_quality_ + 1;
-            ao_quality_ = lod_quality_ > 0 ? lod_quality_ : 1;
+            adaptive_preset_--;
+            apply_preset(adaptive_preset_);
+            adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
+        }
+        else if (frame_time_ms < LOW_MS && adaptive_preset_ < target_preset_)
+        {
+            adaptive_preset_++;
+            apply_preset(adaptive_preset_);
             adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
         }
     }

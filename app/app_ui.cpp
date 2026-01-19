@@ -1,10 +1,24 @@
 #include "app_ui.h"
+#include "engine/render/voxel_push_constants.h"
 #include <string.h>
 
 static const char *const QUALITY_4[] = {"NONE", "FAIR", "GOOD", "HIGH"};
 static const char *const QUALITY_3[] = {"NONE", "FAIR", "GOOD"};
 static const char *const QUALITY_LOD[] = {"FAIR", "GOOD", "HIGH"};
 static const char *const TOGGLE_LABELS[] = {"OFF", "ON"};
+static const char *const PRESET_LABELS[] = {"DEFAULT", "FAIR", "GOOD", "HIGH", "CUSTOM"};
+
+static void apply_preset_to_settings(AppSettings *s, int32_t preset)
+{
+    if (preset >= 0 && preset < QUALITY_PRESET_CUSTOM)
+    {
+        s->shadow_quality = QUALITY_PRESETS[preset].shadow;
+        s->shadow_contact_hardening = QUALITY_PRESETS[preset].shadow_contact;
+        s->ao_quality = QUALITY_PRESETS[preset].ao;
+        s->lod_quality = QUALITY_PRESETS[preset].lod;
+        s->denoise_quality = QUALITY_PRESETS[preset].denoise;
+    }
+}
 
 static void init_main_menu(UIMenu *menu)
 {
@@ -54,30 +68,36 @@ static void init_settings_menu(UIMenu *menu, const AppSettings *s)
 static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
 {
     ui_menu_clear(menu, "GRAPHICS");
-    bool adaptive_on = s->adaptive_quality != 0;
+    bool using_preset = s->master_preset < QUALITY_PRESET_CUSTOM;
 
-    /* Auto quality - controls settings below automatically */
+    /* Master quality preset - controls all settings below */
+    ui_menu_add_slider_labeled(menu, "MASTER QUALITY", APP_ACTION_SETTING_MASTER_PRESET,
+                               s->master_preset, 0, 4, PRESET_LABELS, 5);
+
+    /* Adaptive quality - dynamically adjusts within preset tiers */
     ui_menu_add_slider_labeled(menu, "ADAPTIVE QUALITY", APP_ACTION_SETTING_ADAPTIVE,
                                s->adaptive_quality, 0, 1, TOGGLE_LABELS, 2);
 
     ui_menu_add_label(menu, "--- SHADOWS ---");
     ui_menu_add_slider_labeled(menu, "QUALITY", APP_ACTION_SETTING_SHADOW_QUALITY,
                                s->shadow_quality, 0, 3, QUALITY_4, 4);
-    menu->items[menu->item_count - 1].enabled = !adaptive_on;
+    menu->items[menu->item_count - 1].enabled = !using_preset;
     ui_menu_add_slider_labeled(menu, "CONTACT HARDENING", APP_ACTION_SETTING_SHADOW_CONTACT,
                                s->shadow_contact_hardening, 0, 1, TOGGLE_LABELS, 2);
+    menu->items[menu->item_count - 1].enabled = !using_preset;
 
     ui_menu_add_label(menu, "--- LIGHTING ---");
     ui_menu_add_slider_labeled(menu, "AMBIENT OCCLUSION", APP_ACTION_SETTING_AO_QUALITY,
                                s->ao_quality, 0, 2, QUALITY_3, 3);
-    menu->items[menu->item_count - 1].enabled = !adaptive_on;
+    menu->items[menu->item_count - 1].enabled = !using_preset;
 
     ui_menu_add_label(menu, "--- UTILITY ---");
     ui_menu_add_slider_labeled(menu, "LOD QUALITY", APP_ACTION_SETTING_LOD_QUALITY,
                                s->lod_quality, 0, 2, QUALITY_LOD, 3);
-    menu->items[menu->item_count - 1].enabled = !adaptive_on;
+    menu->items[menu->item_count - 1].enabled = !using_preset;
     ui_menu_add_slider_labeled(menu, "SPATIAL DENOISE", APP_ACTION_SETTING_DENOISE_QUALITY,
                                s->denoise_quality, 0, 1, TOGGLE_LABELS, 2);
+    menu->items[menu->item_count - 1].enabled = !using_preset;
 
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
@@ -96,12 +116,9 @@ void app_ui_init(AppUI *ui)
     ui->settings.spawn_batch = 3;
     ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
-    ui->settings.adaptive_quality = 0;         /* Off by default */
-    ui->settings.shadow_quality = 1;           /* Fair by default */
-    ui->settings.shadow_contact_hardening = 1; /* On by default */
-    ui->settings.ao_quality = 2;               /* Good by default */
-    ui->settings.lod_quality = 2;              /* High by default */
-    ui->settings.denoise_quality = 1;          /* On by default */
+    ui->settings.master_preset = QUALITY_PRESET_FAIR;
+    ui->settings.adaptive_quality = 0;
+    apply_preset_to_settings(&ui->settings, QUALITY_PRESET_FAIR);
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -167,6 +184,8 @@ static void sync_graphics_from_menu(AppUI *ui)
 {
     UIMenu *menu = &ui->graphics_menu;
     bool needs_rebuild = false;
+    bool master_preset_changed = false;
+    bool individual_changed = false;
 
     for (int32_t i = 0; i < menu->item_count; i++)
     {
@@ -176,29 +195,66 @@ static void sync_graphics_from_menu(AppUI *ui)
 
         switch (item->action_id)
         {
+        case APP_ACTION_SETTING_MASTER_PRESET:
+            if (ui->settings.master_preset != item->slider_value)
+            {
+                ui->settings.master_preset = item->slider_value;
+                if (item->slider_value < QUALITY_PRESET_CUSTOM)
+                {
+                    apply_preset_to_settings(&ui->settings, item->slider_value);
+                }
+                master_preset_changed = true;
+                needs_rebuild = true;
+            }
+            break;
         case APP_ACTION_SETTING_ADAPTIVE:
             if (ui->settings.adaptive_quality != item->slider_value)
             {
                 ui->settings.adaptive_quality = item->slider_value;
-                needs_rebuild = true;
             }
             break;
         case APP_ACTION_SETTING_SHADOW_QUALITY:
-            ui->settings.shadow_quality = item->slider_value;
+            if (ui->settings.shadow_quality != item->slider_value)
+            {
+                ui->settings.shadow_quality = item->slider_value;
+                individual_changed = true;
+            }
             break;
         case APP_ACTION_SETTING_SHADOW_CONTACT:
-            ui->settings.shadow_contact_hardening = item->slider_value;
+            if (ui->settings.shadow_contact_hardening != item->slider_value)
+            {
+                ui->settings.shadow_contact_hardening = item->slider_value;
+                individual_changed = true;
+            }
             break;
         case APP_ACTION_SETTING_AO_QUALITY:
-            ui->settings.ao_quality = item->slider_value;
+            if (ui->settings.ao_quality != item->slider_value)
+            {
+                ui->settings.ao_quality = item->slider_value;
+                individual_changed = true;
+            }
             break;
         case APP_ACTION_SETTING_LOD_QUALITY:
-            ui->settings.lod_quality = item->slider_value;
+            if (ui->settings.lod_quality != item->slider_value)
+            {
+                ui->settings.lod_quality = item->slider_value;
+                individual_changed = true;
+            }
             break;
         case APP_ACTION_SETTING_DENOISE_QUALITY:
-            ui->settings.denoise_quality = item->slider_value;
+            if (ui->settings.denoise_quality != item->slider_value)
+            {
+                ui->settings.denoise_quality = item->slider_value;
+                individual_changed = true;
+            }
             break;
         }
+    }
+
+    if (individual_changed && !master_preset_changed && ui->settings.master_preset < QUALITY_PRESET_CUSTOM)
+    {
+        ui->settings.master_preset = QUALITY_PRESET_CUSTOM;
+        needs_rebuild = true;
     }
 
     if (needs_rebuild)

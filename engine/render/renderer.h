@@ -8,6 +8,7 @@
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/render/draw_list.h"
+#include "engine/render/voxel_push_constants.h"
 #include "engine/platform/window.h"
 #include <cstdint>
 #include <vector>
@@ -188,6 +189,11 @@ namespace patch
         bool get_adaptive_quality() const { return adaptive_quality_; }
         void update_adaptive_quality(float frame_time_ms);
 
+        /* Master quality preset control */
+        void set_master_preset(int preset);
+        void apply_preset(int preset);
+        int get_master_preset() const { return target_preset_; }
+
     public:
         enum class PresentMode
         {
@@ -349,11 +355,13 @@ namespace patch
         bool adaptive_quality_ = false; /* Dynamic quality adjustment (default off) */
         int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
-        int shadow_quality_ = 1; /* 0=None, 1=Fair, 2=Good, 3=High */
-        bool shadow_contact_hardening_ = true;
-        int ao_quality_ = 2;      /* 0=None, 1=Fair, 2=Good */
-        int lod_quality_ = 2;     /* 0=Fair, 1=Good, 2=High */
-        int denoise_quality_ = 1; /* 0=Off, 1=On */
+        int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
+        int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
+        int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
+        bool shadow_contact_hardening_ = QUALITY_DEFAULT_SHADOW_CONTACT;
+        int ao_quality_ = QUALITY_DEFAULT_AO;
+        int lod_quality_ = QUALITY_DEFAULT_LOD;
+        int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */

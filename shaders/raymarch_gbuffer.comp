@@ -148,6 +148,15 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
 
     int step_count = (pc.max_steps > 0) ? pc.max_steps : DEFAULT_MAX_STEPS;
 
+    /* Terrain distance LOD: reduce steps for ortho or distant rays */
+    if (pc.is_orthographic != 0) {
+        step_count = (step_count * 3) / 4;
+    } else if (t_start > 200.0) {
+        step_count = step_count / 2;
+    } else if (t_start > 100.0) {
+        step_count = (step_count * 3) / 4;
+    }
+
     for (int i = 0; i < step_count; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
@@ -255,6 +264,19 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
+    /* Early-out for sky pixels: if terrain missed, skip object loop for upward rays.
+       Objects are typically ground-level; sky rays pointing up won't hit them.
+       This saves ~250 ray-sphere tests per sky pixel (~40% of pixels). */
+    if (!best_hit.hit && ray_dir.y > 0.1) {
+        imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
+        imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
+        imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
+        imageStore(out_world_pos, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
     /* March all voxel objects and keep closest (with ray-sphere early-out + combined LOD) */
     float terrain_t = best_hit.t;
     for (int i = 0; i < pc.object_count; i++) {
@@ -289,14 +311,7 @@ void main() {
 
     /* Write to G-buffer */
     if (best_hit.hit) {
-        vec3 final_color = best_hit.color;
-
-        /* Debug mode 8: Collider visualization */
-        if (pc.debug_mode == 8) {
-            final_color = mix(final_color, vec3(0.2, 0.8, 1.0), 0.7);
-        }
-
-        imageStore(out_albedo, pixel, vec4(final_color, 1.0));
+        imageStore(out_albedo, pixel, vec4(best_hit.color, 1.0));
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
         imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));

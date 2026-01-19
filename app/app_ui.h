@@ -40,7 +40,8 @@ typedef enum
     APP_ACTION_SETTING_SHADOW_CONTACT,
     APP_ACTION_SETTING_AO_QUALITY,
     APP_ACTION_SETTING_LOD_QUALITY,
-    APP_ACTION_SETTING_DENOISE_QUALITY
+    APP_ACTION_SETTING_DENOISE_QUALITY,
+    APP_ACTION_SETTING_MASTER_PRESET
 } AppAction;
 
 typedef struct
@@ -50,6 +51,7 @@ typedef struct
     int32_t spawn_batch;
     int32_t max_spawns;
     int32_t voxel_size_mm;
+    int32_t master_preset;           /* 0=Default, 1=Fair, 2=Good, 3=High, 4=Custom */
     int32_t adaptive_quality;        /* 0=Off, 1=On (default) */
     int32_t shadow_quality;          /* 0=None, 1=Fair, 2=Good, 3=High */
     int32_t shadow_contact_hardening;/* 0=Off, 1=On */

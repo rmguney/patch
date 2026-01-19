@@ -134,7 +134,7 @@ void main() {
     diffuse += g.albedo * back_color * back_dot * back_strength;
 
     /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
-    float ao = texture(ao_buffer, in_uv).r;
+    float ao = (pc.ao_quality >= 1) ? texture(ao_buffer, in_uv).r : 1.0;
 
     float ambient = 0.28;
     vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);

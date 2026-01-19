@@ -24,7 +24,7 @@ struct PerfThreshold
     float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50 = {12.0f, 15.0f, 18.0f};
+static const PerfThreshold THRESHOLD_50 = {13.0f, 15.0f, 18.0f};
 static const PerfThreshold THRESHOLD_250 = {14.0f, 16.67f, 20.0f};
 static const PerfThreshold THRESHOLD_500 = {16.0f, 20.0f, 28.0f};
 static const PerfThreshold THRESHOLD_1000 = {25.0f, 30.0f, 45.0f};

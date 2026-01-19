@@ -244,7 +244,7 @@ void main() {
     float bias = pc.voxel_size * 0.6;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-    /* Quality-scaled samples: 1=1, 2=2, 3=3 samples per pixel
+    /* Quality-scaled samples: Fair=1, Good=2 samples per pixel
        Temporal accumulation smooths out noise over frames */
     int num_samples = pc.ao_quality;
     float ao_sum = 0.0;
