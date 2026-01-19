@@ -12,6 +12,10 @@ namespace patch
         bind_pipeline(ui_pipeline_);
         ui_vertices_.clear();
         ui_indices_.clear();
+        /* Reserve capacity to avoid reallocation during text rendering.
+         * ~2000 characters * 14 lit pixels avg = 28000 quads = 112000 vertices, 168000 indices */
+        ui_vertices_.reserve(32768);
+        ui_indices_.reserve(49152);
     }
 
     void Renderer::end_ui()

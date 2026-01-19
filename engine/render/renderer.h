@@ -552,6 +552,20 @@ namespace patch
         int32_t shadow_object_count_ = 0;
         int32_t shadow_particle_count_ = 0;
 
+        /* Shadow stamping budget: track per-object state to avoid full rebuild */
+        static constexpr uint32_t MAX_SHADOW_OBJECTS = 512;
+        static constexpr int32_t SHADOW_STAMP_BUDGET = 50; /* Max objects to stamp per frame */
+        static constexpr float SHADOW_POSITION_THRESHOLD = 0.01f; /* Movement threshold for re-stamp */
+        struct ShadowObjectState
+        {
+            Vec3 position;
+            Quat orientation;
+            bool valid;
+        };
+        ShadowObjectState shadow_object_states_[MAX_SHADOW_OBJECTS] = {};
+        int32_t shadow_stamp_cursor_ = 0; /* Round-robin cursor for over-budget stamping */
+        bool shadow_needs_terrain_update_ = false;
+
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;
         VkDeviceMemory blue_noise_memory_;
@@ -584,7 +598,10 @@ namespace patch
         uint32_t vobj_max_objects_ = 0;
         uint32_t vobj_dirty_mask_[(VOBJ_ATLAS_MAX_OBJECTS + 31) / 32] = {};
         int32_t vobj_voxel_count_cache_[VOBJ_ATLAS_MAX_OBJECTS] = {};
+        uint32_t vobj_sort_indices_[VOBJ_ATLAS_MAX_OBJECTS] = {};
+        float vobj_sort_distances_[VOBJ_ATLAS_MAX_OBJECTS] = {};
         bool vobj_resources_initialized_ = false;
+        int32_t vobj_visible_count_ = 0; /* Compacted visible object count for GPU dispatch */
 
         /* Raymarched particle resources */
         struct SizedBuffer

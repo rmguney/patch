@@ -567,14 +567,22 @@ namespace patch
             dst[i] = obj->voxels[i].material;
         }
 
-        VkCommandBufferAllocateInfo cmd_alloc{};
-        cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cmd_alloc.commandPool = command_pool_;
-        cmd_alloc.commandBufferCount = 1;
-
+        /* Use reusable upload command buffer if available, else allocate */
         VkCommandBuffer cmd;
-        vkAllocateCommandBuffers(device_, &cmd_alloc, &cmd);
+        if (upload_cmd_ != VK_NULL_HANDLE)
+        {
+            cmd = upload_cmd_;
+            vkResetCommandBuffer(cmd, 0);
+        }
+        else
+        {
+            VkCommandBufferAllocateInfo cmd_alloc{};
+            cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cmd_alloc.commandPool = command_pool_;
+            cmd_alloc.commandBufferCount = 1;
+            vkAllocateCommandBuffers(device_, &cmd_alloc, &cmd);
+        }
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -625,32 +633,75 @@ namespace patch
 
         vkEndCommandBuffer(cmd);
 
+        /* Submit with timeline semaphore for async completion */
+        uint64_t signal_value = ++upload_timeline_value_;
+
+        VkTimelineSemaphoreSubmitInfo timeline_submit{};
+        timeline_submit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline_submit.signalSemaphoreValueCount = 1;
+        timeline_submit.pSignalSemaphoreValues = &signal_value;
+
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.pNext = &timeline_submit;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &cmd;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = &upload_timeline_semaphore_;
 
         vkQueueSubmit(graphics_queue_, 1, &submit_info, VK_NULL_HANDLE);
-        vkQueueWaitIdle(graphics_queue_);
 
-        vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
+        /* No vkQueueWaitIdle - GPU synchronization via timeline semaphore */
     }
 
     void Renderer::upload_vobj_metadata(const VoxelObjectWorld *world)
     {
         if (!vobj_resources_initialized_ || !world || !vobj_metadata_mapped_[current_frame_])
+        {
+            vobj_visible_count_ = 0;
             return;
+        }
 
         VoxelObjectGPU *gpu_data = static_cast<VoxelObjectGPU *>(vobj_metadata_mapped_[current_frame_]);
+        const int32_t count = (world->object_count < static_cast<int32_t>(vobj_max_objects_))
+                                  ? world->object_count
+                                  : static_cast<int32_t>(vobj_max_objects_);
 
         /* Extract view frustum for culling */
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         Frustum frustum = frustum_from_view_proj(view_proj);
 
-        for (int32_t i = 0; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_); i++)
+        /* First pass: calculate distances and initialize sort indices */
+        for (int32_t i = 0; i < count; i++)
         {
             const VoxelObject *obj = &world->objects[i];
-            VoxelObjectGPU *gpu = &gpu_data[i];
+            float dx = obj->position.x - camera_position_.x;
+            float dy = obj->position.y - camera_position_.y;
+            float dz = obj->position.z - camera_position_.z;
+            vobj_sort_distances_[i] = dx * dx + dy * dy + dz * dz;
+            vobj_sort_indices_[i] = static_cast<uint32_t>(i);
+        }
+
+        /* Simple insertion sort (fast for nearly-sorted data between frames) */
+        for (int32_t i = 1; i < count; i++)
+        {
+            uint32_t key_idx = vobj_sort_indices_[i];
+            float key_dist = vobj_sort_distances_[key_idx];
+            int32_t j = i - 1;
+            while (j >= 0 && vobj_sort_distances_[vobj_sort_indices_[j]] > key_dist)
+            {
+                vobj_sort_indices_[j + 1] = vobj_sort_indices_[j];
+                j--;
+            }
+            vobj_sort_indices_[j + 1] = key_idx;
+        }
+
+        /* Second pass: upload ONLY visible objects in sorted order (compacted) */
+        int32_t visible_idx = 0;
+        for (int32_t sorted_idx = 0; sorted_idx < count; sorted_idx++)
+        {
+            const int32_t i = static_cast<int32_t>(vobj_sort_indices_[sorted_idx]);
+            const VoxelObject *obj = &world->objects[i];
 
             float vs = obj->voxel_size;
             float half_size = vs * static_cast<float>(VOBJ_GRID_SIZE) * 0.5f;
@@ -659,6 +710,12 @@ namespace patch
             float bounding_radius = half_size * 1.732051f;
             FrustumResult cull_result = frustum_test_sphere(&frustum, obj->position, bounding_radius);
             bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active;
+
+            /* Skip invisible objects - only upload visible ones */
+            if (!visible)
+                continue;
+
+            VoxelObjectGPU *gpu = &gpu_data[visible_idx];
 
             float rot_mat[9];
             quat_to_mat3(obj->orientation, rot_mat);
@@ -711,13 +768,18 @@ namespace patch
             gpu->position[0] = obj->position.x;
             gpu->position[1] = obj->position.y;
             gpu->position[2] = obj->position.z;
-            gpu->position[3] = visible ? 1.0f : 0.0f; /* Mark invisible if culled */
+            gpu->position[3] = 1.0f; /* Always active since we only upload visible */
 
+            /* atlas_slice points to original object index in atlas texture */
             gpu->atlas_slice = static_cast<uint32_t>(i);
             gpu->material_base = 0;
             gpu->flags = 0;
             gpu->occupancy_mask = static_cast<uint32_t>(obj->occupancy_mask);
+
+            visible_idx++;
         }
+
+        vobj_visible_count_ = visible_idx;
     }
 
     void Renderer::render_voxel_objects_raymarched(const VoxelObjectWorld *world)

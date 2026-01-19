@@ -122,7 +122,7 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
  *   Mid:   < 80/120/160 units -> medium (36)
  *   Far:   >= threshold      -> reduced (28)
  *
- * Minimum 28 steps required for diagonal traversal of 16³ grid (sqrt(3)*16≈28).
+ * Minimum 20 steps sufficient for typical object traversal (most rays don't cross full diagonal).
  */
 int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps) {
     float quality_scale = float(max(lod_quality + 1, 1));
@@ -137,7 +137,7 @@ int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps
     } else {
         steps = 28;                   // Reduced detail
     }
-    return max(steps, 28);            // Minimum for diagonal traversal
+    return max(steps, 20);            // Minimum for typical object traversal
 }
 
 /*
@@ -164,7 +164,7 @@ int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
     } else {
         steps = (base_steps * 2) / 3; // ~32 steps
     }
-    return max(steps, 28);            // Minimum for diagonal traversal
+    return max(steps, 20);            // Minimum for typical object traversal
 }
 
 /*

@@ -47,6 +47,8 @@ int patch_main(int argc, char *argv[])
     int test_scene = -1;
     int test_frames = 0;
     const char *profile_csv = "profile_results.csv";
+    bool has_camera_pos = false;
+    float camera_pos_x = 0.0f, camera_pos_y = 0.0f, camera_pos_z = 0.0f;
 
     for (int i = 1; i < argc; i++)
     {
@@ -61,6 +63,13 @@ int patch_main(int argc, char *argv[])
         else if (strcmp(argv[i], "--profile-csv") == 0 && i + 1 < argc)
         {
             profile_csv = argv[++i];
+        }
+        else if (strcmp(argv[i], "--camera-pos") == 0 && i + 3 < argc)
+        {
+            camera_pos_x = static_cast<float>(atof(argv[++i]));
+            camera_pos_y = static_cast<float>(atof(argv[++i]));
+            camera_pos_z = static_cast<float>(atof(argv[++i]));
+            has_camera_pos = true;
         }
     }
 
@@ -170,8 +179,21 @@ int patch_main(int argc, char *argv[])
     platform_time_init();
     PlatformTime last_time = platform_time_now();
 
-    renderer.set_orthographic(16.0f, 16.0f, 200.0f);
-    renderer.set_view_angle(45.0f, 26.0f);
+    /* Camera setup: use test camera position if specified, otherwise default isometric */
+    bool test_camera_active = false;
+    Vec3 test_camera_pos = vec3_create(0.0f, 0.0f, 0.0f);
+    if (test_frames > 0 && has_camera_pos)
+    {
+        test_camera_pos = vec3_create(camera_pos_x, camera_pos_y, camera_pos_z);
+        test_camera_active = true;
+        renderer.set_perspective(60.0f, 0.1f, 200.0f);
+        printf("Test mode: camera at (%.1f, %.1f, %.1f)\n", camera_pos_x, camera_pos_y, camera_pos_z);
+    }
+    else
+    {
+        renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+        renderer.set_view_angle(45.0f, 26.0f);
+    }
 
     bool escape_was_down = false;
     bool f1_was_down = false;
@@ -490,6 +512,15 @@ int patch_main(int argc, char *argv[])
 
             Vec3 target = vec3_add(free_camera_pos, forward);
             renderer.set_look_at(free_camera_pos, target);
+        }
+        else if (test_camera_active && active_scene)
+        {
+            /* Test mode: fixed camera looking at scene center */
+            Vec3 center = vec3_create(
+                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
+                active_scene->bounds.min_y + 2.0f,
+                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+            renderer.set_look_at(test_camera_pos, center);
         }
         else if (active_scene && current_scene == ActiveScene::BallPit)
         {

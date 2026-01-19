@@ -462,10 +462,11 @@ namespace patch
         /* Dispatch compute terrain + objects if enabled (must be called before begin_gbuffer_pass) */
         if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_)
         {
-            /* Compute path is terrain-only when objects/particles are present to avoid double-rendering objects. */
+            /* Compute path is terrain-only when objects/particles are present to avoid double-rendering objects.
+             * Use vobj_visible_count_ (compacted from frustum culling) instead of full object_count. */
             int32_t object_count = (has_objects_or_particles || !objects || !vobj_resources_initialized_)
                                        ? 0
-                                       : objects->object_count;
+                                       : vobj_visible_count_;
             dispatch_gbuffer_compute(vol, object_count);
 
             /* Prime hardware depth buffer only when objects/particles will be rendered */
