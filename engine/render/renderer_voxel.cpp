@@ -289,14 +289,6 @@ namespace patch
                     {
                         fprintf(stderr, "Warning: Temporal AO descriptors failed\n");
                     }
-                    if (!create_reflection_compute_descriptor_sets())
-                    {
-                        fprintf(stderr, "Warning: Reflection compute descriptors failed\n");
-                    }
-                    if (!create_temporal_reflection_descriptor_sets())
-                    {
-                        fprintf(stderr, "Warning: Temporal reflection descriptors failed\n");
-                    }
                 }
             }
 
@@ -305,9 +297,6 @@ namespace patch
             {
                 return;
             }
-
-            /* Initialize GI if it was requested before compute resources were ready */
-            init_gi_if_pending();
         }
 
         GPUMaterialPalette palette{};
@@ -593,7 +582,6 @@ namespace patch
 
         /* Update shadow compute descriptor with new shadow volume texture */
         update_shadow_volume_descriptor();
-        update_reflection_volume_descriptor();
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)

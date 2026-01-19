@@ -17,13 +17,6 @@ layout(SET_BINDING(0, 4)) uniform sampler2D gbuffer_world_pos;
 layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
-layout(SET_BINDING(0, 8)) uniform sampler2D reflection_buffer;
-
-/* GI radiance cascade samplers */
-layout(SET_BINDING(0, 9)) uniform sampler3D gi_cascade_0;
-layout(SET_BINDING(0, 10)) uniform sampler3D gi_cascade_1;
-layout(SET_BINDING(0, 11)) uniform sampler3D gi_cascade_2;
-layout(SET_BINDING(0, 12)) uniform sampler3D gi_cascade_3;
 
 layout(push_constant) uniform Constants {
     mat4 inv_view;
@@ -62,80 +55,6 @@ vec3 aces_tonemap(vec3 x) {
     const float d = 0.59;
     const float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
-/* Extract GI quality from history_valid (packed in bits 8-15) */
-int get_gi_quality() {
-    return (pc.history_valid >> 8) & 0xFF;
-}
-
-/* Sample GI cascade at a position, selecting level based on distance */
-vec3 sample_cascade_at(vec3 uvw, float dist_to_cam) {
-    float level_f = clamp(dist_to_cam / 20.0, 0.0, 3.0);
-    int level_low = int(floor(level_f));
-    int level_high = min(level_low + 1, 3);
-    float blend = fract(level_f);
-
-    vec3 radiance_low, radiance_high;
-
-    if (level_low == 0) {
-        radiance_low = texture(gi_cascade_0, uvw).rgb;
-    } else if (level_low == 1) {
-        radiance_low = texture(gi_cascade_1, uvw).rgb;
-    } else if (level_low == 2) {
-        radiance_low = texture(gi_cascade_2, uvw).rgb;
-    } else {
-        radiance_low = texture(gi_cascade_3, uvw).rgb;
-    }
-
-    if (level_high == 0) {
-        radiance_high = texture(gi_cascade_0, uvw).rgb;
-    } else if (level_high == 1) {
-        radiance_high = texture(gi_cascade_1, uvw).rgb;
-    } else if (level_high == 2) {
-        radiance_high = texture(gi_cascade_2, uvw).rgb;
-    } else {
-        radiance_high = texture(gi_cascade_3, uvw).rgb;
-    }
-
-    return mix(radiance_low, radiance_high, blend);
-}
-
-/* Sample indirect radiance from GI cascades with normal-directed color bleeding. */
-vec3 sample_gi_radiance(vec3 world_pos, vec3 normal) {
-    int gi_quality = get_gi_quality();
-    if (gi_quality == 0) {
-        return vec3(0.0);
-    }
-
-    vec3 bounds_size = pc.bounds_max - pc.bounds_min;
-    vec3 uvw = (world_pos - pc.bounds_min) / bounds_size;
-
-    float dist_to_cam = length(world_pos - pc.cam_pos);
-
-    /* Sample at surface position */
-    vec3 radiance = sample_cascade_at(clamp(uvw, vec3(0.001), vec3(0.999)), dist_to_cam);
-
-    /* Color bleeding: sample in the direction the surface is facing.
-       A floor (normal up) samples above itself to pick up wall colors.
-       A wall (normal sideways) samples in front of itself.
-       This naturally picks up light from nearby colored surfaces. */
-    float bleed_dist = 2.0; /* World units to offset for bleeding sample */
-    vec3 bleed_offset = normal * bleed_dist / bounds_size;
-    vec3 bleed_uvw = clamp(uvw + bleed_offset, vec3(0.001), vec3(0.999));
-
-    /* Sample bleeding contribution from propagated levels (more spread) */
-    vec3 bleed_sample = texture(gi_cascade_1, bleed_uvw).rgb * 0.6 +
-                        texture(gi_cascade_2, bleed_uvw).rgb * 0.4;
-
-    /* Blend bleeding based on quality and distance */
-    float bleed_strength = 0.4 * float(gi_quality);
-    radiance += bleed_sample * bleed_strength;
-
-    /* Quality-based intensity scaling */
-    float gi_strength = 0.3 + float(gi_quality) * 0.15;
-
-    return radiance * gi_strength;
 }
 
 void main() {
@@ -187,20 +106,6 @@ void main() {
         return;
     }
 
-    /* DEBUG: Show reflection buffer (RGB=reflection color, A=blend weight) */
-    if (pc.debug_mode == 14) {
-        vec4 refl = texture(reflection_buffer, in_uv);
-        out_color = vec4(refl.rgb, 1.0);
-        return;
-    }
-
-    /* DEBUG: Show GI radiance contribution */
-    if (pc.debug_mode == 15) {
-        vec3 gi = sample_gi_radiance(g.world_pos, N);
-        out_color = vec4(gi, 1.0);
-        return;
-    }
-
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
@@ -236,10 +141,6 @@ void main() {
     vec3 ground_ambient = vec3(0.42, 0.36, 0.32) * (0.5 - N.y * 0.5);
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
 
-    /* Add GI indirect radiance to ambient */
-    vec3 gi_radiance = sample_gi_radiance(g.world_pos, N);
-    ambient_light += gi_radiance * ao;
-
     vec3 H = normalize(key_light_dir + V);
     float spec_power = mix(128.0, 4.0, g.roughness * g.roughness);
     float spec_strength = mix(0.4, 0.02, g.roughness);
@@ -262,20 +163,6 @@ void main() {
 
     vec3 emissive_color = g.albedo * g.emissive * 2.0;
     color += emissive_color;
-
-    /* Sample reflection buffer and blend */
-    vec4 reflection = texture(reflection_buffer, in_uv);
-    if (reflection.a > 0.001) {
-        /* Boost reflection blend for visibility (alpha contains fresnel weight)
-           Metals: replace diffuse with reflection
-           Dielectrics: additive reflection scaled for visibility */
-        float base_blend = reflection.a * 2.5; /* Boost base fresnel for visibility */
-        float metal_blend = mix(base_blend, reflection.a * 0.8, g.metallic);
-
-        /* Metals: reflection replaces diffuse, Dielectrics: additive blend */
-        color = mix(color, reflection.rgb, metal_blend * g.metallic)
-              + reflection.rgb * base_blend * (1.0 - g.metallic);
-    }
 
     float exposure = 1.0;
     color *= exposure;
