@@ -33,7 +33,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 /* Global parameters required by data_terrain.glsl */
@@ -60,6 +60,7 @@ layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
 
 layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
     mat4 prev_view_proj;
+    mat4 view_proj;
 };
 
 /* Voxel object data bindings (set 1) */
@@ -91,7 +92,7 @@ layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
 layout(rgba32f, SET_BINDING(2, 4)) writeonly uniform image2D out_world_pos;
 layout(rg16f, SET_BINDING(2, 5)) writeonly uniform image2D out_motion_vector;
 
-const int DEFAULT_MAX_STEPS = 512;
+const int DEFAULT_MAX_STEPS = 384;  /* Reduced from 512 - bilateral skip handles empty space */
 const int VOBJ_BASE_STEPS = 48;
 
 vec3 world_to_grid(vec3 world_pos) {
@@ -146,6 +147,15 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
     }
 
     int step_count = (pc.max_steps > 0) ? pc.max_steps : DEFAULT_MAX_STEPS;
+
+    /* Terrain distance LOD: reduce steps for ortho or distant rays */
+    if (pc.is_orthographic != 0) {
+        step_count = (step_count * 3) / 4;
+    } else if (t_start > 200.0) {
+        step_count = step_count / 2;
+    } else if (t_start > 100.0) {
+        step_count = (step_count * 3) / 4;
+    }
 
     for (int i = 0; i < step_count; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
@@ -254,17 +264,42 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
-    /* March all voxel objects and keep closest (with ray-sphere early-out + combined LOD) */
+    /* Early-out for sky pixels: if terrain missed, skip object loop for upward rays.
+       Objects are typically ground-level; sky rays pointing up won't hit them.
+       This saves ~250 ray-sphere tests per sky pixel (~40% of pixels). */
+    if (!best_hit.hit && ray_dir.y > 0.1) {
+        imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
+        imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
+        imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
+        imageStore(out_world_pos, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    /* March all voxel objects and keep closest (with ray-sphere early-out + combined LOD)
+     * Objects are pre-sorted front-to-back and culled to visible-only on CPU. */
     float terrain_t = best_hit.t;
-    for (int i = 0; i < pc.object_count; i++) {
+    const int MAX_OBJECTS_PER_PIXEL = 24;  /* Reduced from 32 - compacted list is denser */
+    int objects_tested = 0;
+    int objects_marched = 0;
+
+    for (int i = 0; i < pc.object_count && objects_tested < MAX_OBJECTS_PER_PIXEL; i++) {
         /* Quick ray-sphere rejection - skip objects ray cannot possibly hit */
         if (!vobj_ray_could_hit(ray_origin, ray_dir, i)) {
             continue;
         }
+        objects_tested++;
 
         /* Calculate distance to object for LOD */
         vec3 obj_pos = vobj_get_world_position(i);
         float dist = length(obj_pos - pc.camera_pos);
+
+        /* Skip objects beyond reasonable test distance */
+        const float MAX_OBJECT_TEST_DIST = 100.0;
+        if (dist > MAX_OBJECT_TEST_DIST) {
+            continue;
+        }
 
         /* Early depth termination: skip objects entirely behind current best hit */
         float obj_radius = vobj_get_bounding_radius(i);
@@ -273,14 +308,24 @@ void main() {
             continue;
         }
 
+        /* Progressive step reduction: after testing many objects, use fewer steps */
+        int step_budget = VOBJ_BASE_STEPS;
+        if (objects_marched >= 8) {
+            step_budget = VOBJ_BASE_STEPS / 2;  /* Aggressive reduction after 8 objects */
+        } else if (objects_marched >= 4) {
+            step_budget = (VOBJ_BASE_STEPS * 3) / 4;  /* Moderate reduction after 4 objects */
+        }
+
         /* Calculate screen coverage for LOD (approximate from object size and distance) */
         float half_extent = vobj_get_half_extent(i);
         float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
 
-        /* Combined LOD: distance + screen coverage */
-        int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, VOBJ_BASE_STEPS);
+        /* Combined LOD: distance + screen coverage, capped by progressive budget */
+        int max_steps = min(vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, step_budget), step_budget);
 
         HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
+        objects_marched++;
+
         if (obj_hit.hit && obj_hit.t < best_hit.t) {
             best_hit = obj_hit;
         }
@@ -288,14 +333,7 @@ void main() {
 
     /* Write to G-buffer */
     if (best_hit.hit) {
-        vec3 final_color = best_hit.color;
-
-        /* Debug mode 8: Collider visualization */
-        if (pc.debug_mode == 8) {
-            final_color = mix(final_color, vec3(0.2, 0.8, 1.0), 0.7);
-        }
-
-        imageStore(out_albedo, pixel, vec4(final_color, 1.0));
+        imageStore(out_albedo, pixel, vec4(best_hit.color, 1.0));
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
         imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));

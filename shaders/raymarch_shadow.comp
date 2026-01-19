@@ -33,7 +33,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -67,7 +67,7 @@ layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
 layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
 
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
-const int MAX_SHADOW_STEPS = 256;
+const int MAX_SHADOW_STEPS = 128;  /* Reduced from 256 - shadow rays are shorter */
 const float SHADOW_MAX_DIST = 50.0;
 
 /* Sun direction */
@@ -77,17 +77,21 @@ vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
 }
 
+/* Shadow volume dimensions computed from grid_size (avoids per-sample textureSize calls) */
+ivec3 shadow_dim0;  /* mip0: half-res */
+ivec3 shadow_dim1;  /* mip1: quarter-res */
+ivec3 shadow_dim2;  /* mip2: eighth-res */
+
 /* Sample shadow volume occupancy at voxel position
    Shadow volume is half-resolution: 2x2x2 voxels packed per texel
    Returns true if occupied */
 bool sample_shadow_volume(ivec3 voxel_pos) {
     /* Shadow volume texel coords (half res) */
     ivec3 shadow_pos = voxel_pos >> 1;
-    ivec3 shadow_size = textureSize(shadow_volume_tex, 0);
 
-    if (shadow_pos.x < 0 || shadow_pos.x >= shadow_size.x ||
-        shadow_pos.y < 0 || shadow_pos.y >= shadow_size.y ||
-        shadow_pos.z < 0 || shadow_pos.z >= shadow_size.z) {
+    if (shadow_pos.x < 0 || shadow_pos.x >= shadow_dim0.x ||
+        shadow_pos.y < 0 || shadow_pos.y >= shadow_dim0.y ||
+        shadow_pos.z < 0 || shadow_pos.z >= shadow_dim0.z) {
         return false;
     }
 
@@ -103,11 +107,10 @@ bool sample_shadow_volume(ivec3 voxel_pos) {
 /* Sample shadow volume mip1 (4x4x4 voxels per texel) */
 bool sample_shadow_mip1(ivec3 voxel_pos) {
     ivec3 mip1_pos = voxel_pos >> 2;  /* Divide by 4 */
-    ivec3 mip1_size = textureSize(shadow_volume_tex, 1);
 
-    if (mip1_pos.x < 0 || mip1_pos.x >= mip1_size.x ||
-        mip1_pos.y < 0 || mip1_pos.y >= mip1_size.y ||
-        mip1_pos.z < 0 || mip1_pos.z >= mip1_size.z) {
+    if (mip1_pos.x < 0 || mip1_pos.x >= shadow_dim1.x ||
+        mip1_pos.y < 0 || mip1_pos.y >= shadow_dim1.y ||
+        mip1_pos.z < 0 || mip1_pos.z >= shadow_dim1.z) {
         return false;
     }
 
@@ -117,11 +120,10 @@ bool sample_shadow_mip1(ivec3 voxel_pos) {
 /* Sample shadow volume mip2 (8x8x8 voxels per texel) */
 bool sample_shadow_mip2(ivec3 voxel_pos) {
     ivec3 mip2_pos = voxel_pos >> 3;  /* Divide by 8 */
-    ivec3 mip2_size = textureSize(shadow_volume_tex, 2);
 
-    if (mip2_pos.x < 0 || mip2_pos.x >= mip2_size.x ||
-        mip2_pos.y < 0 || mip2_pos.y >= mip2_size.y ||
-        mip2_pos.z < 0 || mip2_pos.z >= mip2_size.z) {
+    if (mip2_pos.x < 0 || mip2_pos.x >= shadow_dim2.x ||
+        mip2_pos.y < 0 || mip2_pos.y >= shadow_dim2.y ||
+        mip2_pos.z < 0 || mip2_pos.z >= shadow_dim2.z) {
         return false;
     }
 
@@ -219,6 +221,11 @@ void main() {
     pc_chunks_dim = pc.chunks_dim;
     pc_total_chunks = pc.total_chunks;
 
+    /* Cache shadow volume dimensions (computed from grid_size, avoids textureSize calls) */
+    shadow_dim0 = (pc.grid_size + 1) >> 1;  /* mip0: half-res */
+    shadow_dim1 = (pc.grid_size + 3) >> 2;  /* mip1: quarter-res */
+    shadow_dim2 = (pc.grid_size + 7) >> 3;  /* mip2: eighth-res */
+
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screen_size = imageSize(out_shadow);
 
@@ -249,21 +256,20 @@ void main() {
         vec3 bitangent = cross(SUN_DIR, tangent);
 
         /* Bias along light direction instead of normal - ensures shadow ray starts
-           outside occluders regardless of surface orientation (fixes dotty shadows
-           on rotated objects where normal-based bias was insufficient) */
-        float light_bias = pc.voxel_size * 0.6;
-        float normal_bias = pc.voxel_size * 0.1;
+           outside occluders regardless of surface orientation */
+        float light_bias = pc.voxel_size * 1.0;
+        float normal_bias = pc.voxel_size * 0.3;
         vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
-        /* Scale samples: quality 1=4, 2=8, 3=12 samples for smoother soft shadows */
-        int num_samples = pc.shadow_quality * 4;
+        /* Scale samples: quality 1=3, 2=4, 3=5 - temporal accumulation handles noise */
+        int num_samples = 2 + pc.shadow_quality;
         float shadow_sum = 0.0;
 
         /* Contact hardening only when enabled, otherwise use constant penumbra */
         float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
         float penumbra = base_penumbra;
 
-        if (pc.shadow_contact != 0) {
+        if (pc.shadow_contact != 0 && pc.shadow_quality >= 3) {
             /* Contact hardening: trace center ray to find occluder distance */
             float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
 

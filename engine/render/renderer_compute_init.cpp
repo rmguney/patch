@@ -77,44 +77,6 @@ namespace patch
         temporal_ao_history_valid_ = false;
         ao_resources_initialized_ = true;
 
-        /* Initialize reflection compute resources */
-        if (!create_reflection_output_resources())
-        {
-            fprintf(stderr, "Failed to create reflection output resources\n");
-            return false;
-        }
-
-        if (!create_reflection_history_resources())
-        {
-            fprintf(stderr, "Failed to create reflection history resources\n");
-            return false;
-        }
-
-        if (!create_reflection_compute_pipeline())
-        {
-            fprintf(stderr, "Failed to create reflection compute pipeline\n");
-            return false;
-        }
-
-        if (!create_temporal_reflection_pipeline())
-        {
-            fprintf(stderr, "Failed to create temporal reflection pipeline\n");
-            return false;
-        }
-
-        reflection_history_write_index_ = 0;
-        temporal_reflection_history_valid_ = false;
-        reflection_resources_initialized_ = true;
-
-        /* Update deferred lighting descriptor to use actual reflection buffer */
-        if (gbuffer_initialized_ && reflection_output_view_)
-        {
-            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-            {
-                update_deferred_reflection_buffer_descriptor(i, reflection_output_view_);
-            }
-        }
-
         /* Initialize spatial denoise resources */
         if (!create_lit_color_resources())
         {

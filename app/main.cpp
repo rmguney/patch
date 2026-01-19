@@ -1,6 +1,7 @@
 #include "engine/platform/window.h"
 #include "engine/platform/platform.h"
 #include "engine/render/renderer.h"
+#include "engine/render/voxel_push_constants.h"
 #include "engine/render/ui_renderer.h"
 #include "engine/sim/scene.h"
 #include "app/app_ui.h"
@@ -46,6 +47,8 @@ int patch_main(int argc, char *argv[])
     int test_scene = -1;
     int test_frames = 0;
     const char *profile_csv = "profile_results.csv";
+    bool has_camera_pos = false;
+    float camera_pos_x = 0.0f, camera_pos_y = 0.0f, camera_pos_z = 0.0f;
 
     for (int i = 1; i < argc; i++)
     {
@@ -60,6 +63,13 @@ int patch_main(int argc, char *argv[])
         else if (strcmp(argv[i], "--profile-csv") == 0 && i + 1 < argc)
         {
             profile_csv = argv[++i];
+        }
+        else if (strcmp(argv[i], "--camera-pos") == 0 && i + 3 < argc)
+        {
+            camera_pos_x = static_cast<float>(atof(argv[++i]));
+            camera_pos_y = static_cast<float>(atof(argv[++i]));
+            camera_pos_z = static_cast<float>(atof(argv[++i]));
+            has_camera_pos = true;
         }
     }
 
@@ -90,7 +100,8 @@ int patch_main(int argc, char *argv[])
         /* Convert sRGB colors to linear space for correct lighting calculations.
          * Material RGB values are defined in sRGB (what color pickers use).
          * The shader performs lighting in linear space then applies gamma correction. */
-        auto srgb_to_linear = [](float srgb) -> float {
+        auto srgb_to_linear = [](float srgb) -> float
+        {
             if (srgb <= 0.04045f)
                 return srgb / 12.92f;
             return powf((srgb + 0.055f) / 1.055f, 2.4f);
@@ -143,6 +154,14 @@ int patch_main(int argc, char *argv[])
             app_state = AppState::Playing;
             app_ui_hide(&ui);
 
+            ui.settings.master_preset = QUALITY_PRESET_FAIR;
+            ui.settings.adaptive_quality = 0;
+            ui.settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
+            ui.settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
+            ui.settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
+            ui.settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
+            ui.settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
+
             if (current_scene == ActiveScene::BallPit)
             {
                 VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
@@ -160,8 +179,21 @@ int patch_main(int argc, char *argv[])
     platform_time_init();
     PlatformTime last_time = platform_time_now();
 
-    renderer.set_orthographic(16.0f, 16.0f, 200.0f);
-    renderer.set_view_angle(45.0f, 26.0f);
+    /* Camera setup: use test camera position if specified, otherwise default isometric */
+    bool test_camera_active = false;
+    Vec3 test_camera_pos = vec3_create(0.0f, 0.0f, 0.0f);
+    if (test_frames > 0 && has_camera_pos)
+    {
+        test_camera_pos = vec3_create(camera_pos_x, camera_pos_y, camera_pos_z);
+        test_camera_active = true;
+        renderer.set_perspective(60.0f, 0.1f, 200.0f);
+        printf("Test mode: camera at (%.1f, %.1f, %.1f)\n", camera_pos_x, camera_pos_y, camera_pos_z);
+    }
+    else
+    {
+        renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+        renderer.set_view_angle(45.0f, 26.0f);
+    }
 
     bool escape_was_down = false;
     bool f1_was_down = false;
@@ -197,7 +229,9 @@ int patch_main(int argc, char *argv[])
         if (dt > 0.1f)
             dt = 0.1f;
 
+        PROFILE_BEGIN(PROFILE_SIM_COLLISION);
         window.poll_events();
+        PROFILE_END(PROFILE_SIM_COLLISION);
 
         if (window.consume_resize() && window.width() > 0 && window.height() > 0)
         {
@@ -274,7 +308,7 @@ int patch_main(int argc, char *argv[])
         if (f4_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 16);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 14);
         }
 
         /* F5: Terrain debug mode previous */
@@ -284,7 +318,7 @@ int patch_main(int argc, char *argv[])
         if (f5_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 15) % 16);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 13) % 14);
         }
 
         /* Mouse click detection */
@@ -299,8 +333,10 @@ int patch_main(int argc, char *argv[])
         bool do_export = f3_pressed;
         (void)do_export;
 
+        PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
         app_ui_update(&ui, dt, window.mouse().x, window.mouse().y,
                       window.mouse().left_down, window.width(), window.height());
+        PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 
         AppAction action = app_ui_get_action(&ui);
         switch (action)
@@ -352,10 +388,12 @@ int patch_main(int argc, char *argv[])
             break;
 
         case APP_ACTION_SETTINGS:
+            app_ui_refresh_settings_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_SETTINGS);
             break;
 
         case APP_ACTION_GRAPHICS:
+            app_ui_refresh_graphics_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_GRAPHICS);
             break;
 
@@ -397,6 +435,7 @@ int patch_main(int argc, char *argv[])
 
         if (app_state == AppState::Playing && active_scene && !app_ui_is_blocking(&ui))
         {
+            PROFILE_BEGIN(PROFILE_SIM_TICK);
             Vec3 ray_origin, ray_dir;
             renderer.screen_to_ray(window.mouse().x, window.mouse().y, &ray_origin, &ray_dir);
 
@@ -408,6 +447,7 @@ int patch_main(int argc, char *argv[])
             }
 
             scene_update(active_scene, dt);
+            PROFILE_END(PROFILE_SIM_TICK);
         }
 
         /* Free camera controls */
@@ -473,6 +513,15 @@ int patch_main(int argc, char *argv[])
             Vec3 target = vec3_add(free_camera_pos, forward);
             renderer.set_look_at(free_camera_pos, target);
         }
+        else if (test_camera_active && active_scene)
+        {
+            /* Test mode: fixed camera looking at scene center */
+            Vec3 center = vec3_create(
+                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
+                active_scene->bounds.min_y + 2.0f,
+                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+            renderer.set_look_at(test_camera_pos, center);
+        }
         else if (active_scene && current_scene == ActiveScene::BallPit)
         {
             float content_y = active_scene->bounds.min_y + 2.0f;
@@ -488,16 +537,37 @@ int patch_main(int argc, char *argv[])
         renderer.begin_frame(&image_index);
 
         const AppSettings *settings = app_ui_get_settings(&ui);
-        renderer.set_adaptive_quality(settings->adaptive_quality != 0);
-        renderer.set_denoise_quality(settings->denoise_quality);
-        renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
-        renderer.set_gi_quality(settings->gi_quality);
-        if (!settings->adaptive_quality)
+        AppSettings test_settings;
+        if (test_frames > 0)
         {
-            renderer.set_shadow_quality(settings->shadow_quality);
-            renderer.set_ao_quality(settings->ao_quality);
-            renderer.set_lod_quality(settings->lod_quality);
-            renderer.set_reflection_quality(settings->reflection_quality);
+            test_settings = *settings;
+            test_settings.master_preset = QUALITY_PRESET_FAIR;
+            test_settings.adaptive_quality = 0;
+            test_settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
+            test_settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
+            test_settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
+            test_settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
+            test_settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
+            settings = &test_settings;
+        }
+
+        renderer.set_master_preset(settings->master_preset);
+        renderer.set_adaptive_quality(settings->adaptive_quality != 0);
+
+        if (!renderer.get_adaptive_quality())
+        {
+            if (settings->master_preset < QUALITY_PRESET_CUSTOM)
+            {
+                renderer.apply_preset(settings->master_preset);
+            }
+            else
+            {
+                renderer.set_shadow_quality(settings->shadow_quality);
+                renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
+                renderer.set_ao_quality(settings->ao_quality);
+                renderer.set_lod_quality(settings->lod_quality);
+                renderer.set_denoise_quality(settings->denoise_quality);
+            }
         }
 
         PROFILE_BEGIN(PROFILE_RENDER_TOTAL);
@@ -540,41 +610,49 @@ int patch_main(int argc, char *argv[])
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
                 bool need_depth_prime = (objects && objects->object_count > 0) || particles;
                 renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
+                PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
 
             renderer.begin_gbuffer_pass();
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
                 renderer.render_gbuffer_terrain(terrain);
+                PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
 
             if (objects)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_OBJECTS);
                 renderer.render_voxel_objects_raymarched(objects);
+                PROFILE_END(PROFILE_RENDER_OBJECTS);
             }
 
             if (particles)
             {
                 float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f) interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f) interp_alpha = 1.0f;
+                if (interp_alpha < 0.0f)
+                    interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f)
+                    interp_alpha = 1.0f;
                 renderer.set_interp_alpha(interp_alpha);
                 renderer.render_particles_raymarched(particles);
             }
 
             renderer.end_gbuffer_pass();
+            PROFILE_BEGIN(PROFILE_RENDER_LIGHTING);
             renderer.render_deferred_lighting(image_index);
+            PROFILE_END(PROFILE_RENDER_LIGHTING);
         }
         else
         {
             renderer.begin_main_pass(image_index);
         }
         PROFILE_END(PROFILE_RENDER_MAIN);
-
-        PROFILE_BEGIN(PROFILE_RENDER_UI);
 
         /* Populate debug info */
         bool dbg_has_info = false;
@@ -621,13 +699,16 @@ int patch_main(int argc, char *argv[])
         }
 
         bool btn_clicked = false;
+        bool render_ui = show_overlay || app_ui_is_blocking(&ui);
         if (show_overlay)
         {
+            PROFILE_BEGIN(PROFILE_RENDER_UI_OVERLAY);
             btn_clicked = draw_overlay(renderer, fps_smooth, overlay_stats,
                                        window.width(), window.height(),
                                        dbg_has_info ? &dbg_info : nullptr,
                                        window.mouse().x, window.mouse().y,
                                        mouse_clicked, &dbg_feedback);
+            PROFILE_END(PROFILE_RENDER_UI_OVERLAY);
         }
 
         if (dbg_has_info && (do_export || btn_clicked))
@@ -639,8 +720,12 @@ int patch_main(int argc, char *argv[])
             dbg_feedback.timer = 3.0f;
         }
 
-        ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
-        PROFILE_END(PROFILE_RENDER_UI);
+        if (render_ui)
+        {
+            PROFILE_BEGIN(PROFILE_RENDER_UI);
+            ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
+            PROFILE_END(PROFILE_RENDER_UI);
+        }
 
         PROFILE_END(PROFILE_RENDER_TOTAL);
 

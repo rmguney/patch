@@ -32,7 +32,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
@@ -42,7 +42,7 @@ layout(SET_BINDING(0, 2)) uniform sampler2D lit_color_input;
 layout(rgba8, SET_BINDING(1, 0)) writeonly uniform image2D out_denoised;
 
 const float GOLDEN_ANGLE = 2.399963229728653;
-const int SAMPLE_COUNT = 12;
+const int SAMPLE_COUNT = 8;
 const float SAMPLE_RADIUS = 3.0;
 const float DEPTH_THRESHOLD = 0.05;
 
@@ -51,6 +51,9 @@ const float BLOOM_THRESHOLD = 1.2;
 const float BLOOM_INTENSITY = 0.15;
 const float BLOOM_RADIUS = 6.0;
 const int BLOOM_SAMPLES = 8;
+const int DEBUG_DENOISE_RAW = 14;
+const int DEBUG_DENOISE_DIFF = 15;
+const float DEBUG_DENOISE_DIFF_SCALE = 4.0;
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.299, 0.587, 0.114));
@@ -79,6 +82,12 @@ void main() {
     float depth_center = texture(gbuffer_linear_depth, uv).r;
     vec3 normal_center = texture(gbuffer_normal, uv).rgb * 2.0 - 1.0;
     vec4 color_center = texture(lit_color_input, uv);
+
+    /* DEBUG: Bypass denoise and show raw lit color */
+    if (pc.debug_mode == DEBUG_DENOISE_RAW) {
+        imageStore(out_denoised, pixel, color_center);
+        return;
+    }
 
     /* Sky pixels (depth=1.0) pass through unchanged */
     if (depth_center >= 0.9999) {
@@ -152,6 +161,13 @@ void main() {
 
     if (bloom_weight > 0.0) {
         result += bloom * BLOOM_INTENSITY;
+    }
+
+    /* DEBUG: Visualize denoise delta */
+    if (pc.debug_mode == DEBUG_DENOISE_DIFF) {
+        vec3 diff = abs(result - color_center.rgb) * DEBUG_DENOISE_DIFF_SCALE;
+        imageStore(out_denoised, pixel, vec4(diff, 1.0));
+        return;
     }
 
     imageStore(out_denoised, pixel, vec4(result, color_center.a));

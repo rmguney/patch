@@ -378,6 +378,14 @@ namespace patch
         if (!gbuffer_initialized_)
             return;
 
+        if (timestamps_supported_)
+        {
+            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(command_buffers_[current_frame_],
+                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestamp_query_pool_, query_offset + 2);
+        }
+
         VkClearValue clear_values[7]{};
         clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[1].color = {{0.5f, 0.5f, 0.5f, 0.0f}};
@@ -437,25 +445,10 @@ namespace patch
         /* Dispatch AO compute after shadow (only if ao_quality >= 1) */
         if (ao_quality_ >= 1 && ao_resources_initialized_ && ao_compute_pipeline_ && deferred_total_chunks_ > 0)
         {
+            PROFILE_BEGIN(PROFILE_RENDER_AO);
             dispatch_ao_compute();
             dispatch_temporal_ao_resolve();
-        }
-
-        /* Dispatch reflection compute (only if reflection_quality >= 1) */
-        if (reflection_quality_ >= 1 && reflection_resources_initialized_ && reflection_compute_pipeline_ && deferred_total_chunks_ > 0)
-        {
-            dispatch_reflection_compute();
-            dispatch_temporal_reflection_resolve();
-        }
-
-        /* Dispatch GI light injection and propagation (only if gi_quality >= 1) */
-        if (gi_quality_ >= 1 && gi_resources_initialized_ && gi_inject_pipeline_ && deferred_total_chunks_ > 0)
-        {
-            dispatch_gi_inject();
-            if (gi_propagate_pipeline_)
-            {
-                dispatch_gi_propagate();
-            }
+            PROFILE_END(PROFILE_RENDER_AO);
         }
 
         gbuffer_compute_dispatched_ = false;
@@ -469,7 +462,11 @@ namespace patch
         /* Dispatch compute terrain + objects if enabled (must be called before begin_gbuffer_pass) */
         if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_)
         {
-            int32_t object_count = (objects && vobj_resources_initialized_) ? objects->object_count : 0;
+            /* Compute path is terrain-only when objects/particles are present to avoid double-rendering objects.
+             * Use vobj_visible_count_ (compacted from frustum culling) instead of full object_count. */
+            int32_t object_count = (has_objects_or_particles || !objects || !vobj_resources_initialized_)
+                                       ? 0
+                                       : vobj_visible_count_;
             dispatch_gbuffer_compute(vol, object_count);
 
             /* Prime hardware depth buffer only when objects/particles will be rendered */
@@ -532,7 +529,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = (gi_quality_ << 8);
+        pc.history_valid = 0;
         pc.grid_size[0] = vol->chunks_x * CHUNK_SIZE;
         pc.grid_size[1] = vol->chunks_y * CHUNK_SIZE;
         pc.grid_size[2] = vol->chunks_z * CHUNK_SIZE;
@@ -617,7 +614,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = (gi_quality_ << 8);
+        pc.history_valid = 0;
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];
@@ -646,8 +643,10 @@ namespace patch
         {
             vkCmdEndRenderPass(command_buffers_[current_frame_]);
 
+            PROFILE_BEGIN(PROFILE_RENDER_DENOISE);
             dispatch_spatial_denoise();
             blit_denoised_to_swapchain(image_index);
+            PROFILE_END(PROFILE_RENDER_DENOISE);
 
             /* Start new render pass for UI rendering (loads color, keeps depth) */
             VkClearValue clear_ui[2]{};
@@ -734,21 +733,6 @@ namespace patch
         {
             fprintf(stderr, "Failed to create deferred lighting descriptor sets\n");
             return false;
-        }
-
-        /* Update GI cascade descriptors if GI resources were initialized before gbuffer */
-        if (gi_resources_initialized_)
-        {
-            update_deferred_gi_cascade_descriptors();
-        }
-
-        /* Update reflection descriptor if reflection resources were initialized before gbuffer */
-        if (reflection_resources_initialized_ && reflection_output_view_)
-        {
-            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-            {
-                update_deferred_reflection_buffer_descriptor(i, reflection_output_view_);
-            }
         }
 
         printf("  Deferred descriptor sets initialized\n");

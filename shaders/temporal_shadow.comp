@@ -32,12 +32,12 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 /* Set 0: inputs */
-layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
-layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
+layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;  /* Keep for potential future use */
+layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;        /* Keep for potential future use */
 layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
 layout(SET_BINDING(0, 3)) uniform sampler2D shadow_current;
 layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
@@ -45,10 +45,9 @@ layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
 /* Set 1: output */
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
 
-const float HISTORY_BLEND_MAX = 0.75;
-const float HISTORY_BLEND_MIN = 0.15;  /* Aggressive rejection during motion */
-const float DEPTH_REJECT_THRESHOLD = 0.05;
-const float NORMAL_REJECT_THRESHOLD = 0.85;
+const float HISTORY_BLEND_MAX = 0.85;  /* Higher = smoother but more lag */
+const float HISTORY_BLEND_MIN = 0.3;   /* Lower = faster response during motion */
+const float VARIANCE_CLAMP_GAMMA = 1.5; /* Neighborhood clamping strength */
 
 void main()
 {
@@ -58,7 +57,6 @@ void main()
         return;
 
     vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
-
     float current_shadow = texelFetch(shadow_current, pixel, 0).r;
 
     if (pc.history_valid == 0)
@@ -70,34 +68,46 @@ void main()
     vec2 motion = texture(gbuffer_motion_vector, uv).xy;
     vec2 prev_uv = uv + motion;
 
+    /* Reject history if reprojected outside screen */
     if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0))))
     {
         imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
         return;
     }
 
-    float current_depth = texelFetch(gbuffer_linear_depth, pixel, 0).r;
-    float reproj_depth = texture(gbuffer_linear_depth, prev_uv).r;
-    float depth_diff = abs(current_depth - reproj_depth) / max(current_depth, 0.001);
-    if (depth_diff > DEPTH_REJECT_THRESHOLD)
+    /* Compute neighborhood min/max for variance clamping (3x3) */
+    float min_shadow = current_shadow;
+    float max_shadow = current_shadow;
+    for (int dy = -1; dy <= 1; dy++)
     {
-        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
-        return;
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            ivec2 neighbor = pixel + ivec2(dx, dy);
+            if (neighbor.x >= 0 && neighbor.x < size.x &&
+                neighbor.y >= 0 && neighbor.y < size.y)
+            {
+                float s = texelFetch(shadow_current, neighbor, 0).r;
+                min_shadow = min(min_shadow, s);
+                max_shadow = max(max_shadow, s);
+            }
+        }
     }
 
-    vec3 current_normal = texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0;
-    vec3 reproj_normal = texture(gbuffer_normal, prev_uv).xyz * 2.0 - 1.0;
-    if (dot(current_normal, reproj_normal) < NORMAL_REJECT_THRESHOLD)
-    {
-        imageStore(out_shadow_resolved, pixel, vec4(current_shadow, 0.0, 0.0, 0.0));
-        return;
-    }
+    /* Expand clamping range to allow some temporal smoothing */
+    float range = (max_shadow - min_shadow) * VARIANCE_CLAMP_GAMMA;
+    float center = (max_shadow + min_shadow) * 0.5;
+    min_shadow = center - range * 0.5;
+    max_shadow = center + range * 0.5;
 
+    /* Sample and clamp history */
+    float history_shadow = texture(shadow_history, prev_uv).r;
+    history_shadow = clamp(history_shadow, min_shadow, max_shadow);
+
+    /* Blend factor based on motion - fast objects get less history */
     float motion_len = length(motion * vec2(size));
-    float velocity_weight = clamp(motion_len / 1.0, 0.0, 1.0);  /* More sensitive to motion */
+    float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
     float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
 
-    float history_shadow = texture(shadow_history, prev_uv).r;
     float resolved = mix(current_shadow, history_shadow, history_blend);
     imageStore(out_shadow_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
 }

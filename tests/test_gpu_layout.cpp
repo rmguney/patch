@@ -169,13 +169,13 @@ TEST(voxel_push_constants_layout)
     ASSERT(offsetof(VoxelPushConstants, shadow_contact) == 240);
     ASSERT(offsetof(VoxelPushConstants, ao_quality) == 244);
     ASSERT(offsetof(VoxelPushConstants, lod_quality) == 248);
-    ASSERT(offsetof(VoxelPushConstants, reflection_quality) == 252);
+    ASSERT(offsetof(VoxelPushConstants, _reserved0) == 252);
     return 1;
 }
 
 TEST(voxel_temporal_ubo_size)
 {
-    ASSERT(sizeof(patch::VoxelTemporalUBO) == 64);
+    ASSERT(sizeof(patch::VoxelTemporalUBO) == 128);
     return 1;
 }
 
@@ -183,6 +183,7 @@ TEST(voxel_temporal_ubo_layout)
 {
     using namespace patch;
     ASSERT(offsetof(VoxelTemporalUBO, prev_view_proj) == 0);
+    ASSERT(offsetof(VoxelTemporalUBO, view_proj) == 64);
     return 1;
 }
 

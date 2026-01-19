@@ -1,5 +1,7 @@
 #include "renderer.h"
 #include "renderer_internal.h"
+#include "voxel_push_constants.h"
+#include "engine/platform/platform.h"
 #include <cstring>
 #include <cstdio>
 
@@ -76,20 +78,43 @@ namespace patch
 
     void Renderer::set_lod_quality(int level)
     {
-        lod_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
-    }
-
-    void Renderer::set_reflection_quality(int level)
-    {
-        reflection_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+        lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
     }
 
     void Renderer::set_adaptive_quality(bool enabled)
     {
+        bool was_enabled = adaptive_quality_;
         adaptive_quality_ = enabled;
-        if (enabled && lod_quality_ < 1)
-            lod_quality_ = 1; /* Minimum quality 1 when adaptive is on */
-        adaptive_cooldown_ = 0;
+        if (enabled && !was_enabled)
+        {
+            adaptive_preset_ = target_preset_;
+            adaptive_cooldown_ = 0;
+        }
+    }
+
+    void Renderer::set_master_preset(int preset)
+    {
+        if (preset < 0)
+            preset = 0;
+        if (preset >= QUALITY_PRESET_CUSTOM)
+            return;
+        if (target_preset_ != preset)
+        {
+            target_preset_ = preset;
+            adaptive_preset_ = preset;
+            adaptive_cooldown_ = 0;
+        }
+    }
+
+    void Renderer::apply_preset(int preset)
+    {
+        if (preset < 0 || preset > QUALITY_PRESET_HIGH)
+            return;
+        shadow_quality_ = QUALITY_PRESETS[preset].shadow;
+        shadow_contact_hardening_ = QUALITY_PRESETS[preset].shadow_contact != 0;
+        ao_quality_ = QUALITY_PRESETS[preset].ao;
+        lod_quality_ = QUALITY_PRESETS[preset].lod;
+        denoise_quality_ = QUALITY_PRESETS[preset].denoise;
     }
 
     void Renderer::update_adaptive_quality(float frame_time_ms)
@@ -102,13 +127,20 @@ namespace patch
             return;
         }
 
-        constexpr float HIGH_MS = 20.0f;
+        constexpr float TARGET_MS = 16.67f;         /* 60 FPS target */
+        constexpr float HIGH_MS = TARGET_MS + 2.0f; /* 18.67ms - decrease quality */
+        constexpr float LOW_MS = TARGET_MS - 4.0f;  /* 12.67ms - increase quality */
 
-        if (frame_time_ms > HIGH_MS && lod_quality_ > 0)
+        if (frame_time_ms > HIGH_MS && adaptive_preset_ > QUALITY_PRESET_DEFAULT)
         {
-            lod_quality_--;
-            shadow_quality_ = lod_quality_ + 1;
-            ao_quality_ = lod_quality_ > 0 ? lod_quality_ : 1;
+            adaptive_preset_--;
+            apply_preset(adaptive_preset_);
+            adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
+        }
+        else if (frame_time_ms < LOW_MS && adaptive_preset_ < target_preset_)
+        {
+            adaptive_preset_++;
+            apply_preset(adaptive_preset_);
             adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
         }
     }
@@ -212,6 +244,7 @@ namespace patch
         }
 
         create_quad_mesh();
+        create_ui_buffers();
         total_frame_count_ = 0;
 
         if (!init_deferred_pipeline())
@@ -248,6 +281,19 @@ namespace patch
 
             destroy_buffer(&quad_mesh_.vertex);
             destroy_buffer(&quad_mesh_.index);
+
+            if (ui_vertex_mapped_)
+            {
+                vkUnmapMemory(device_, ui_vertex_buffer_.memory);
+                ui_vertex_mapped_ = nullptr;
+            }
+            if (ui_index_mapped_)
+            {
+                vkUnmapMemory(device_, ui_index_buffer_.memory);
+                ui_index_mapped_ = nullptr;
+            }
+            destroy_buffer(&ui_vertex_buffer_);
+            destroy_buffer(&ui_index_buffer_);
 
             for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
             {
@@ -377,10 +423,33 @@ namespace patch
         frustum_ = frustum_from_view_proj(view_proj);
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
 
+        if (voxel_temporal_ubo_[current_frame_].buffer)
+        {
+            VoxelTemporalUBO ubo{};
+            ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
+            ubo.view_proj = view_proj;
+
+            void *mapped = nullptr;
+            if (vkMapMemory(device_, voxel_temporal_ubo_[current_frame_].memory, 0, sizeof(VoxelTemporalUBO), 0, &mapped) == VK_SUCCESS)
+            {
+                memcpy(mapped, &ubo, sizeof(VoxelTemporalUBO));
+                vkUnmapMemory(device_, voxel_temporal_ubo_[current_frame_].memory);
+            }
+        }
+
+        int64_t wait_start = platform_get_ticks();
         vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
+        int64_t wait_end = platform_get_ticks();
+        int64_t freq = platform_get_frequency();
+        if (freq > 0)
+            last_wait_fence_ms_ = (float)(wait_end - wait_start) * 1000.0f / (float)freq;
         vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
 
+        int64_t acquire_start = platform_get_ticks();
         vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_available_semaphores_[current_frame_], VK_NULL_HANDLE, image_index);
+        int64_t acquire_end = platform_get_ticks();
+        if (freq > 0)
+            last_acquire_ms_ = (float)(acquire_end - acquire_start) * 1000.0f / (float)freq;
         vkResetCommandBuffer(command_buffers_[current_frame_], 0);
 
         VkCommandBufferBeginInfo begin_info{};
@@ -489,13 +558,28 @@ namespace patch
         present_info.pSwapchains = swapchains;
         present_info.pImageIndices = &image_index;
 
+        int64_t present_start = platform_get_ticks();
         vkQueuePresentKHR(present_queue_, &present_info);
+        int64_t present_end = platform_get_ticks();
+        int64_t freq = platform_get_frequency();
+        if (freq > 0)
+            last_present_ms_ = (float)(present_end - present_start) * 1000.0f / (float)freq;
 
         /* Save current matrices for next frame's temporal reprojection */
         prev_view_matrix_ = view_matrix_;
         prev_projection_matrix_ = projection_matrix_;
 
         current_frame_ = (current_frame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+
+        if (timestamps_supported_)
+        {
+            GPUTimings timings;
+            if (get_gpu_timings(&timings))
+            {
+                last_gpu_timings_ = timings;
+                last_gpu_timings_valid_ = true;
+            }
+        }
     }
 
     void Renderer::set_orthographic(float width, float height, float depth)

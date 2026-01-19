@@ -215,10 +215,12 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
                 if (rel_x > 1.0f)
                     rel_x = 1.0f;
 
-                int32_t range = item->slider_max - item->slider_min;
-                int32_t new_value = item->slider_min + (int32_t)(rel_x * (float)range + 0.5f);
+                int32_t num_positions = item->slider_max - item->slider_min + 1;
+                int32_t new_value = item->slider_min + (int32_t)(rel_x * (float)num_positions);
                 if (new_value > item->slider_max)
                     new_value = item->slider_max;
+                if (new_value < item->slider_min)
+                    new_value = item->slider_min;
                 new_value = (new_value / item->slider_step) * item->slider_step;
                 item->slider_value = new_value;
             }

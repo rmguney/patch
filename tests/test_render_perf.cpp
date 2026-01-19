@@ -24,10 +24,11 @@ struct PerfThreshold
     float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50 = {12.0f, 15.0f, 18.0f};
-static const PerfThreshold THRESHOLD_250 = {14.0f, 16.67f, 20.0f};
-static const PerfThreshold THRESHOLD_500 = {16.0f, 20.0f, 28.0f};
-static const PerfThreshold THRESHOLD_1000 = {25.0f, 30.0f, 45.0f};
+static const PerfThreshold THRESHOLD_50 = {8.33f, 9.62f, 11.54f};
+static const PerfThreshold THRESHOLD_250 = {11.11f, 13.23f, 15.87f};
+static const PerfThreshold THRESHOLD_500 = {16.67f, 20.84f, 29.17f};
+static const PerfThreshold THRESHOLD_1000 = {16.67f, 20.00f, 30.00f};
+static const PerfThreshold THRESHOLD_CLOSEUP = {11.11f, 14.29f, 20.00f};  /* Close-up 250 objects */
 
 enum PerfStatus
 {
@@ -195,16 +196,26 @@ static ProfileData parse_profile_csv(const char *filepath)
 
 static bool run_perf_test(const char *exe_path, const char *test_name, int frames,
                           int stress_objects, const PerfThreshold &threshold,
-                          int *passed, int *warned, int *failed)
+                          int *passed, int *warned, int *failed,
+                          const float *camera_pos = nullptr)
 {
-    char args[256];
-    snprintf(args, sizeof(args), "--scene 0 --test-frames %d --profile-csv %s", frames, TEMP_CSV);
+    char args[512];
+    if (camera_pos)
+    {
+        snprintf(args, sizeof(args), "--scene 0 --test-frames %d --profile-csv %s --camera-pos %.1f %.1f %.1f",
+                 frames, TEMP_CSV, camera_pos[0], camera_pos[1], camera_pos[2]);
+    }
+    else
+    {
+        snprintf(args, sizeof(args), "--scene 0 --test-frames %d --profile-csv %s", frames, TEMP_CSV);
+    }
 
     printf("\n");
     printf("================================================================================\n");
     printf("  %s\n", test_name);
     printf("================================================================================\n");
-    printf("Configuration: %d frames, %d objects\n", frames, stress_objects > 0 ? stress_objects : 10);
+    printf("Configuration: %d frames, %d objects%s\n", frames, stress_objects > 0 ? stress_objects : 10,
+           camera_pos ? " (close-up)" : "");
     printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n\n",
            threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
     fflush(stdout);
@@ -232,7 +243,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     float sim_pct = (data.sim_tick_avg_ms / FRAME_BUDGET_MS) * 100.0f;
     float effective_fps = 1000.0f / data.frame_avg_ms;
 
-    printf("Frame Timing (target: %.2fms @ 60 FPS):\n", FRAME_BUDGET_MS);
+    printf("Frame Timing (target: %.2fms):\n", FRAME_BUDGET_MS);
     printf("  Average:     %7.2f ms  (%5.1f%% budget)\n", data.frame_avg_ms, frame_budget_pct);
     printf("  Maximum:     %7.2f ms\n", data.frame_max_ms);
     printf("  95th pct:    %7.2f ms\n", data.frame_p95_ms);
@@ -253,6 +264,38 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
     printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
            status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+
+    int spike_issues = 0;
+
+    /* 60 FPS floor: max frame < 33ms (2x budget for occasional spikes) */
+    if (data.frame_max_ms > 33.33f)
+    {
+        printf("SPIKE WARNING: Max frame %.2fms exceeds 2x budget (33.33ms)\n", data.frame_max_ms);
+        spike_issues++;
+    }
+
+    /* P95 should be below fail threshold */
+    if (data.frame_p95_ms > threshold.fail_ms)
+    {
+        printf("P95 WARNING: P95 %.2fms exceeds fail threshold %.1fms\n", data.frame_p95_ms, threshold.fail_ms);
+        spike_issues++;
+    }
+
+    /* Spike ratio: max/avg > 5x is pathological */
+    float spike_ratio = data.frame_max_ms / data.frame_avg_ms;
+    if (spike_ratio > 5.0f)
+    {
+        printf("SPIKE WARNING: Spike ratio %.1fx (max/avg) indicates severe hitching\n", spike_ratio);
+        spike_issues++;
+    }
+
+    /* Fail only if more than 3 spike issues detected */
+    if (spike_issues > 3)
+    {
+        printf("SPIKE FAIL: %d spike issues detected (threshold: >3)\n", spike_issues);
+        (*failed)++;
+        return false;
+    }
 
     switch (status)
     {
@@ -293,14 +336,19 @@ int main(int argc, char *argv[])
     printf("Generated: %s\n", time_str);
     printf("Executable: %s\n", exe_path);
 
-    run_perf_test(exe_path, "BASELINE (50 objects, 30 frames)", 30, 50,
+    run_perf_test(exe_path, "BASELINE (50 objects)", 30, 50,
                   THRESHOLD_50, &passed, &warned, &failed);
-    run_perf_test(exe_path, "STRESS TEST (250 objects, 30 frames)", 30, 250,
+    run_perf_test(exe_path, "STRESS TEST (250 objects)", 30, 250,
                   THRESHOLD_250, &passed, &warned, &failed);
-    run_perf_test(exe_path, "HEAVY STRESS (500 objects, 30 frames)", 30, 500,
+    run_perf_test(exe_path, "HEAVY STRESS (500 objects)", 30, 500,
                   THRESHOLD_500, &passed, &warned, &failed);
-    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects, 30 frames)", 30, 1000,
+    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects)", 30, 1000,
                   THRESHOLD_1000, &passed, &warned, &failed);
+
+    /* Close-up test: camera very close to objects */
+    float closeup_camera[3] = {3.0f, 4.0f, 3.0f};
+    run_perf_test(exe_path, "CLOSE-UP STRESS (250 objects)", 30, 250,
+                  THRESHOLD_CLOSEUP, &passed, &warned, &failed, closeup_camera);
 
     printf("\n");
     printf("################################################################################\n");

@@ -32,7 +32,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -63,17 +63,21 @@ layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_ao;
 const int MAX_AO_STEPS = 64;
 const float AO_MAX_DIST = 4.0;
 
+/* Shadow volume dimensions cached from grid_size (avoids per-sample textureSize calls) */
+ivec3 ao_shadow_dim0;
+ivec3 ao_shadow_dim1;
+ivec3 ao_shadow_dim2;
+
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
 }
 
 bool sample_shadow_volume(ivec3 voxel_pos) {
     ivec3 shadow_pos = voxel_pos >> 1;
-    ivec3 shadow_size = textureSize(shadow_volume_tex, 0);
 
-    if (shadow_pos.x < 0 || shadow_pos.x >= shadow_size.x ||
-        shadow_pos.y < 0 || shadow_pos.y >= shadow_size.y ||
-        shadow_pos.z < 0 || shadow_pos.z >= shadow_size.z) {
+    if (shadow_pos.x < 0 || shadow_pos.x >= ao_shadow_dim0.x ||
+        shadow_pos.y < 0 || shadow_pos.y >= ao_shadow_dim0.y ||
+        shadow_pos.z < 0 || shadow_pos.z >= ao_shadow_dim0.z) {
         return false;
     }
 
@@ -84,11 +88,10 @@ bool sample_shadow_volume(ivec3 voxel_pos) {
 
 bool sample_shadow_mip1(ivec3 voxel_pos) {
     ivec3 mip1_pos = voxel_pos >> 2;
-    ivec3 mip1_size = textureSize(shadow_volume_tex, 1);
 
-    if (mip1_pos.x < 0 || mip1_pos.x >= mip1_size.x ||
-        mip1_pos.y < 0 || mip1_pos.y >= mip1_size.y ||
-        mip1_pos.z < 0 || mip1_pos.z >= mip1_size.z) {
+    if (mip1_pos.x < 0 || mip1_pos.x >= ao_shadow_dim1.x ||
+        mip1_pos.y < 0 || mip1_pos.y >= ao_shadow_dim1.y ||
+        mip1_pos.z < 0 || mip1_pos.z >= ao_shadow_dim1.z) {
         return false;
     }
 
@@ -97,11 +100,10 @@ bool sample_shadow_mip1(ivec3 voxel_pos) {
 
 bool sample_shadow_mip2(ivec3 voxel_pos) {
     ivec3 mip2_pos = voxel_pos >> 3;
-    ivec3 mip2_size = textureSize(shadow_volume_tex, 2);
 
-    if (mip2_pos.x < 0 || mip2_pos.x >= mip2_size.x ||
-        mip2_pos.y < 0 || mip2_pos.y >= mip2_size.y ||
-        mip2_pos.z < 0 || mip2_pos.z >= mip2_size.z) {
+    if (mip2_pos.x < 0 || mip2_pos.x >= ao_shadow_dim2.x ||
+        mip2_pos.y < 0 || mip2_pos.y >= ao_shadow_dim2.y ||
+        mip2_pos.z < 0 || mip2_pos.z >= ao_shadow_dim2.z) {
         return false;
     }
 
@@ -157,9 +159,16 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         }
 
         if (mip2_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip2 boundary (8×8×8 voxels) instead of stepping one voxel */
+            ivec3 mip2_min = current_mip2 << 3;
+            ivec3 mip2_max = mip2_min + 7;
+            ivec3 exit_pos = mix(mip2_min - 1, mip2_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -170,9 +179,16 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         }
 
         if (mip1_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip1 boundary (4×4×4 voxels) instead of stepping one voxel */
+            ivec3 mip1_min = current_mip1 << 2;
+            ivec3 mip1_max = mip1_min + 3;
+            ivec3 exit_pos = mix(mip1_min - 1, mip1_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -212,6 +228,11 @@ void main() {
     pc_chunks_dim = pc.chunks_dim;
     pc_total_chunks = pc.total_chunks;
 
+    /* Cache shadow volume dimensions (computed from grid_size, avoids textureSize calls) */
+    ao_shadow_dim0 = (pc.grid_size + 1) >> 1;
+    ao_shadow_dim1 = (pc.grid_size + 3) >> 2;
+    ao_shadow_dim2 = (pc.grid_size + 7) >> 3;
+
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screen_size = imageSize(out_ao);
 
@@ -244,9 +265,9 @@ void main() {
     float bias = pc.voxel_size * 0.6;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-    /* Quality-scaled samples: 1=1, 2=2, 3=3 samples per pixel
-       Temporal accumulation smooths out noise over frames */
-    int num_samples = pc.ao_quality;
+     /* Quality-scaled samples: Fair=1, Good=2, High=4 samples per pixel
+         Temporal accumulation smooths out noise over frames */
+     int num_samples = (pc.ao_quality <= 1) ? 1 : (pc.ao_quality == 2 ? 2 : 4);
     float ao_sum = 0.0;
 
     for (int s = 0; s < num_samples; s++) {

@@ -41,7 +41,7 @@ PUSH_CONSTANT uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
@@ -66,13 +66,14 @@ int pc_total_chunks;
 
 layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
     mat4 prev_view_proj;
+    mat4 view_proj;
 };
 
 layout(SET_BINDING(0, 4)) uniform sampler2D depth_tex;
 
 #include "include/data_terrain.glsl"
 
-const int DEFAULT_MAX_STEPS = 512;
+const int DEFAULT_MAX_STEPS = 384;  /* Reduced from 512 - bilateral skip handles empty space */
 
 bool is_solid(ivec3 p) {
     return sample_material(p) != 0u;

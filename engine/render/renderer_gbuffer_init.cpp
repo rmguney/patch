@@ -190,7 +190,7 @@ namespace patch
 
     bool Renderer::create_deferred_lighting_pipeline()
     {
-        VkDescriptorSetLayoutBinding bindings[13]{};
+        VkDescriptorSetLayoutBinding bindings[8]{};
 
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -215,23 +215,9 @@ namespace patch
         bindings[7].descriptorCount = 1;
         bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        bindings[8].binding = 8; /* reflection_buffer from compute reflection pass */
-        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[8].descriptorCount = 1;
-        bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        /* GI cascade samplers (bindings 9-12) */
-        for (uint32_t i = 0; i < GI_CASCADE_LEVELS; i++)
-        {
-            bindings[9 + i].binding = 9 + i;
-            bindings[9 + i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bindings[9 + i].descriptorCount = 1;
-            bindings[9 + i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        }
-
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 13;
+        layout_info.bindingCount = 8;
         layout_info.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &layout_info, nullptr, &deferred_lighting_descriptor_layout_) != VK_SUCCESS)
@@ -494,7 +480,7 @@ namespace patch
     {
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 13; /* gbuffer(5) + shadow + blue_noise + ao + reflection + gi_cascades(4) */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8; /* gbuffer(5) + shadow + blue_noise + ao */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
@@ -551,21 +537,7 @@ namespace patch
             ao_buffer_info.imageView = ao_output_view_ ? ao_output_view_ : gbuffer_views_[0];
             ao_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkDescriptorImageInfo reflection_buffer_info{};
-            reflection_buffer_info.sampler = gbuffer_sampler_;
-            reflection_buffer_info.imageView = reflection_output_view_ ? reflection_output_view_ : gbuffer_views_[0];
-            reflection_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-            /* GI cascade texture infos - use shadow_volume_view_ as fallback (3D texture) */
-            VkDescriptorImageInfo gi_cascade_infos[GI_CASCADE_LEVELS]{};
-            for (uint32_t c = 0; c < GI_CASCADE_LEVELS; c++)
-            {
-                gi_cascade_infos[c].sampler = gi_cascade_sampler_ ? gi_cascade_sampler_ : gbuffer_sampler_;
-                gi_cascade_infos[c].imageView = gi_cascades_[c].view ? gi_cascades_[c].view : shadow_volume_view_;
-                gi_cascade_infos[c].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            }
-
-            VkWriteDescriptorSet writes[13]{};
+            VkWriteDescriptorSet writes[8]{};
 
             for (uint32_t g = 0; g < GBUFFER_COUNT; g++)
             {
@@ -598,25 +570,7 @@ namespace patch
             writes[7].descriptorCount = 1;
             writes[7].pImageInfo = &ao_buffer_info;
 
-            writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[8].dstSet = deferred_lighting_descriptor_sets_[i];
-            writes[8].dstBinding = 8; /* reflection_buffer from compute reflection pass */
-            writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[8].descriptorCount = 1;
-            writes[8].pImageInfo = &reflection_buffer_info;
-
-            /* GI cascade textures (bindings 9-12) */
-            for (uint32_t c = 0; c < GI_CASCADE_LEVELS; c++)
-            {
-                writes[9 + c].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[9 + c].dstSet = deferred_lighting_descriptor_sets_[i];
-                writes[9 + c].dstBinding = 9 + c;
-                writes[9 + c].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[9 + c].descriptorCount = 1;
-                writes[9 + c].pImageInfo = &gi_cascade_infos[c];
-            }
-
-            vkUpdateDescriptorSets(device_, 13, writes, 0, nullptr);
+            vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
         }
 
         return true;

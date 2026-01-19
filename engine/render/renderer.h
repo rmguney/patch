@@ -8,6 +8,7 @@
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/render/draw_list.h"
+#include "engine/render/voxel_push_constants.h"
 #include "engine/platform/window.h"
 #include <cstdint>
 #include <vector>
@@ -34,6 +35,17 @@ namespace patch
         VulkanBuffer index;
         uint32_t index_count;
     };
+
+    struct UIVertex
+    {
+        float x;
+        float y;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+    static_assert(sizeof(UIVertex) == 24, "UIVertex must be 24 bytes");
 
     /* GPU instance data for batched box rendering */
     struct alignas(16) BoxInstanceGPU
@@ -173,17 +185,12 @@ namespace patch
         void set_shadow_contact_hardening(bool enabled);
         void set_ao_quality(int level);
         void set_lod_quality(int level);
-        void set_reflection_quality(int level);
         int get_shadow_quality() const { return shadow_quality_; }
         bool get_shadow_contact_hardening() const { return shadow_contact_hardening_; }
         int get_ao_quality() const { return ao_quality_; }
         int get_lod_quality() const { return lod_quality_; }
-        int get_reflection_quality() const { return reflection_quality_; }
         void set_denoise_quality(int level);
         int get_denoise_quality() const { return denoise_quality_; }
-        void set_gi_quality(int level);
-        int get_gi_quality() const { return gi_quality_; }
-        void init_gi_if_pending();
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -192,6 +199,11 @@ namespace patch
         void set_adaptive_quality(bool enabled);
         bool get_adaptive_quality() const { return adaptive_quality_; }
         void update_adaptive_quality(float frame_time_ms);
+
+        /* Master quality preset control */
+        void set_master_preset(int preset);
+        void apply_preset(int preset);
+        int get_master_preset() const { return target_preset_; }
 
     public:
         enum class PresentMode
@@ -239,6 +251,8 @@ namespace patch
         uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties);
 
         void create_quad_mesh();
+        void create_ui_buffers();
+        void add_ui_quad_ndc(float cx, float cy, float w, float h, Vec3 color, float alpha);
 
         void cleanup();
 
@@ -306,6 +320,16 @@ namespace patch
 
         MeshBuffers quad_mesh_;
 
+        static constexpr uint32_t UI_MAX_QUADS = 20000;
+        VulkanBuffer ui_vertex_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        VulkanBuffer ui_index_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        void *ui_vertex_mapped_ = nullptr;
+        void *ui_index_mapped_ = nullptr;
+        uint32_t ui_vertex_capacity_ = 0;
+        uint32_t ui_index_capacity_ = 0;
+        std::vector<UIVertex> ui_vertices_;
+        std::vector<uint32_t> ui_indices_;
+
         Mat4 view_matrix_;
         Mat4 projection_matrix_;
         Mat4 prev_view_matrix_;       /* Previous frame for temporal reprojection */
@@ -354,13 +378,13 @@ namespace patch
         bool adaptive_quality_ = false; /* Dynamic quality adjustment (default off) */
         int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
-        int shadow_quality_ = 3; /* 0=None, 1=Fair, 2=Good, 3=High */
-        bool shadow_contact_hardening_ = true;
-        int ao_quality_ = 2;                 /* 0=None, 1=Fair, 2=Good */
-        int lod_quality_ = 2;                /* 0=Fair, 1=Good, 2=High */
-        int reflection_quality_ = 2;         /* 0=Off, 1=Fair, 2=Good */
-        int denoise_quality_ = 1;            /* 0=Off, 1=On */
-        int gi_quality_ = 3;                 /* 0=Off, 1=Low, 2=Medium, 3=High */
+        int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
+        int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
+        int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
+        bool shadow_contact_hardening_ = QUALITY_DEFAULT_SHADOW_CONTACT;
+        int ao_quality_ = QUALITY_DEFAULT_AO;
+        int lod_quality_ = QUALITY_DEFAULT_LOD;
+        int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -431,38 +455,6 @@ namespace patch
 
         bool ao_resources_initialized_ = false;
 
-        /* Reflection compute infrastructure */
-        VkPipeline reflection_compute_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout reflection_compute_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool reflection_compute_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout reflection_compute_input_layout_ = VK_NULL_HANDLE; /* Set 0: voxel data + shadow vol + materials */
-        VkDescriptorSetLayout reflection_compute_gbuffer_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSet reflection_compute_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet reflection_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet reflection_compute_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* Reflection output buffer (RGBA8) */
-        VkImage reflection_output_image_ = VK_NULL_HANDLE;
-        VkDeviceMemory reflection_output_memory_ = VK_NULL_HANDLE;
-        VkImageView reflection_output_view_ = VK_NULL_HANDLE;
-
-        /* Reflection history buffers for temporal accumulation */
-        VkImage reflection_history_images_[2] = {};
-        VkDeviceMemory reflection_history_memory_[2] = {};
-        VkImageView reflection_history_views_[2] = {};
-        bool temporal_reflection_history_valid_ = false;
-        int reflection_history_write_index_ = 0;
-
-        /* Temporal reflection pipeline */
-        VkPipeline temporal_reflection_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout temporal_reflection_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool temporal_reflection_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout temporal_reflection_input_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSet temporal_reflection_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet temporal_reflection_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        bool reflection_resources_initialized_ = false;
-
         /* Spatial denoise compute infrastructure */
         VkPipeline spatial_denoise_pipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout spatial_denoise_layout_ = VK_NULL_HANDLE;
@@ -486,49 +478,6 @@ namespace patch
         VkFramebuffer deferred_lighting_intermediate_fb_ = VK_NULL_HANDLE;
 
         bool spatial_denoise_initialized_ = false;
-
-        /* Radiance cascade GI infrastructure */
-        static constexpr uint32_t GI_CASCADE_LEVELS = 4;
-        static constexpr uint32_t GI_CASCADE_BASE_DIM = 128; /* Level 0 resolution per axis */
-
-        struct RadianceCascade
-        {
-            VkImage image = VK_NULL_HANDLE;
-            VkDeviceMemory memory = VK_NULL_HANDLE;
-            VkImageView view = VK_NULL_HANDLE;
-            uint32_t dims[3] = {0, 0, 0};  /* Resolution for this level */
-            uint32_t voxels_per_texel = 1; /* How many world voxels per cascade texel */
-        };
-
-        RadianceCascade gi_cascades_[GI_CASCADE_LEVELS] = {};
-        VkSampler gi_cascade_sampler_ = VK_NULL_HANDLE;
-
-        /* Cascade dirty tracking (per-level bitmaps) */
-        static constexpr uint32_t GI_DIRTY_BITMAP_SIZE = (GI_CASCADE_BASE_DIM * GI_CASCADE_BASE_DIM * GI_CASCADE_BASE_DIM + 63) / 64;
-        uint64_t gi_dirty_bitmap_[GI_CASCADE_LEVELS][GI_DIRTY_BITMAP_SIZE] = {};
-        bool gi_cascade_needs_full_rebuild_ = true;
-
-        /* GI injection pipeline */
-        VkPipeline gi_inject_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout gi_inject_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout gi_inject_input_layout_ = VK_NULL_HANDLE;  /* Set 0: voxel data + shadow vol + materials */
-        VkDescriptorSetLayout gi_inject_output_layout_ = VK_NULL_HANDLE; /* Set 1: cascade output */
-        VkDescriptorPool gi_inject_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSet gi_inject_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet gi_inject_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* GI propagation pipeline */
-        VkPipeline gi_propagate_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout gi_propagate_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout gi_propagate_src_layout_ = VK_NULL_HANDLE; /* Set 0: source cascade sampler */
-        VkDescriptorSetLayout gi_propagate_dst_layout_ = VK_NULL_HANDLE; /* Set 1: dest cascade storage */
-        VkDescriptorPool gi_propagate_descriptor_pool_ = VK_NULL_HANDLE;
-        /* Descriptor sets for each propagation step: 0→1, 1→2, 2→3 */
-        static constexpr uint32_t GI_PROPAGATE_STEPS = GI_CASCADE_LEVELS - 1;
-        VkDescriptorSet gi_propagate_src_sets_[GI_PROPAGATE_STEPS] = {};
-        VkDescriptorSet gi_propagate_dst_sets_[GI_PROPAGATE_STEPS] = {};
-
-        bool gi_resources_initialized_ = false;
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -600,6 +549,22 @@ namespace patch
         std::vector<uint8_t> shadow_mip2_;
         uint32_t shadow_mip_dims_[3][3];
         bool shadow_volume_initialized_;
+        int32_t shadow_object_count_ = 0;
+        int32_t shadow_particle_count_ = 0;
+
+        /* Shadow stamping budget: track per-object state to avoid full rebuild */
+        static constexpr uint32_t MAX_SHADOW_OBJECTS = 512;
+        static constexpr int32_t SHADOW_STAMP_BUDGET = 50; /* Max objects to stamp per frame */
+        static constexpr float SHADOW_POSITION_THRESHOLD = 0.01f; /* Movement threshold for re-stamp */
+        struct ShadowObjectState
+        {
+            Vec3 position;
+            Quat orientation;
+            bool valid;
+        };
+        ShadowObjectState shadow_object_states_[MAX_SHADOW_OBJECTS] = {};
+        int32_t shadow_stamp_cursor_ = 0; /* Round-robin cursor for over-budget stamping */
+        bool shadow_needs_terrain_update_ = false;
 
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;
@@ -633,7 +598,10 @@ namespace patch
         uint32_t vobj_max_objects_ = 0;
         uint32_t vobj_dirty_mask_[(VOBJ_ATLAS_MAX_OBJECTS + 31) / 32] = {};
         int32_t vobj_voxel_count_cache_[VOBJ_ATLAS_MAX_OBJECTS] = {};
+        uint32_t vobj_sort_indices_[VOBJ_ATLAS_MAX_OBJECTS] = {};
+        float vobj_sort_distances_[VOBJ_ATLAS_MAX_OBJECTS] = {};
         bool vobj_resources_initialized_ = false;
+        int32_t vobj_visible_count_ = 0; /* Compacted visible object count for GPU dispatch */
 
         /* Raymarched particle resources */
         struct SizedBuffer
@@ -661,7 +629,7 @@ namespace patch
         int32_t deferred_chunks_dim_[3] = {0, 0, 0};
 
         /* GPU profiling */
-        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 8;
+        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 4;
         VkQueryPool timestamp_query_pool_;
         float timestamp_period_ns_;
         bool timestamps_supported_;
@@ -728,20 +696,6 @@ namespace patch
         void dispatch_temporal_ao_resolve();
         void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
 
-        /* Reflection compute infrastructure */
-        bool create_reflection_output_resources();
-        bool create_reflection_history_resources();
-        bool create_reflection_compute_pipeline();
-        bool create_temporal_reflection_pipeline();
-        bool create_reflection_compute_descriptor_sets();
-        bool create_temporal_reflection_descriptor_sets();
-        void destroy_reflection_resources();
-        void update_reflection_volume_descriptor();
-        void dispatch_reflection_compute();
-        void dispatch_temporal_reflection_resolve();
-        void update_deferred_reflection_buffer_descriptor(uint32_t frame_index, VkImageView reflection_view);
-        void update_deferred_gi_cascade_descriptors();
-
         /* Spatial denoise compute infrastructure */
         bool create_lit_color_resources();
         bool create_denoised_color_resources();
@@ -751,20 +705,6 @@ namespace patch
         void destroy_spatial_denoise_resources();
         void dispatch_spatial_denoise();
         void blit_denoised_to_swapchain(uint32_t image_index);
-
-        /* Radiance cascade GI infrastructure */
-        bool create_gi_cascade_resources();
-        void destroy_gi_cascade_resources();
-        void mark_gi_cascade_dirty(uint32_t level, uint32_t x, uint32_t y, uint32_t z);
-        void clear_gi_dirty_flags();
-        size_t get_gi_cascade_memory_usage() const;
-        bool create_gi_inject_pipeline();
-        bool create_gi_inject_descriptor_sets();
-        void update_gi_inject_descriptors();
-        void dispatch_gi_inject();
-        bool create_gi_propagate_pipeline();
-        bool create_gi_propagate_descriptor_sets();
-        void dispatch_gi_propagate();
 
         /* Raymarched particle rendering */
         bool init_particle_resources();
@@ -785,8 +725,19 @@ namespace patch
         };
 
         bool get_gpu_timings(GPUTimings *out_timings) const;
+        bool get_last_gpu_timings(GPUTimings *out_timings) const;
         bool is_gpu_profiling_supported() const { return timestamps_supported_; }
         const char *get_gpu_name() const { return gpu_name_; }
+        float get_last_wait_fence_ms() const { return last_wait_fence_ms_; }
+        float get_last_acquire_ms() const { return last_acquire_ms_; }
+        float get_last_present_ms() const { return last_present_ms_; }
+
+    private:
+        GPUTimings last_gpu_timings_{};
+        bool last_gpu_timings_valid_ = false;
+        float last_wait_fence_ms_ = 0.0f;
+        float last_acquire_ms_ = 0.0f;
+        float last_present_ms_ = 0.0f;
     };
 
 }

@@ -88,4 +88,32 @@ namespace patch
         vkUnmapMemory(device_, quad_mesh_.index.memory);
     }
 
+    void Renderer::create_ui_buffers()
+    {
+        const uint32_t max_vertices = UI_MAX_QUADS * 4u;
+        const uint32_t max_indices = UI_MAX_QUADS * 6u;
+
+        ui_vertex_capacity_ = max_vertices;
+        ui_index_capacity_ = max_indices;
+
+        const VkDeviceSize vertex_size = sizeof(UIVertex) * (VkDeviceSize)max_vertices;
+        create_buffer(vertex_size,
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &ui_vertex_buffer_);
+
+        vkMapMemory(device_, ui_vertex_buffer_.memory, 0, vertex_size, 0, &ui_vertex_mapped_);
+
+        const VkDeviceSize index_size = sizeof(uint32_t) * (VkDeviceSize)max_indices;
+        create_buffer(index_size,
+                      VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &ui_index_buffer_);
+
+        vkMapMemory(device_, ui_index_buffer_.memory, 0, index_size, 0, &ui_index_mapped_);
+
+        ui_vertices_.reserve(max_vertices);
+        ui_indices_.reserve(max_indices);
+    }
+
 }

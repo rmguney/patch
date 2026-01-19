@@ -16,7 +16,7 @@
 TEST(profile_categories_defined)
 {
     ASSERT(PROFILE_COUNT > 0);
-    ASSERT(PROFILE_COUNT <= 20);
+    ASSERT(PROFILE_COUNT <= 24);
 
     ASSERT(PROFILE_SIM_TICK >= 0);
     ASSERT(PROFILE_SIM_TICK < PROFILE_COUNT);
@@ -152,10 +152,10 @@ TEST(platform_timing_sane)
  * These use VERY generous budgets (10x+ expected time) to avoid CI flakiness
  * ============================================================================ */
 
-#define BUDGET_VOLUME_CREATE_MS    500.0f
-#define BUDGET_CHUNK_FILL_MS       100.0f
-#define BUDGET_RAYCAST_MS          50.0f
-#define BUDGET_OCCUPANCY_MS        200.0f
+#define BUDGET_VOLUME_CREATE_MS 500.0f
+#define BUDGET_CHUNK_FILL_MS 100.0f
+#define BUDGET_RAYCAST_MS 50.0f
+#define BUDGET_OCCUPANCY_MS 200.0f
 
 TEST(budget_volume_create)
 {

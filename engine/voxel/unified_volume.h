@@ -75,6 +75,10 @@ extern "C"
     void unified_volume_stamp_objects_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
                                                 const VoxelVolume *terrain, const VoxelObjectWorld *objects);
 
+    void unified_volume_stamp_objects_incremental(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
+                                                  const VoxelVolume *terrain, const VoxelObjectWorld *objects,
+                                                  const int32_t *object_indices, int32_t count);
+
     void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
                                                   const VoxelVolume *terrain, const ParticleSystem *particles,
                                                   float interp_alpha);

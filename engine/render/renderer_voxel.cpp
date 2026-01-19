@@ -289,14 +289,6 @@ namespace patch
                     {
                         fprintf(stderr, "Warning: Temporal AO descriptors failed\n");
                     }
-                    if (!create_reflection_compute_descriptor_sets())
-                    {
-                        fprintf(stderr, "Warning: Reflection compute descriptors failed\n");
-                    }
-                    if (!create_temporal_reflection_descriptor_sets())
-                    {
-                        fprintf(stderr, "Warning: Temporal reflection descriptors failed\n");
-                    }
                 }
             }
 
@@ -305,9 +297,6 @@ namespace patch
             {
                 return;
             }
-
-            /* Initialize GI if it was requested before compute resources were ready */
-            init_gi_if_pending();
         }
 
         GPUMaterialPalette palette{};
@@ -490,8 +479,8 @@ namespace patch
     }
 
     void Renderer::update_shadow_volume(VoxelVolume *vol,
-                                         const VoxelObjectWorld *objects,
-                                         const ParticleSystem *particles)
+                                        const VoxelObjectWorld *objects,
+                                        const ParticleSystem *particles)
     {
         if (!vol || !gbuffer_initialized_ || !shadow_volume_image_)
             return;
@@ -508,32 +497,144 @@ namespace patch
             return;
 
         uint32_t w1 = w0 >> 1;
-        if (w1 == 0) w1 = 1;
+        if (w1 == 0)
+            w1 = 1;
         uint32_t h1 = h0 >> 1;
-        if (h1 == 0) h1 = 1;
+        if (h1 == 0)
+            h1 = 1;
         uint32_t d1 = d0 >> 1;
-        if (d1 == 0) d1 = 1;
+        if (d1 == 0)
+            d1 = 1;
 
         uint32_t w2 = w1 >> 1;
-        if (w2 == 0) w2 = 1;
+        if (w2 == 0)
+            w2 = 1;
         uint32_t h2 = h1 >> 1;
-        if (h2 == 0) h2 = 1;
+        if (h2 == 0)
+            h2 = 1;
         uint32_t d2 = d1 >> 1;
-        if (d2 == 0) d2 = 1;
+        if (d2 == 0)
+            d2 = 1;
 
         size_t size0 = static_cast<size_t>(w0) * h0 * d0;
         size_t size1 = static_cast<size_t>(w1) * h1 * d1;
         size_t size2 = static_cast<size_t>(w2) * h2 * d2;
 
-        bool has_dynamic = (objects && objects->object_count > 0) ||
-                           (particles && particles->count > 0);
+        bool objects_present = (objects && objects->object_count > 0);
+        bool particles_present = (particles && particles->count > 0);
 
-        bool needs_full_rebuild = volume_shadow_needs_full_rebuild(vol) ||
-                                  !shadow_volume_initialized_ ||
-                                  shadow_mip0_.size() != size0 ||
-                                  has_dynamic;
+        int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
+        int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
 
-        if (needs_full_rebuild)
+        /* Check if volume dimensions changed (requires full rebuild) */
+        bool volume_resized = !shadow_volume_initialized_ || shadow_mip0_.size() != size0;
+
+        /* Check if terrain needs update (dirty chunks or full rebuild flag) */
+        bool terrain_dirty = volume_shadow_needs_full_rebuild(vol) || dirty_count > 0;
+
+        /* Detect which objects have actually moved (budgeted check) */
+        int32_t moved_objects[SHADOW_STAMP_BUDGET];
+        int32_t moved_count = 0;
+        bool new_objects_added = false;
+
+        if (objects_present)
+        {
+            int32_t obj_count = objects->object_count;
+            if (obj_count > static_cast<int32_t>(MAX_SHADOW_OBJECTS))
+                obj_count = static_cast<int32_t>(MAX_SHADOW_OBJECTS);
+
+            /* Detect new objects */
+            if (obj_count > shadow_object_count_)
+            {
+                new_objects_added = true;
+            }
+
+            /* Check each object for movement */
+            for (int32_t i = 0; i < obj_count && moved_count < SHADOW_STAMP_BUDGET; i++)
+            {
+                const VoxelObject *obj = &objects->objects[i];
+                if (!obj->active)
+                    continue;
+
+                ShadowObjectState *state = &shadow_object_states_[i];
+                bool needs_stamp = false;
+
+                if (!state->valid)
+                {
+                    /* New object, needs initial stamp */
+                    needs_stamp = true;
+                }
+                else
+                {
+                    /* Check position delta */
+                    float dx = obj->position.x - state->position.x;
+                    float dy = obj->position.y - state->position.y;
+                    float dz = obj->position.z - state->position.z;
+                    float dist_sq = dx * dx + dy * dy + dz * dz;
+
+                    /* Check orientation delta (dot product for quaternion difference) */
+                    float dot = obj->orientation.x * state->orientation.x +
+                                obj->orientation.y * state->orientation.y +
+                                obj->orientation.z * state->orientation.z +
+                                obj->orientation.w * state->orientation.w;
+                    float orient_diff = 1.0f - dot * dot;
+
+                    if (dist_sq > SHADOW_POSITION_THRESHOLD * SHADOW_POSITION_THRESHOLD ||
+                        orient_diff > 0.0001f)
+                    {
+                        needs_stamp = true;
+                    }
+                }
+
+                if (needs_stamp)
+                {
+                    moved_objects[moved_count++] = i;
+                    /* Update cached state */
+                    state->position = obj->position;
+                    state->orientation = obj->orientation;
+                    state->valid = true;
+                }
+            }
+
+            /* Handle round-robin for remaining objects when over budget in previous frame */
+            if (moved_count == 0 && shadow_stamp_cursor_ > 0 && shadow_stamp_cursor_ < obj_count)
+            {
+                /* Continue from where we left off */
+                for (int32_t i = shadow_stamp_cursor_; i < obj_count && moved_count < SHADOW_STAMP_BUDGET; i++)
+                {
+                    const VoxelObject *obj = &objects->objects[i];
+                    if (!obj->active)
+                        continue;
+
+                    ShadowObjectState *state = &shadow_object_states_[i];
+                    if (!state->valid)
+                    {
+                        moved_objects[moved_count++] = i;
+                        state->position = obj->position;
+                        state->orientation = obj->orientation;
+                        state->valid = true;
+                    }
+                }
+                shadow_stamp_cursor_ = (moved_count > 0) ? shadow_stamp_cursor_ + moved_count : 0;
+            }
+        }
+
+        /* Determine rebuild strategy */
+        bool needs_full_rebuild = volume_resized ||
+                                  volume_shadow_needs_full_rebuild(vol) ||
+                                  particles_present; /* Particles always need full stamp (they move every frame) */
+
+        bool needs_terrain_repack = needs_full_rebuild || terrain_dirty;
+        bool needs_object_stamp = needs_full_rebuild || moved_count > 0 || new_objects_added;
+        bool needs_mip_regen = needs_terrain_repack || needs_object_stamp;
+
+        if (!needs_terrain_repack && !needs_object_stamp)
+        {
+            return; /* Nothing changed, skip update */
+        }
+
+        /* Resize buffers if needed */
+        if (volume_resized)
         {
             shadow_mip0_.resize(size0);
             shadow_mip1_.resize(size1);
@@ -549,41 +650,86 @@ namespace patch
             shadow_mip_dims_[2][1] = h2;
             shadow_mip_dims_[2][2] = d2;
 
+            /* Reset object tracking on resize */
+            for (uint32_t i = 0; i < MAX_SHADOW_OBJECTS; i++)
+            {
+                shadow_object_states_[i].valid = false;
+            }
+            shadow_stamp_cursor_ = 0;
+        }
+
+        /* Terrain update: either full repack or incremental chunk updates */
+        if (needs_full_rebuild)
+        {
             uint32_t out_w, out_h, out_d;
             volume_pack_shadow_volume(vol, shadow_mip0_.data(), &out_w, &out_h, &out_d);
-
-            if (objects && objects->object_count > 0)
-            {
-                unified_volume_stamp_objects_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, objects);
-            }
-
-            if (particles && particles->count > 0)
-            {
-                unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
-            }
-
-            volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
-                                        shadow_mip1_.data(), shadow_mip2_.data());
-
-            shadow_volume_initialized_ = true;
         }
-        else
+        else if (terrain_dirty && dirty_count > 0)
         {
-            int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
-            int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
-
             for (int32_t i = 0; i < dirty_count; i++)
             {
                 int32_t chunk_idx = dirty_chunks[i];
-                volume_pack_shadow_chunk(vol, chunk_idx,
-                                         shadow_mip0_.data(), w0, h0, d0);
-                volume_generate_shadow_mips_for_chunk(chunk_idx,
-                                                      vol->chunks_x, vol->chunks_y, vol->chunks_z,
-                                                      shadow_mip0_.data(), w0, h0, d0,
-                                                      shadow_mip1_.data(), w1, h1, d1,
-                                                      shadow_mip2_.data(), w2, h2, d2);
+                volume_pack_shadow_chunk(vol, chunk_idx, shadow_mip0_.data(), w0, h0, d0);
             }
         }
+
+        /* Object stamping: either full or incremental */
+        if (needs_full_rebuild && objects && objects->object_count > 0)
+        {
+            unified_volume_stamp_objects_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, objects);
+
+            /* Update all object states after full stamp */
+            for (int32_t i = 0; i < objects->object_count && i < static_cast<int32_t>(MAX_SHADOW_OBJECTS); i++)
+            {
+                const VoxelObject *obj = &objects->objects[i];
+                if (obj->active)
+                {
+                    shadow_object_states_[i].position = obj->position;
+                    shadow_object_states_[i].orientation = obj->orientation;
+                    shadow_object_states_[i].valid = true;
+                }
+            }
+            shadow_stamp_cursor_ = 0;
+        }
+        else if (moved_count > 0 && objects)
+        {
+            /* Incremental stamp: only stamp moved objects */
+            unified_volume_stamp_objects_incremental(shadow_mip0_.data(), w0, h0, d0,
+                                                     vol, objects, moved_objects, moved_count);
+        }
+
+        /* Particle stamping (always full, they move every frame) */
+        if (particles && particles->count > 0)
+        {
+            unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
+        }
+
+        /* Mip generation */
+        if (needs_mip_regen)
+        {
+            if (needs_full_rebuild || terrain_dirty)
+            {
+                volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
+                                            shadow_mip1_.data(), shadow_mip2_.data());
+            }
+            else if (dirty_count > 0)
+            {
+                /* Incremental mip update for dirty chunks only */
+                for (int32_t i = 0; i < dirty_count; i++)
+                {
+                    int32_t chunk_idx = dirty_chunks[i];
+                    volume_generate_shadow_mips_for_chunk(chunk_idx,
+                                                          vol->chunks_x, vol->chunks_y, vol->chunks_z,
+                                                          shadow_mip0_.data(), w0, h0, d0,
+                                                          shadow_mip1_.data(), w1, h1, d1,
+                                                          shadow_mip2_.data(), w2, h2, d2);
+                }
+            }
+        }
+
+        shadow_volume_initialized_ = true;
+        shadow_object_count_ = objects_present ? objects->object_count : 0;
+        shadow_particle_count_ = particles_present ? particles->count : 0;
 
         volume_clear_shadow_dirty(vol);
 
@@ -593,7 +739,6 @@ namespace patch
 
         /* Update shadow compute descriptor with new shadow volume texture */
         update_shadow_volume_descriptor();
-        update_reflection_volume_descriptor();
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)

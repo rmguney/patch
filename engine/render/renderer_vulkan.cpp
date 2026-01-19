@@ -238,8 +238,10 @@ namespace patch
         bool has_mailbox = false, has_immediate = false;
         for (auto mode : present_modes)
         {
-            if (mode == VK_PRESENT_MODE_MAILBOX_KHR) has_mailbox = true;
-            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR) has_immediate = true;
+            if (mode == VK_PRESENT_MODE_MAILBOX_KHR)
+                has_mailbox = true;
+            if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
+                has_immediate = true;
         }
 
         /* Select based on preference (default: Mailbox for uncapped FPS without tearing) */
@@ -258,9 +260,8 @@ namespace patch
         }
 
         printf("  Present mode: %s\n",
-               selected_present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX (uncapped)" :
-               selected_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE (uncapped)" :
-               "FIFO (vsync)");
+               selected_present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX (uncapped)" : selected_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE (uncapped)"
+                                                                                                                                                    : "FIFO (vsync)");
 
         swapchain_format_ = surface_format.format;
         swapchain_extent_ = capabilities.currentExtent;
@@ -528,19 +529,19 @@ namespace patch
 
         VkVertexInputBindingDescription binding_desc{};
         binding_desc.binding = 0;
-        binding_desc.stride = sizeof(Vertex);
+        binding_desc.stride = sizeof(UIVertex);
         binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
         VkVertexInputAttributeDescription attr_descs[2]{};
         attr_descs[0].binding = 0;
         attr_descs[0].location = 0;
-        attr_descs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attr_descs[0].offset = static_cast<uint32_t>(offsetof(Vertex, position));
+        attr_descs[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attr_descs[0].offset = static_cast<uint32_t>(offsetof(UIVertex, x));
 
         attr_descs[1].binding = 0;
         attr_descs[1].location = 1;
-        attr_descs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attr_descs[1].offset = static_cast<uint32_t>(offsetof(Vertex, normal));
+        attr_descs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attr_descs[1].offset = static_cast<uint32_t>(offsetof(UIVertex, r));
 
         VkPipelineVertexInputStateCreateInfo vertex_input_info{};
         vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -926,12 +927,12 @@ namespace patch
         uint32_t prev_frame = (current_frame_ + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
         uint32_t query_offset = prev_frame * GPU_TIMESTAMP_COUNT;
 
-        uint64_t timestamps[GPU_TIMESTAMP_COUNT];
+        uint64_t data[GPU_TIMESTAMP_COUNT * 2];
         VkResult result = vkGetQueryPoolResults(
             device_, timestamp_query_pool_,
             query_offset, GPU_TIMESTAMP_COUNT,
-            sizeof(timestamps), timestamps, sizeof(uint64_t),
-            VK_QUERY_RESULT_64_BIT);
+            sizeof(data), data, sizeof(uint64_t) * 2,
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
 
         if (result != VK_SUCCESS)
         {
@@ -941,12 +942,42 @@ namespace patch
             return false;
         }
 
+        bool all_available = true;
+        for (uint32_t i = 0; i < 4; i++)
+        {
+            if (data[i * 2 + 1] == 0)
+            {
+                all_available = false;
+                break;
+            }
+        }
+
+        if (!all_available)
+        {
+            out_timings->shadow_pass_ms = 0.0f;
+            out_timings->main_pass_ms = 0.0f;
+            out_timings->total_gpu_ms = 0.0f;
+            return false;
+        }
+
         float ns_to_ms = timestamp_period_ns_ / 1000000.0f;
+        uint64_t t0 = data[0];
+        uint64_t t1 = data[2];
+        uint64_t t2 = data[4];
+        uint64_t t3 = data[6];
 
-        out_timings->shadow_pass_ms = (float)(timestamps[1] - timestamps[0]) * ns_to_ms;
-        out_timings->main_pass_ms = (float)(timestamps[3] - timestamps[2]) * ns_to_ms;
-        out_timings->total_gpu_ms = (float)(timestamps[3] - timestamps[0]) * ns_to_ms;
+        out_timings->shadow_pass_ms = (float)(t1 - t0) * ns_to_ms;
+        out_timings->main_pass_ms = (float)(t3 - t2) * ns_to_ms;
+        out_timings->total_gpu_ms = (float)(t3 - t0) * ns_to_ms;
 
+        return true;
+    }
+
+    bool Renderer::get_last_gpu_timings(GPUTimings *out_timings) const
+    {
+        if (!out_timings || !last_gpu_timings_valid_)
+            return false;
+        *out_timings = last_gpu_timings_;
         return true;
     }
 

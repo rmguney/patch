@@ -1,5 +1,5 @@
 /*
- * mat_glow.c - Bright emissive material for GI testing
+ * mat_glow.c - Bright emissive material
  */
 #include "content/materials.h"
 
