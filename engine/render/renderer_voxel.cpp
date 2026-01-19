@@ -479,8 +479,8 @@ namespace patch
     }
 
     void Renderer::update_shadow_volume(VoxelVolume *vol,
-                                         const VoxelObjectWorld *objects,
-                                         const ParticleSystem *particles)
+                                        const VoxelObjectWorld *objects,
+                                        const ParticleSystem *particles)
     {
         if (!vol || !gbuffer_initialized_ || !shadow_volume_image_)
             return;
@@ -497,30 +497,46 @@ namespace patch
             return;
 
         uint32_t w1 = w0 >> 1;
-        if (w1 == 0) w1 = 1;
+        if (w1 == 0)
+            w1 = 1;
         uint32_t h1 = h0 >> 1;
-        if (h1 == 0) h1 = 1;
+        if (h1 == 0)
+            h1 = 1;
         uint32_t d1 = d0 >> 1;
-        if (d1 == 0) d1 = 1;
+        if (d1 == 0)
+            d1 = 1;
 
         uint32_t w2 = w1 >> 1;
-        if (w2 == 0) w2 = 1;
+        if (w2 == 0)
+            w2 = 1;
         uint32_t h2 = h1 >> 1;
-        if (h2 == 0) h2 = 1;
+        if (h2 == 0)
+            h2 = 1;
         uint32_t d2 = d1 >> 1;
-        if (d2 == 0) d2 = 1;
+        if (d2 == 0)
+            d2 = 1;
 
         size_t size0 = static_cast<size_t>(w0) * h0 * d0;
         size_t size1 = static_cast<size_t>(w1) * h1 * d1;
         size_t size2 = static_cast<size_t>(w2) * h2 * d2;
 
-        bool has_dynamic = (objects && objects->object_count > 0) ||
-                           (particles && particles->count > 0);
+        bool objects_present = (objects && objects->object_count > 0);
+        bool particles_present = (particles && particles->count > 0);
+
+        int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
+        int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
+
+        bool objects_changed = objects_present &&
+                               (objects->dirty_count > 0 || objects->object_count != shadow_object_count_);
+        bool particles_changed = particles_present && (particles->count != shadow_particle_count_);
 
         bool needs_full_rebuild = volume_shadow_needs_full_rebuild(vol) ||
                                   !shadow_volume_initialized_ ||
                                   shadow_mip0_.size() != size0 ||
-                                  has_dynamic;
+                                  objects_changed ||
+                                  particles_present ||
+                                  particles_changed ||
+                                  (objects_present && dirty_count > 0);
 
         if (needs_full_rebuild)
         {
@@ -555,11 +571,15 @@ namespace patch
                                         shadow_mip1_.data(), shadow_mip2_.data());
 
             shadow_volume_initialized_ = true;
+            shadow_object_count_ = objects_present ? objects->object_count : 0;
+            shadow_particle_count_ = particles_present ? particles->count : 0;
         }
         else
         {
-            int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
-            int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
+            if (dirty_count <= 0)
+            {
+                return;
+            }
 
             for (int32_t i = 0; i < dirty_count; i++)
             {

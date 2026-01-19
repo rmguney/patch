@@ -24,10 +24,10 @@ struct PerfThreshold
     float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50 = {13.0f, 15.0f, 18.0f};
-static const PerfThreshold THRESHOLD_250 = {14.0f, 16.67f, 20.0f};
-static const PerfThreshold THRESHOLD_500 = {16.0f, 20.0f, 28.0f};
-static const PerfThreshold THRESHOLD_1000 = {25.0f, 30.0f, 45.0f};
+static const PerfThreshold THRESHOLD_50 = {8.33f, 9.62f, 11.54f};
+static const PerfThreshold THRESHOLD_250 = {11.11f, 13.23f, 15.87f};
+static const PerfThreshold THRESHOLD_500 = {16.67f, 20.84f, 29.17f};
+static const PerfThreshold THRESHOLD_1000 = {16.67f, 20.00f, 30.00f};
 
 enum PerfStatus
 {
@@ -232,7 +232,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     float sim_pct = (data.sim_tick_avg_ms / FRAME_BUDGET_MS) * 100.0f;
     float effective_fps = 1000.0f / data.frame_avg_ms;
 
-    printf("Frame Timing (target: %.2fms @ 60 FPS):\n", FRAME_BUDGET_MS);
+    printf("Frame Timing (target: %.2fms):\n", FRAME_BUDGET_MS);
     printf("  Average:     %7.2f ms  (%5.1f%% budget)\n", data.frame_avg_ms, frame_budget_pct);
     printf("  Maximum:     %7.2f ms\n", data.frame_max_ms);
     printf("  95th pct:    %7.2f ms\n", data.frame_p95_ms);
@@ -293,13 +293,13 @@ int main(int argc, char *argv[])
     printf("Generated: %s\n", time_str);
     printf("Executable: %s\n", exe_path);
 
-    run_perf_test(exe_path, "BASELINE (50 objects, 30 frames)", 30, 50,
+    run_perf_test(exe_path, "BASELINE (50 objects)", 30, 50,
                   THRESHOLD_50, &passed, &warned, &failed);
-    run_perf_test(exe_path, "STRESS TEST (250 objects, 30 frames)", 30, 250,
+    run_perf_test(exe_path, "STRESS TEST (250 objects)", 30, 250,
                   THRESHOLD_250, &passed, &warned, &failed);
-    run_perf_test(exe_path, "HEAVY STRESS (500 objects, 30 frames)", 30, 500,
+    run_perf_test(exe_path, "HEAVY STRESS (500 objects)", 30, 500,
                   THRESHOLD_500, &passed, &warned, &failed);
-    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects, 30 frames)", 30, 1000,
+    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects)", 30, 1000,
                   THRESHOLD_1000, &passed, &warned, &failed);
 
     printf("\n");

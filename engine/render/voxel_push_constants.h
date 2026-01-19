@@ -4,7 +4,7 @@
 /* Quality setting defaults */
 #define QUALITY_DEFAULT_SHADOW 1         /* 0=None, 1=Fair, 2=Good, 3=High */
 #define QUALITY_DEFAULT_SHADOW_CONTACT 1 /* 0=Off, 1=On */
-#define QUALITY_DEFAULT_AO 0             /* 0=None, 1=Fair, 2=Good */
+#define QUALITY_DEFAULT_AO 0             /* 0=None, 1=Fair, 2=Good, 3=High */
 #define QUALITY_DEFAULT_LOD 0            /* 0=Fair, 1=Good, 2=High */
 #define QUALITY_DEFAULT_DENOISE 1        /* 0=Off, 1=On */
 
@@ -31,8 +31,8 @@ typedef struct
 static const QualityPresetSettings QUALITY_PRESETS[] = {
     {1, 0, 0, 0, 1}, /* Default */
     {1, 1, 1, 1, 1}, /* Fair */
-    {2, 1, 1, 1, 1}, /* Good */
-    {3, 1, 2, 2, 1}  /* High */
+    {2, 1, 2, 1, 1}, /* Good */
+    {3, 1, 3, 2, 1}  /* High */
 };
 
 /*

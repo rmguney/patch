@@ -156,6 +156,14 @@ namespace patch
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];
 
+        if (timestamps_supported_)
+        {
+            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd,
+                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestamp_query_pool_, query_offset + 0);
+        }
+
         /* Transition shadow output to GENERAL for compute write */
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -234,6 +242,14 @@ namespace patch
         uint32_t group_x = (swapchain_extent_.width + 7) / 8;
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        if (timestamps_supported_)
+        {
+            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd,
+                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool_, query_offset + 1);
+        }
 
         /* Transition shadow output to SHADER_READ_ONLY for sampling in lighting pass */
         barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;

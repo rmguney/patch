@@ -378,6 +378,14 @@ namespace patch
         if (!gbuffer_initialized_)
             return;
 
+        if (timestamps_supported_)
+        {
+            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(command_buffers_[current_frame_],
+                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestamp_query_pool_, query_offset + 2);
+        }
+
         VkClearValue clear_values[7]{};
         clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
         clear_values[1].color = {{0.5f, 0.5f, 0.5f, 0.0f}};
@@ -437,8 +445,10 @@ namespace patch
         /* Dispatch AO compute after shadow (only if ao_quality >= 1) */
         if (ao_quality_ >= 1 && ao_resources_initialized_ && ao_compute_pipeline_ && deferred_total_chunks_ > 0)
         {
+            PROFILE_BEGIN(PROFILE_RENDER_AO);
             dispatch_ao_compute();
             dispatch_temporal_ao_resolve();
+            PROFILE_END(PROFILE_RENDER_AO);
         }
 
         gbuffer_compute_dispatched_ = false;
@@ -452,7 +462,10 @@ namespace patch
         /* Dispatch compute terrain + objects if enabled (must be called before begin_gbuffer_pass) */
         if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_)
         {
-            int32_t object_count = (objects && vobj_resources_initialized_) ? objects->object_count : 0;
+            /* Compute path is terrain-only when objects/particles are present to avoid double-rendering objects. */
+            int32_t object_count = (has_objects_or_particles || !objects || !vobj_resources_initialized_)
+                                       ? 0
+                                       : objects->object_count;
             dispatch_gbuffer_compute(vol, object_count);
 
             /* Prime hardware depth buffer only when objects/particles will be rendered */
@@ -629,8 +642,10 @@ namespace patch
         {
             vkCmdEndRenderPass(command_buffers_[current_frame_]);
 
+            PROFILE_BEGIN(PROFILE_RENDER_DENOISE);
             dispatch_spatial_denoise();
             blit_denoised_to_swapchain(image_index);
+            PROFILE_END(PROFILE_RENDER_DENOISE);
 
             /* Start new render pass for UI rendering (loads color, keeps depth) */
             VkClearValue clear_ui[2]{};

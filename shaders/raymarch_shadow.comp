@@ -262,7 +262,7 @@ void main() {
         float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
         float penumbra = base_penumbra;
 
-        if (pc.shadow_contact != 0) {
+        if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
             /* Contact hardening: trace center ray to find occluder distance */
             float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
 

@@ -91,7 +91,8 @@ int patch_main(int argc, char *argv[])
         /* Convert sRGB colors to linear space for correct lighting calculations.
          * Material RGB values are defined in sRGB (what color pickers use).
          * The shader performs lighting in linear space then applies gamma correction. */
-        auto srgb_to_linear = [](float srgb) -> float {
+        auto srgb_to_linear = [](float srgb) -> float
+        {
             if (srgb <= 0.04045f)
                 return srgb / 12.92f;
             return powf((srgb + 0.055f) / 1.055f, 2.4f);
@@ -206,7 +207,9 @@ int patch_main(int argc, char *argv[])
         if (dt > 0.1f)
             dt = 0.1f;
 
+        PROFILE_BEGIN(PROFILE_SIM_COLLISION);
         window.poll_events();
+        PROFILE_END(PROFILE_SIM_COLLISION);
 
         if (window.consume_resize() && window.width() > 0 && window.height() > 0)
         {
@@ -308,8 +311,10 @@ int patch_main(int argc, char *argv[])
         bool do_export = f3_pressed;
         (void)do_export;
 
+        PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
         app_ui_update(&ui, dt, window.mouse().x, window.mouse().y,
                       window.mouse().left_down, window.width(), window.height());
+        PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 
         AppAction action = app_ui_get_action(&ui);
         switch (action)
@@ -408,6 +413,7 @@ int patch_main(int argc, char *argv[])
 
         if (app_state == AppState::Playing && active_scene && !app_ui_is_blocking(&ui))
         {
+            PROFILE_BEGIN(PROFILE_SIM_TICK);
             Vec3 ray_origin, ray_dir;
             renderer.screen_to_ray(window.mouse().x, window.mouse().y, &ray_origin, &ray_dir);
 
@@ -419,6 +425,7 @@ int patch_main(int argc, char *argv[])
             }
 
             scene_update(active_scene, dt);
+            PROFILE_END(PROFILE_SIM_TICK);
         }
 
         /* Free camera controls */
@@ -499,6 +506,20 @@ int patch_main(int argc, char *argv[])
         renderer.begin_frame(&image_index);
 
         const AppSettings *settings = app_ui_get_settings(&ui);
+        AppSettings test_settings;
+        if (test_frames > 0)
+        {
+            test_settings = *settings;
+            test_settings.master_preset = QUALITY_PRESET_FAIR;
+            test_settings.adaptive_quality = 0;
+            test_settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
+            test_settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
+            test_settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
+            test_settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
+            test_settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
+            settings = &test_settings;
+        }
+
         renderer.set_master_preset(settings->master_preset);
         renderer.set_adaptive_quality(settings->adaptive_quality != 0);
 
@@ -558,41 +579,49 @@ int patch_main(int argc, char *argv[])
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
                 bool need_depth_prime = (objects && objects->object_count > 0) || particles;
                 renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
+                PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
 
             renderer.begin_gbuffer_pass();
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
                 renderer.render_gbuffer_terrain(terrain);
+                PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
 
             if (objects)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_OBJECTS);
                 renderer.render_voxel_objects_raymarched(objects);
+                PROFILE_END(PROFILE_RENDER_OBJECTS);
             }
 
             if (particles)
             {
                 float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f) interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f) interp_alpha = 1.0f;
+                if (interp_alpha < 0.0f)
+                    interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f)
+                    interp_alpha = 1.0f;
                 renderer.set_interp_alpha(interp_alpha);
                 renderer.render_particles_raymarched(particles);
             }
 
             renderer.end_gbuffer_pass();
+            PROFILE_BEGIN(PROFILE_RENDER_LIGHTING);
             renderer.render_deferred_lighting(image_index);
+            PROFILE_END(PROFILE_RENDER_LIGHTING);
         }
         else
         {
             renderer.begin_main_pass(image_index);
         }
         PROFILE_END(PROFILE_RENDER_MAIN);
-
-        PROFILE_BEGIN(PROFILE_RENDER_UI);
 
         /* Populate debug info */
         bool dbg_has_info = false;
@@ -639,13 +668,16 @@ int patch_main(int argc, char *argv[])
         }
 
         bool btn_clicked = false;
+        bool render_ui = show_overlay || app_ui_is_blocking(&ui);
         if (show_overlay)
         {
+            PROFILE_BEGIN(PROFILE_RENDER_UI_OVERLAY);
             btn_clicked = draw_overlay(renderer, fps_smooth, overlay_stats,
                                        window.width(), window.height(),
                                        dbg_has_info ? &dbg_info : nullptr,
                                        window.mouse().x, window.mouse().y,
                                        mouse_clicked, &dbg_feedback);
+            PROFILE_END(PROFILE_RENDER_UI_OVERLAY);
         }
 
         if (dbg_has_info && (do_export || btn_clicked))
@@ -657,8 +689,12 @@ int patch_main(int argc, char *argv[])
             dbg_feedback.timer = 3.0f;
         }
 
-        ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
-        PROFILE_END(PROFILE_RENDER_UI);
+        if (render_ui)
+        {
+            PROFILE_BEGIN(PROFILE_RENDER_UI);
+            ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
+            PROFILE_END(PROFILE_RENDER_UI);
+        }
 
         PROFILE_END(PROFILE_RENDER_TOTAL);
 

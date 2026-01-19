@@ -36,6 +36,17 @@ namespace patch
         uint32_t index_count;
     };
 
+    struct UIVertex
+    {
+        float x;
+        float y;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+    static_assert(sizeof(UIVertex) == 24, "UIVertex must be 24 bytes");
+
     /* GPU instance data for batched box rendering */
     struct alignas(16) BoxInstanceGPU
     {
@@ -240,6 +251,8 @@ namespace patch
         uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties);
 
         void create_quad_mesh();
+        void create_ui_buffers();
+        void add_ui_quad_ndc(float cx, float cy, float w, float h, Vec3 color, float alpha);
 
         void cleanup();
 
@@ -306,6 +319,16 @@ namespace patch
         VkSampler depth_sampler_;
 
         MeshBuffers quad_mesh_;
+
+        static constexpr uint32_t UI_MAX_QUADS = 20000;
+        VulkanBuffer ui_vertex_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        VulkanBuffer ui_index_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        void *ui_vertex_mapped_ = nullptr;
+        void *ui_index_mapped_ = nullptr;
+        uint32_t ui_vertex_capacity_ = 0;
+        uint32_t ui_index_capacity_ = 0;
+        std::vector<UIVertex> ui_vertices_;
+        std::vector<uint32_t> ui_indices_;
 
         Mat4 view_matrix_;
         Mat4 projection_matrix_;
@@ -432,7 +455,6 @@ namespace patch
 
         bool ao_resources_initialized_ = false;
 
-
         /* Spatial denoise compute infrastructure */
         VkPipeline spatial_denoise_pipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout spatial_denoise_layout_ = VK_NULL_HANDLE;
@@ -456,7 +478,6 @@ namespace patch
         VkFramebuffer deferred_lighting_intermediate_fb_ = VK_NULL_HANDLE;
 
         bool spatial_denoise_initialized_ = false;
-
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -528,6 +549,8 @@ namespace patch
         std::vector<uint8_t> shadow_mip2_;
         uint32_t shadow_mip_dims_[3][3];
         bool shadow_volume_initialized_;
+        int32_t shadow_object_count_ = 0;
+        int32_t shadow_particle_count_ = 0;
 
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;
@@ -589,7 +612,7 @@ namespace patch
         int32_t deferred_chunks_dim_[3] = {0, 0, 0};
 
         /* GPU profiling */
-        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 8;
+        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 4;
         VkQueryPool timestamp_query_pool_;
         float timestamp_period_ns_;
         bool timestamps_supported_;
@@ -656,7 +679,6 @@ namespace patch
         void dispatch_temporal_ao_resolve();
         void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
 
-
         /* Spatial denoise compute infrastructure */
         bool create_lit_color_resources();
         bool create_denoised_color_resources();
@@ -666,7 +688,6 @@ namespace patch
         void destroy_spatial_denoise_resources();
         void dispatch_spatial_denoise();
         void blit_denoised_to_swapchain(uint32_t image_index);
-
 
         /* Raymarched particle rendering */
         bool init_particle_resources();
@@ -687,8 +708,19 @@ namespace patch
         };
 
         bool get_gpu_timings(GPUTimings *out_timings) const;
+        bool get_last_gpu_timings(GPUTimings *out_timings) const;
         bool is_gpu_profiling_supported() const { return timestamps_supported_; }
         const char *get_gpu_name() const { return gpu_name_; }
+        float get_last_wait_fence_ms() const { return last_wait_fence_ms_; }
+        float get_last_acquire_ms() const { return last_acquire_ms_; }
+        float get_last_present_ms() const { return last_present_ms_; }
+
+    private:
+        GPUTimings last_gpu_timings_{};
+        bool last_gpu_timings_valid_ = false;
+        float last_wait_fence_ms_ = 0.0f;
+        float last_acquire_ms_ = 0.0f;
+        float last_present_ms_ = 0.0f;
     };
 
 }

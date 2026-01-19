@@ -105,6 +105,9 @@ float vobj_get_bounding_radius(int object_idx) {
  * Returns true if the ray could possibly hit the object's bounding sphere.
  */
 bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
+    if (!vobj_is_active(object_idx)) {
+        return false;
+    }
     vec3 center = vobj_get_world_position(object_idx);
     float radius = vobj_get_bounding_radius(object_idx);
     float dist_sq = vobj_ray_sphere_dist_sq(ray_origin, ray_dir, center);
@@ -115,8 +118,8 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
  * Calculate LOD-adjusted max steps based on distance and lod_quality.
  *
  * Distance thresholds (scaled by lod_quality 0-2):
- *   Near:  < 40/60/80 units  -> full steps (48)
- *   Mid:   < 80/120/160 units -> medium (32)
+ *   Near:  < 40/60/80 units  -> full steps (52)
+ *   Mid:   < 80/120/160 units -> medium (36)
  *   Far:   >= threshold      -> reduced (28)
  *
  * Minimum 28 steps required for diagonal traversal of 16³ grid (sqrt(3)*16≈28).
@@ -128,11 +131,11 @@ int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps
 
     int steps;
     if (distance < near_thresh) {
-        steps = base_steps;           // Full detail
+        steps = 52;                   // Full detail
     } else if (distance < far_thresh) {
-        steps = (base_steps * 2) / 3; // ~32 steps for base 48
+        steps = 36;                   // Medium detail
     } else {
-        steps = base_steps / 2;       // ~24 steps for base 48
+        steps = 28;                   // Reduced detail
     }
     return max(steps, 28);            // Minimum for diagonal traversal
 }

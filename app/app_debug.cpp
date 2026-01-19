@@ -16,11 +16,19 @@ void export_profile_csv(const char *filename, const patch::Renderer *renderer)
     if (renderer)
     {
         fprintf(f, "# GPU Device: %s\n", renderer->get_gpu_name());
+        fprintf(f, "# CPU Waits: fence=%.3fms, acquire=%.3fms, present=%.3fms\n",
+                renderer->get_last_wait_fence_ms(),
+                renderer->get_last_acquire_ms(),
+                renderer->get_last_present_ms());
         patch::Renderer::GPUTimings gpu;
-        if (renderer->get_gpu_timings(&gpu))
+        if (renderer->get_last_gpu_timings(&gpu))
         {
             fprintf(f, "# GPU Timings: shadow=%.3fms, main=%.3fms, total=%.3fms\n",
                     gpu.shadow_pass_ms, gpu.main_pass_ms, gpu.total_gpu_ms);
+        }
+        else if (renderer->is_gpu_profiling_supported())
+        {
+            fprintf(f, "# GPU Timings: unavailable\n");
         }
     }
     fprintf(f, "# FPS: %.1f (avg), Frame: %.2fms (avg), %.2fms (max)\n",
@@ -32,15 +40,19 @@ void export_profile_csv(const char *filename, const patch::Renderer *renderer)
             profile_budget_overruns(),
             profile_budget_worst_ms());
     fprintf(f, "category,avg_ms,max_ms,min_ms,p50_ms,p95_ms,samples\n");
+    fflush(f);
 
     const char *names[] = {
         "frame_total", "sim_tick", "sim_physics", "sim_collision",
         "sim_voxel_update", "sim_connectivity", "sim_particles",
         "voxel_raycast", "voxel_edit", "voxel_occupancy", "voxel_upload",
-        "render_total", "render_shadow", "render_main", "render_voxel", "render_ui",
-        "volume_init", "prop_spawn"};
+        "render_total", "render_shadow", "render_main", "render_ui_overlay", "render_ui",
+        "volume_init", "prop_spawn",
+        "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise"};
 
-    for (int i = 0; i < PROFILE_COUNT && i < 18; i++)
+    const int name_count = (int)(sizeof(names) / sizeof(names[0]));
+    const int count = (PROFILE_COUNT < name_count) ? PROFILE_COUNT : name_count;
+    for (int i = 0; i < count; i++)
     {
         fprintf(f, "%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
                 names[i],
@@ -136,17 +148,18 @@ bool export_debug_info(const char *filename, const DebugSceneInfo *info, float f
 bool export_all_debug(const char *debug_filename, const char *profile_filename,
                       const DebugSceneInfo *info, float fps, const patch::Renderer *renderer)
 {
-    if (!export_debug_info(debug_filename, info, fps))
-        return false;
+    bool debug_ok = export_debug_info(debug_filename, info, fps);
+    bool profile_ok = false;
 
 #ifdef PATCH_PROFILE
     export_profile_csv(profile_filename, renderer);
+    profile_ok = true;
 #else
     (void)profile_filename;
     (void)renderer;
 #endif
 
-    return true;
+    return debug_ok || profile_ok;
 }
 
 bool draw_overlay(patch::Renderer &renderer, float fps, const BallPitStats *stats,
@@ -267,10 +280,10 @@ bool draw_overlay(patch::Renderer &renderer, float fps, const BallPitStats *stat
         const char *mode_names[] = {
             "Normal", "Normals", "Albedo", "Depth", "UVW", "Material", "Roughness",
             "Metallic", "ObjectID", "---", "WorldPos", "ShadowUVW", "Shadow",
-            "AO", "Reflection", "GI"
-        };
+            "AO", "Reflection", "GI"};
         const char *mode_name = (dbg->terrain_debug_mode >= 0 && dbg->terrain_debug_mode < 16)
-            ? mode_names[dbg->terrain_debug_mode] : "?";
+                                    ? mode_names[dbg->terrain_debug_mode]
+                                    : "?";
         snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d (%s)  DRAWS: %d",
                  dbg->camera_pos[0], dbg->camera_pos[1], dbg->camera_pos[2],
                  dbg->terrain_debug_mode, mode_name, dbg->terrain_draw_count);

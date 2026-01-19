@@ -157,9 +157,16 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         }
 
         if (mip2_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip2 boundary (8×8×8 voxels) instead of stepping one voxel */
+            ivec3 mip2_min = current_mip2 << 3;
+            ivec3 mip2_max = mip2_min + 7;
+            ivec3 exit_pos = mix(mip2_min - 1, mip2_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -170,9 +177,16 @@ float trace_ao_ray(vec3 origin, vec3 rd) {
         }
 
         if (mip1_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip1 boundary (4×4×4 voxels) instead of stepping one voxel */
+            ivec3 mip1_min = current_mip1 << 2;
+            ivec3 mip1_max = mip1_min + 3;
+            ivec3 exit_pos = mix(mip1_min - 1, mip1_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -244,9 +258,9 @@ void main() {
     float bias = pc.voxel_size * 0.6;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-    /* Quality-scaled samples: Fair=1, Good=2 samples per pixel
-       Temporal accumulation smooths out noise over frames */
-    int num_samples = pc.ao_quality;
+     /* Quality-scaled samples: Fair=1, Good=2, High=4 samples per pixel
+         Temporal accumulation smooths out noise over frames */
+     int num_samples = (pc.ao_quality <= 1) ? 1 : (pc.ao_quality == 2 ? 2 : 4);
     float ao_sum = 0.0;
 
     for (int s = 0; s < num_samples; s++) {

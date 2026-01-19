@@ -3,7 +3,7 @@
 #include <string.h>
 
 static const char *const QUALITY_4[] = {"NONE", "FAIR", "GOOD", "HIGH"};
-static const char *const QUALITY_3[] = {"NONE", "FAIR", "GOOD"};
+static const char *const QUALITY_3[] = {"NONE", "FAIR", "GOOD", "HIGH"};
 static const char *const QUALITY_LOD[] = {"FAIR", "GOOD", "HIGH"};
 static const char *const TOGGLE_LABELS[] = {"OFF", "ON"};
 static const char *const PRESET_LABELS[] = {"DEFAULT", "FAIR", "GOOD", "HIGH", "CUSTOM"};
@@ -88,7 +88,7 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
 
     ui_menu_add_label(menu, "--- LIGHTING ---");
     ui_menu_add_slider_labeled(menu, "AMBIENT OCCLUSION", APP_ACTION_SETTING_AO_QUALITY,
-                               s->ao_quality, 0, 2, QUALITY_3, 3);
+                               s->ao_quality, 0, 3, QUALITY_3, 4);
     menu->items[menu->item_count - 1].enabled = !using_preset;
 
     ui_menu_add_label(menu, "--- UTILITY ---");
@@ -101,6 +101,52 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
 
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
+}
+
+static void sync_graphics_menu_from_settings(AppUI *ui)
+{
+    UIMenu *menu = &ui->graphics_menu;
+    const AppSettings *s = &ui->settings;
+    bool using_preset = s->master_preset < QUALITY_PRESET_CUSTOM;
+
+    for (int32_t i = 0; i < menu->item_count; i++)
+    {
+        UIMenuItem *item = &menu->items[i];
+        if (item->type != UI_ITEM_SLIDER)
+            continue;
+
+        switch (item->action_id)
+        {
+        case APP_ACTION_SETTING_MASTER_PRESET:
+            item->slider_value = s->master_preset;
+            item->enabled = true;
+            break;
+        case APP_ACTION_SETTING_ADAPTIVE:
+            item->slider_value = s->adaptive_quality;
+            item->enabled = true;
+            break;
+        case APP_ACTION_SETTING_SHADOW_QUALITY:
+            item->slider_value = s->shadow_quality;
+            item->enabled = !using_preset;
+            break;
+        case APP_ACTION_SETTING_SHADOW_CONTACT:
+            item->slider_value = s->shadow_contact_hardening;
+            item->enabled = !using_preset;
+            break;
+        case APP_ACTION_SETTING_AO_QUALITY:
+            item->slider_value = s->ao_quality;
+            item->enabled = !using_preset;
+            break;
+        case APP_ACTION_SETTING_LOD_QUALITY:
+            item->slider_value = s->lod_quality;
+            item->enabled = !using_preset;
+            break;
+        case APP_ACTION_SETTING_DENOISE_QUALITY:
+            item->slider_value = s->denoise_quality;
+            item->enabled = !using_preset;
+            break;
+        }
+    }
 }
 
 void app_ui_init(AppUI *ui)
@@ -132,6 +178,11 @@ void app_ui_show_screen(AppUI *ui, AppScreen screen)
     ui->previous_screen = ui->current_screen;
     ui->current_screen = screen;
     ui_context_show(&ui->ctx);
+
+    if (screen == APP_SCREEN_GRAPHICS)
+    {
+        app_ui_refresh_graphics_menu(ui);
+    }
 
     UIMenu *menu = app_ui_get_active_menu(ui);
     if (menu)
@@ -186,6 +237,7 @@ static void sync_graphics_from_menu(AppUI *ui)
     bool needs_rebuild = false;
     bool master_preset_changed = false;
     bool individual_changed = false;
+    bool allow_individual = ui->settings.master_preset >= QUALITY_PRESET_CUSTOM;
 
     for (int32_t i = 0; i < menu->item_count; i++)
     {
@@ -205,6 +257,7 @@ static void sync_graphics_from_menu(AppUI *ui)
                 }
                 master_preset_changed = true;
                 needs_rebuild = true;
+                allow_individual = ui->settings.master_preset >= QUALITY_PRESET_CUSTOM;
             }
             break;
         case APP_ACTION_SETTING_ADAPTIVE:
@@ -214,35 +267,35 @@ static void sync_graphics_from_menu(AppUI *ui)
             }
             break;
         case APP_ACTION_SETTING_SHADOW_QUALITY:
-            if (ui->settings.shadow_quality != item->slider_value)
+            if (allow_individual && ui->settings.shadow_quality != item->slider_value)
             {
                 ui->settings.shadow_quality = item->slider_value;
                 individual_changed = true;
             }
             break;
         case APP_ACTION_SETTING_SHADOW_CONTACT:
-            if (ui->settings.shadow_contact_hardening != item->slider_value)
+            if (allow_individual && ui->settings.shadow_contact_hardening != item->slider_value)
             {
                 ui->settings.shadow_contact_hardening = item->slider_value;
                 individual_changed = true;
             }
             break;
         case APP_ACTION_SETTING_AO_QUALITY:
-            if (ui->settings.ao_quality != item->slider_value)
+            if (allow_individual && ui->settings.ao_quality != item->slider_value)
             {
                 ui->settings.ao_quality = item->slider_value;
                 individual_changed = true;
             }
             break;
         case APP_ACTION_SETTING_LOD_QUALITY:
-            if (ui->settings.lod_quality != item->slider_value)
+            if (allow_individual && ui->settings.lod_quality != item->slider_value)
             {
                 ui->settings.lod_quality = item->slider_value;
                 individual_changed = true;
             }
             break;
         case APP_ACTION_SETTING_DENOISE_QUALITY:
-            if (ui->settings.denoise_quality != item->slider_value)
+            if (allow_individual && ui->settings.denoise_quality != item->slider_value)
             {
                 ui->settings.denoise_quality = item->slider_value;
                 individual_changed = true;
@@ -259,6 +312,8 @@ static void sync_graphics_from_menu(AppUI *ui)
 
     if (needs_rebuild)
         init_graphics_menu(menu, &ui->settings);
+
+    sync_graphics_menu_from_settings(ui);
 }
 
 void app_ui_update(AppUI *ui, float dt, float mouse_x, float mouse_y, bool mouse_down,
