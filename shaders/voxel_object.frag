@@ -50,6 +50,7 @@ layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
 
 layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
     mat4 prev_view_proj;
+    mat4 view_proj;
 };
 
 #include "include/materials.glsl"

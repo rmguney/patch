@@ -66,6 +66,7 @@ int pc_total_chunks;
 
 layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
     mat4 prev_view_proj;
+    mat4 view_proj;
 };
 
 layout(SET_BINDING(0, 4)) uniform sampler2D depth_tex;

@@ -11,18 +11,6 @@ namespace patch
         if (!compute_resources_initialized_ || !gbuffer_compute_pipeline_ || !vol)
             return;
 
-        /* Update temporal UBO with previous frame's view-projection matrix */
-        if (voxel_temporal_ubo_[current_frame_].buffer)
-        {
-            Mat4 prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
-            void *mapped = nullptr;
-            if (vkMapMemory(device_, voxel_temporal_ubo_[current_frame_].memory, 0, sizeof(Mat4), 0, &mapped) == VK_SUCCESS)
-            {
-                memcpy(mapped, &prev_view_proj, sizeof(Mat4));
-                vkUnmapMemory(device_, voxel_temporal_ubo_[current_frame_].memory);
-            }
-        }
-
         terrain_draw_count_++;
 
         /* Cache volume parameters for deferred lighting */

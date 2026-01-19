@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "renderer_internal.h"
+#include "voxel_push_constants.h"
 #include <cstring>
 #include <cstdio>
 
@@ -376,6 +377,20 @@ namespace patch
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         frustum_ = frustum_from_view_proj(view_proj);
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
+
+        if (voxel_temporal_ubo_[current_frame_].buffer)
+        {
+            VoxelTemporalUBO ubo{};
+            ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
+            ubo.view_proj = view_proj;
+
+            void *mapped = nullptr;
+            if (vkMapMemory(device_, voxel_temporal_ubo_[current_frame_].memory, 0, sizeof(VoxelTemporalUBO), 0, &mapped) == VK_SUCCESS)
+            {
+                memcpy(mapped, &ubo, sizeof(VoxelTemporalUBO));
+                vkUnmapMemory(device_, voxel_temporal_ubo_[current_frame_].memory);
+            }
+        }
 
         vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
         vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
