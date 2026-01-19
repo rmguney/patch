@@ -33,7 +33,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -67,7 +67,7 @@ layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
 layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
 
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
-const int MAX_SHADOW_STEPS = 96;  /* Reduced from 256 - shadow rays are shorter */
+const int MAX_SHADOW_STEPS = 128;  /* Reduced from 256 - shadow rays are shorter */
 const float SHADOW_MAX_DIST = 50.0;
 
 /* Sun direction */

@@ -1,5 +1,5 @@
 /*
- * mat_green.c - Pastel green material for GI color bleeding tests
+ * mat_green.c - Pastel green material
  */
 #include "content/materials.h"
 

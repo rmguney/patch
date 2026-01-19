@@ -44,7 +44,7 @@ static const QualityPresetSettings QUALITY_PRESETS[] = {
  *
  * Layout rationale:
  * - inv_view/inv_projection: precomputed on CPU to avoid per-fragment inverse
- * - history_valid: bit 0 = temporal history valid, bits 8-15 = gi_quality (0-3)
+ * - history_valid: bit 0 = temporal history valid
  * - shadow_quality/shadow_contact/ao_quality/lod_quality: individual quality controls
  * - debug_mode: runtime toggle for debug visualization
  *
@@ -84,7 +84,7 @@ namespace patch
         int32_t shadow_contact;
         int32_t ao_quality;
         int32_t lod_quality;
-        int32_t reflection_quality;
+        int32_t _reserved0;
     };
 
     /*

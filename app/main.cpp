@@ -308,7 +308,7 @@ int patch_main(int argc, char *argv[])
         if (f4_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 16);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 14);
         }
 
         /* F5: Terrain debug mode previous */
@@ -318,7 +318,7 @@ int patch_main(int argc, char *argv[])
         if (f5_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 15) % 16);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 13) % 14);
         }
 
         /* Mouse click detection */

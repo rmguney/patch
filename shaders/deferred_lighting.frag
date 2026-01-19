@@ -42,7 +42,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int reflection_quality;
+    int _reserved0;
 } pc;
 
 #include "include/camera.glsl"
