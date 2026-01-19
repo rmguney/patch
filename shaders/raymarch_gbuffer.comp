@@ -92,7 +92,7 @@ layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
 layout(rgba32f, SET_BINDING(2, 4)) writeonly uniform image2D out_world_pos;
 layout(rg16f, SET_BINDING(2, 5)) writeonly uniform image2D out_motion_vector;
 
-const int DEFAULT_MAX_STEPS = 512;
+const int DEFAULT_MAX_STEPS = 384;  /* Reduced from 512 - bilateral skip handles empty space */
 const int VOBJ_BASE_STEPS = 48;
 
 vec3 world_to_grid(vec3 world_pos) {
