@@ -245,7 +245,8 @@ namespace patch
             vkMapMemory(device_, vobj_metadata_buffer_[i].memory, 0, metadata_size, 0, &vobj_metadata_mapped_[i]);
         }
 
-        VkDeviceSize staging_size = static_cast<VkDeviceSize>(VOBJ_GRID_DIM) * VOBJ_GRID_DIM * VOBJ_GRID_DIM;
+        constexpr int32_t VOBJ_MAX_UPLOADS_PER_FRAME = 8;
+        VkDeviceSize staging_size = static_cast<VkDeviceSize>(VOBJ_GRID_DIM) * VOBJ_GRID_DIM * VOBJ_GRID_DIM * VOBJ_MAX_UPLOADS_PER_FRAME;
         create_buffer(staging_size,
                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -960,15 +961,117 @@ namespace patch
         vobj_prev_object_count_ = world->object_count;
 
         constexpr int32_t MAX_UPLOADS_PER_FRAME = 8;
-        int32_t uploads = 0;
-        for (int32_t i = 0; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_) && uploads < MAX_UPLOADS_PER_FRAME; i++)
+
+        if (vobj_upload_pending_[current_frame_] > 0 && upload_timeline_semaphore_)
+        {
+            VkSemaphoreWaitInfo wait_info{};
+            wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+            wait_info.semaphoreCount = 1;
+            wait_info.pSemaphores = &upload_timeline_semaphore_;
+            wait_info.pValues = &vobj_upload_pending_[current_frame_];
+            vkWaitSemaphores(device_, &wait_info, UINT64_MAX);
+            vobj_upload_pending_[current_frame_] = 0;
+        }
+
+        uint32_t dirty_objects[MAX_UPLOADS_PER_FRAME];
+        int32_t dirty_count = 0;
+        for (int32_t i = 0; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_) && dirty_count < MAX_UPLOADS_PER_FRAME; i++)
         {
             if (is_vobj_dirty(static_cast<uint32_t>(i)) && world->objects[i].active)
             {
-                upload_vobj_to_atlas(static_cast<uint32_t>(i), &world->objects[i]);
-                clear_vobj_dirty(static_cast<uint32_t>(i));
-                uploads++;
+                dirty_objects[dirty_count++] = static_cast<uint32_t>(i);
             }
+        }
+
+        if (dirty_count > 0)
+        {
+            uint8_t *staging = static_cast<uint8_t *>(vobj_staging_mapped_);
+            for (int32_t slot = 0; slot < dirty_count; slot++)
+            {
+                uint32_t obj_idx = dirty_objects[slot];
+                const VoxelObject *obj = &world->objects[obj_idx];
+                uint8_t *dst = staging + slot * VOBJ_TOTAL_VOXELS;
+                for (int32_t v = 0; v < VOBJ_TOTAL_VOXELS; v++)
+                    dst[v] = obj->voxels[v].material;
+                clear_vobj_dirty(obj_idx);
+            }
+
+            VkCommandBuffer cmd = upload_cmd_;
+            if (cmd == VK_NULL_HANDLE)
+            {
+                VkCommandBufferAllocateInfo cmd_alloc{};
+                cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                cmd_alloc.commandPool = command_pool_;
+                cmd_alloc.commandBufferCount = 1;
+                vkAllocateCommandBuffers(device_, &cmd_alloc, &cmd);
+                upload_cmd_ = cmd;
+            }
+            vkResetCommandBuffer(cmd, 0);
+
+            VkCommandBufferBeginInfo begin_info{};
+            begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &begin_info);
+
+            VkImageMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = vobj_atlas_image_;
+            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            barrier.subresourceRange.baseMipLevel = 0;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.subresourceRange.baseArrayLayer = 0;
+            barrier.subresourceRange.layerCount = 1;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+            for (int32_t slot = 0; slot < dirty_count; slot++)
+            {
+                VkBufferImageCopy region{};
+                region.bufferOffset = static_cast<VkDeviceSize>(slot) * VOBJ_TOTAL_VOXELS;
+                region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                region.imageSubresource.mipLevel = 0;
+                region.imageSubresource.baseArrayLayer = 0;
+                region.imageSubresource.layerCount = 1;
+                region.imageOffset = {0, 0, static_cast<int32_t>(dirty_objects[slot] * VOBJ_GRID_DIM)};
+                region.imageExtent = {VOBJ_GRID_DIM, VOBJ_GRID_DIM, VOBJ_GRID_DIM};
+                vkCmdCopyBufferToImage(cmd, vobj_staging_buffer_.buffer, vobj_atlas_image_,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            }
+
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+            vkEndCommandBuffer(cmd);
+
+            uint64_t signal_value = ++upload_timeline_value_;
+            VkTimelineSemaphoreSubmitInfo timeline_submit{};
+            timeline_submit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+            timeline_submit.signalSemaphoreValueCount = 1;
+            timeline_submit.pSignalSemaphoreValues = &signal_value;
+
+            VkSubmitInfo submit_info{};
+            submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit_info.pNext = &timeline_submit;
+            submit_info.commandBufferCount = 1;
+            submit_info.pCommandBuffers = &cmd;
+            submit_info.signalSemaphoreCount = 1;
+            submit_info.pSignalSemaphores = &upload_timeline_semaphore_;
+            vkQueueSubmit(graphics_queue_, 1, &submit_info, VK_NULL_HANDLE);
+
+            vobj_upload_pending_[current_frame_] = signal_value;
         }
 
         upload_vobj_metadata(world);

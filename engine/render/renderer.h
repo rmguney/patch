@@ -589,6 +589,7 @@ namespace patch
         void *vobj_metadata_mapped_[MAX_FRAMES_IN_FLIGHT];
         VulkanBuffer vobj_staging_buffer_;
         void *vobj_staging_mapped_;
+        uint64_t vobj_upload_pending_[MAX_FRAMES_IN_FLIGHT] = {};
 
         /* GPU spatial grid for object acceleration */
         VulkanBuffer spatial_grid_buffer_;
