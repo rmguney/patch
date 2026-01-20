@@ -503,3 +503,64 @@ void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, 
         }
     }
 }
+
+void unified_volume_clear_shadow_aabb(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
+                                      int32_t min_x, int32_t min_y, int32_t min_z,
+                                      int32_t max_x, int32_t max_y, int32_t max_z)
+{
+    if (!shadow_mip0)
+        return;
+
+    int32_t px_min = min_x >> 1;
+    int32_t py_min = min_y >> 1;
+    int32_t pz_min = min_z >> 1;
+    int32_t px_max = max_x >> 1;
+    int32_t py_max = max_y >> 1;
+    int32_t pz_max = max_z >> 1;
+
+    if (px_min < 0)
+        px_min = 0;
+    if (py_min < 0)
+        py_min = 0;
+    if (pz_min < 0)
+        pz_min = 0;
+    if (px_max >= (int32_t)w)
+        px_max = (int32_t)w - 1;
+    if (py_max >= (int32_t)h)
+        py_max = (int32_t)h - 1;
+    if (pz_max >= (int32_t)d)
+        pz_max = (int32_t)d - 1;
+
+    for (int32_t pz = pz_min; pz <= pz_max; pz++)
+    {
+        for (int32_t py = py_min; py <= py_max; py++)
+        {
+            for (int32_t px = px_min; px <= px_max; px++)
+            {
+                size_t packed_idx = (size_t)px + (size_t)py * w + (size_t)pz * w * h;
+                shadow_mip0[packed_idx] = 0;
+            }
+        }
+    }
+}
+
+void unified_volume_compute_object_shadow_aabb(const VoxelObject *obj, const VoxelVolume *terrain,
+                                               int32_t *out_min, int32_t *out_max)
+{
+    if (!obj || !terrain || !out_min || !out_max)
+        return;
+
+    float half_grid = (VOBJ_GRID_SIZE * obj->voxel_size) * 0.5f;
+    float world_radius = half_grid * 1.5f;
+
+    float rel_x = obj->position.x - terrain->bounds.min_x;
+    float rel_y = obj->position.y - terrain->bounds.min_y;
+    float rel_z = obj->position.z - terrain->bounds.min_z;
+
+    out_min[0] = (int32_t)((rel_x - world_radius) / terrain->voxel_size);
+    out_min[1] = (int32_t)((rel_y - world_radius) / terrain->voxel_size);
+    out_min[2] = (int32_t)((rel_z - world_radius) / terrain->voxel_size);
+    out_max[0] = (int32_t)((rel_x + world_radius) / terrain->voxel_size) + 1;
+    out_max[1] = (int32_t)((rel_y + world_radius) / terrain->voxel_size) + 1;
+    out_max[2] = (int32_t)((rel_z + world_radius) / terrain->voxel_size) + 1;
+}

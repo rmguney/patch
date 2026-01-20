@@ -147,6 +147,14 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     world->first_dirty = -1;
     world->dirty_count = 0;
 
+    world->raycast_grid = (SpatialHashGrid *)calloc(1, sizeof(SpatialHashGrid));
+    if (world->raycast_grid)
+    {
+        float cell_size = 25.0f;
+        spatial_hash_init(world->raycast_grid, cell_size, bounds);
+    }
+    world->raycast_grid_valid = false;
+
     return world;
 }
 
@@ -154,6 +162,10 @@ void voxel_object_world_destroy(VoxelObjectWorld *world)
 {
     if (world)
     {
+        if (world->raycast_grid)
+        {
+            free(world->raycast_grid);
+        }
         free(world);
     }
 }
@@ -337,8 +349,46 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
 
     float closest_t = 1e30f;
 
-    for (int32_t i = 0; i < world->object_count; i++)
+    int32_t candidates[256];
+    int32_t candidate_count = 0;
+    bool use_grid = world->raycast_grid_valid && world->raycast_grid != NULL;
+
+    if (use_grid)
     {
+        float query_radius = 50.0f;
+        float max_ray_dist = 500.0f;
+        float step_size = query_radius * 1.5f;
+
+        for (float t = 0.0f; t < max_ray_dist && candidate_count < 200; t += step_size)
+        {
+            Vec3 sample_pos = vec3_add(origin, vec3_scale(dir, t));
+            int32_t found[64];
+            int32_t found_count = spatial_hash_query(world->raycast_grid, sample_pos, query_radius,
+                                                     found, 64);
+            for (int32_t j = 0; j < found_count && candidate_count < 256; j++)
+            {
+                bool already_added = false;
+                for (int32_t k = 0; k < candidate_count; k++)
+                {
+                    if (candidates[k] == found[j])
+                    {
+                        already_added = true;
+                        break;
+                    }
+                }
+                if (!already_added)
+                {
+                    candidates[candidate_count++] = found[j];
+                }
+            }
+        }
+    }
+
+    int32_t loop_count = use_grid ? candidate_count : world->object_count;
+
+    for (int32_t loop_i = 0; loop_i < loop_count; loop_i++)
+    {
+        int32_t i = use_grid ? candidates[loop_i] : loop_i;
         VoxelObject *obj = &world->objects[i];
         if (!obj->active || obj->voxel_count == 0)
             continue;
@@ -456,6 +506,25 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
 
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
     return result;
+}
+
+void voxel_object_world_update_raycast_grid(VoxelObjectWorld *world)
+{
+    if (!world || !world->raycast_grid)
+        return;
+
+    spatial_hash_clear(world->raycast_grid);
+
+    for (int32_t i = 0; i < world->object_count; i++)
+    {
+        VoxelObject *obj = &world->objects[i];
+        if (obj->active && obj->voxel_count > 0)
+        {
+            spatial_hash_insert(world->raycast_grid, i, obj->position, obj->radius);
+        }
+    }
+
+    world->raycast_grid_valid = true;
 }
 
 void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index)

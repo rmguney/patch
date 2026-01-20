@@ -438,7 +438,11 @@ namespace patch
         }
 
         int64_t wait_start = platform_get_ticks();
-        vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
+        VkResult fence_status = vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, 0);
+        if (fence_status == VK_TIMEOUT)
+        {
+            vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
+        }
         int64_t wait_end = platform_get_ticks();
         int64_t freq = platform_get_frequency();
         if (freq > 0)

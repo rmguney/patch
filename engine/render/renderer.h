@@ -562,10 +562,13 @@ namespace patch
             Vec3 position;
             Quat orientation;
             bool valid;
+            int32_t aabb_min[3];
+            int32_t aabb_max[3];
         };
         ShadowObjectState shadow_object_states_[MAX_SHADOW_OBJECTS] = {};
         int32_t shadow_stamp_cursor_ = 0; /* Round-robin cursor for over-budget stamping */
         bool shadow_needs_terrain_update_ = false;
+        std::vector<uint8_t> particle_shadow_mask_; /* Track particle-touched shadow voxels */
 
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;

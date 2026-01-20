@@ -83,6 +83,13 @@ extern "C"
                                                   const VoxelVolume *terrain, const ParticleSystem *particles,
                                                   float interp_alpha);
 
+    void unified_volume_clear_shadow_aabb(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
+                                          int32_t min_x, int32_t min_y, int32_t min_z,
+                                          int32_t max_x, int32_t max_y, int32_t max_z);
+
+    void unified_volume_compute_object_shadow_aabb(const VoxelObject *obj, const VoxelVolume *terrain,
+                                                   int32_t *out_min, int32_t *out_max);
+
     static inline int32_t unified_volume_chunk_index(const UnifiedVolume *vol,
                                                      int32_t cx, int32_t cy, int32_t cz)
     {

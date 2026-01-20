@@ -236,6 +236,7 @@ static void ball_pit_tick(Scene *scene)
     {
         voxel_object_world_process_splits(data->objects);
         voxel_object_world_process_recalcs(data->objects);
+        voxel_object_world_update_raycast_grid(data->objects);
     }
 
     PlatformTime t1 = platform_time_now();

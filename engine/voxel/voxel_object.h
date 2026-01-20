@@ -3,6 +3,7 @@
 
 #include "engine/core/types.h"
 #include "engine/core/math.h"
+#include "engine/core/spatial_hash.h"
 #include "engine/voxel/volume.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -66,6 +67,10 @@ extern "C"
         int32_t split_queue[VOBJ_SPLIT_QUEUE_SIZE];
         int32_t split_queue_head;
         int32_t split_queue_tail;
+
+        /* Spatial hash for raycast acceleration */
+        SpatialHashGrid *raycast_grid;
+        bool raycast_grid_valid;
     } VoxelObjectWorld;
 
     typedef struct
@@ -117,6 +122,9 @@ extern "C"
     void voxel_object_world_process_splits(VoxelObjectWorld *world);
     void voxel_object_world_process_recalcs(VoxelObjectWorld *world);
     void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index);
+
+    /* Raycast acceleration */
+    void voxel_object_world_update_raycast_grid(VoxelObjectWorld *world);
 
 #ifdef __cplusplus
 }

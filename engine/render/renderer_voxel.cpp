@@ -589,10 +589,6 @@ namespace patch
                 if (needs_stamp)
                 {
                     moved_objects[moved_count++] = i;
-                    /* Update cached state */
-                    state->position = obj->position;
-                    state->orientation = obj->orientation;
-                    state->valid = true;
                 }
             }
 
@@ -610,9 +606,6 @@ namespace patch
                     if (!state->valid)
                     {
                         moved_objects[moved_count++] = i;
-                        state->position = obj->position;
-                        state->orientation = obj->orientation;
-                        state->valid = true;
                     }
                 }
                 shadow_stamp_cursor_ = (moved_count > 0) ? shadow_stamp_cursor_ + moved_count : 0;
@@ -621,8 +614,7 @@ namespace patch
 
         /* Determine rebuild strategy */
         bool needs_full_rebuild = volume_resized ||
-                                  volume_shadow_needs_full_rebuild(vol) ||
-                                  particles_present; /* Particles always need full stamp (they move every frame) */
+                                  volume_shadow_needs_full_rebuild(vol);
 
         bool needs_terrain_repack = needs_full_rebuild || terrain_dirty;
         bool needs_object_stamp = needs_full_rebuild || moved_count > 0 || new_objects_added;
@@ -687,21 +679,78 @@ namespace patch
                     shadow_object_states_[i].position = obj->position;
                     shadow_object_states_[i].orientation = obj->orientation;
                     shadow_object_states_[i].valid = true;
+                    unified_volume_compute_object_shadow_aabb(obj, vol,
+                                                              shadow_object_states_[i].aabb_min,
+                                                              shadow_object_states_[i].aabb_max);
                 }
             }
             shadow_stamp_cursor_ = 0;
         }
         else if (moved_count > 0 && objects)
         {
+            /* Clear old AABBs before stamping at new positions */
+            for (int32_t i = 0; i < moved_count; i++)
+            {
+                int32_t obj_idx = moved_objects[i];
+                ShadowObjectState *state = &shadow_object_states_[obj_idx];
+                if (state->valid)
+                {
+                    unified_volume_clear_shadow_aabb(shadow_mip0_.data(), w0, h0, d0,
+                                                     state->aabb_min[0], state->aabb_min[1], state->aabb_min[2],
+                                                     state->aabb_max[0], state->aabb_max[1], state->aabb_max[2]);
+                }
+            }
+
             /* Incremental stamp: only stamp moved objects */
             unified_volume_stamp_objects_incremental(shadow_mip0_.data(), w0, h0, d0,
                                                      vol, objects, moved_objects, moved_count);
+
+            /* Update state for moved objects */
+            for (int32_t i = 0; i < moved_count; i++)
+            {
+                int32_t obj_idx = moved_objects[i];
+                const VoxelObject *obj = &objects->objects[obj_idx];
+                if (obj->active)
+                {
+                    ShadowObjectState *state = &shadow_object_states_[obj_idx];
+                    state->position = obj->position;
+                    state->orientation = obj->orientation;
+                    state->valid = true;
+                    unified_volume_compute_object_shadow_aabb(obj, vol, state->aabb_min, state->aabb_max);
+                }
+            }
         }
 
-        /* Particle stamping (always full, they move every frame) */
+        /* Particle stamping: clear previous footprint, then re-stamp */
         if (particles && particles->count > 0)
         {
+            if (shadow_particle_count_ > 0 && particle_shadow_mask_.size() == shadow_mip0_.size())
+            {
+                for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
+                {
+                    shadow_mip0_[i] &= ~particle_shadow_mask_[i];
+                }
+            }
+
+            /* Resize mask if needed */
+            if (particle_shadow_mask_.size() != shadow_mip0_.size())
+            {
+                particle_shadow_mask_.resize(shadow_mip0_.size());
+            }
+            std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
+
+            /* Stamp particles to both shadow volume and mask */
             unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
+            unified_volume_stamp_particles_to_shadow(particle_shadow_mask_.data(), w0, h0, d0, vol, particles, interp_alpha_);
+        }
+        else if (shadow_particle_count_ > 0 && particle_shadow_mask_.size() > 0)
+        {
+            /* Clear particle shadows when no particles remain */
+            for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
+            {
+                shadow_mip0_[i] &= ~particle_shadow_mask_[i];
+            }
+            std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
         }
 
         /* Mip generation */
