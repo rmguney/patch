@@ -17,6 +17,7 @@ static void apply_preset_to_settings(AppSettings *s, int32_t preset)
         s->ao_quality = QUALITY_PRESETS[preset].ao;
         s->lod_quality = QUALITY_PRESETS[preset].lod;
         s->denoise_quality = QUALITY_PRESETS[preset].denoise;
+        s->taa_quality = QUALITY_PRESETS[preset].taa;
     }
 }
 
@@ -98,6 +99,9 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
     ui_menu_add_slider_labeled(menu, "SPATIAL DENOISE", APP_ACTION_SETTING_DENOISE_QUALITY,
                                s->denoise_quality, 0, 1, TOGGLE_LABELS, 2);
     menu->items[menu->item_count - 1].enabled = !using_preset;
+    ui_menu_add_slider_labeled(menu, "TAA", APP_ACTION_SETTING_TAA_QUALITY,
+                               s->taa_quality, 0, 1, TOGGLE_LABELS, 2);
+    menu->items[menu->item_count - 1].enabled = !using_preset;
 
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_BACK);
@@ -143,6 +147,10 @@ static void sync_graphics_menu_from_settings(AppUI *ui)
             break;
         case APP_ACTION_SETTING_DENOISE_QUALITY:
             item->slider_value = s->denoise_quality;
+            item->enabled = !using_preset;
+            break;
+        case APP_ACTION_SETTING_TAA_QUALITY:
+            item->slider_value = s->taa_quality;
             item->enabled = !using_preset;
             break;
         }
@@ -298,6 +306,13 @@ static void sync_graphics_from_menu(AppUI *ui)
             if (allow_individual && ui->settings.denoise_quality != item->slider_value)
             {
                 ui->settings.denoise_quality = item->slider_value;
+                individual_changed = true;
+            }
+            break;
+        case APP_ACTION_SETTING_TAA_QUALITY:
+            if (allow_individual && ui->settings.taa_quality != item->slider_value)
+            {
+                ui->settings.taa_quality = item->slider_value;
                 individual_changed = true;
             }
             break;

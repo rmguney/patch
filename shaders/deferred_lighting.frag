@@ -42,7 +42,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int _reserved0;
+    int taa_quality;
 } pc;
 
 #include "include/camera.glsl"
@@ -136,9 +136,9 @@ void main() {
     /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
     float ao = (pc.ao_quality >= 1) ? texture(ao_buffer, in_uv).r : 1.0;
 
-    float ambient = 0.28;
-    vec3 sky_ambient = vec3(0.62, 0.74, 0.98) * (N.y * 0.5 + 0.5);
-    vec3 ground_ambient = vec3(0.42, 0.36, 0.32) * (0.5 - N.y * 0.5);
+    float ambient = 0.32;
+    vec3 sky_ambient = vec3(0.55, 0.68, 0.95) * (N.y * 0.5 + 0.5);
+    vec3 ground_ambient = vec3(0.38, 0.32, 0.28) * (0.5 - N.y * 0.5);
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
 
     vec3 H = normalize(key_light_dir + V);
@@ -153,7 +153,7 @@ void main() {
 
     float floor_y = pc.bounds_min.y;
     float ground_dist = g.world_pos.y - floor_y;
-    float ground_ao = smoothstep(0.0, 1.5, ground_dist) * 0.45 + 0.55;
+    float ground_ao = smoothstep(0.0, 1.0, ground_dist) * 0.5 + 0.5;
 
     vec3 color = (g.albedo * ambient_light + diffuse + specular) * ground_ao;
 

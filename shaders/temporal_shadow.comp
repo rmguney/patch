@@ -32,7 +32,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int _reserved0;
+    int taa_quality;
 } pc;
 
 /* Set 0: inputs */
@@ -45,9 +45,9 @@ layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
 /* Set 1: output */
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
 
-const float HISTORY_BLEND_MAX = 0.85;  /* Higher = smoother but more lag */
-const float HISTORY_BLEND_MIN = 0.3;   /* Lower = faster response during motion */
-const float VARIANCE_CLAMP_GAMMA = 1.5; /* Neighborhood clamping strength */
+const float HISTORY_BLEND_MAX = 0.92;  /* Higher = smoother but more lag */
+const float HISTORY_BLEND_MIN = 0.4;   /* Lower = faster response during motion */
+const float VARIANCE_CLAMP_GAMMA = 1.8; /* Neighborhood clamping strength */
 
 void main()
 {
@@ -75,13 +75,19 @@ void main()
         return;
     }
 
-    /* Compute neighborhood min/max for variance clamping (3x3) */
+    /* Compute neighborhood stats and apply spatial blur (3x3 bilateral) */
     float min_shadow = current_shadow;
     float max_shadow = current_shadow;
+    float blur_sum = current_shadow;
+    float blur_weight = 1.0;
+    float center_depth = texture(gbuffer_linear_depth, uv).r;
+
     for (int dy = -1; dy <= 1; dy++)
     {
         for (int dx = -1; dx <= 1; dx++)
         {
+            if (dx == 0 && dy == 0) continue;
+
             ivec2 neighbor = pixel + ivec2(dx, dy);
             if (neighbor.x >= 0 && neighbor.x < size.x &&
                 neighbor.y >= 0 && neighbor.y < size.y)
@@ -89,9 +95,20 @@ void main()
                 float s = texelFetch(shadow_current, neighbor, 0).r;
                 min_shadow = min(min_shadow, s);
                 max_shadow = max(max_shadow, s);
+
+                /* Bilateral weight based on depth similarity */
+                vec2 neighbor_uv = (vec2(neighbor) + 0.5) / vec2(size);
+                float neighbor_depth = texture(gbuffer_linear_depth, neighbor_uv).r;
+                float depth_diff = abs(neighbor_depth - center_depth);
+                float w = exp(-depth_diff * 20.0);
+                blur_sum += s * w;
+                blur_weight += w;
             }
         }
     }
+
+    /* Use blurred shadow to reduce per-pixel noise */
+    float blurred_shadow = blur_sum / blur_weight;
 
     /* Expand clamping range to allow some temporal smoothing */
     float range = (max_shadow - min_shadow) * VARIANCE_CLAMP_GAMMA;
@@ -108,6 +125,7 @@ void main()
     float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
     float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
 
-    float resolved = mix(current_shadow, history_shadow, history_blend);
+    /* Use blurred shadow for current frame to reduce noise, blend with history */
+    float resolved = mix(blurred_shadow, history_shadow, history_blend);
     imageStore(out_shadow_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
 }

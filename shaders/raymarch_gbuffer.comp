@@ -33,7 +33,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int _reserved0;
+    int taa_quality;
 } pc;
 
 /* Global parameters required by data_terrain.glsl */
@@ -238,10 +238,12 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
 }
 
 void generate_ray(ivec2 pixel, ivec2 screen_size, out vec3 ray_origin, out vec3 ray_dir) {
-    camera_generate_ray(
+    vec2 jitter = (pc.taa_quality > 0) ? get_taa_jitter(pc.frame_count) : vec2(0.0);
+    camera_generate_ray_jittered(
         pixel, screen_size,
         pc.inv_view, pc.inv_projection, pc.camera_pos,
         pc.is_orthographic != 0,
+        jitter,
         ray_origin, ray_dir
     );
 }

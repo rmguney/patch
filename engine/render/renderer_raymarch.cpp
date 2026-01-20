@@ -576,6 +576,152 @@ namespace patch
         ao_history_write_index_ = read_index;
     }
 
+    void Renderer::dispatch_taa_resolve()
+    {
+        if (!taa_initialized_ || !taa_compute_pipeline_ || !taa_history_views_[0] || !taa_history_views_[1])
+            return;
+
+        if (!lit_color_view_ || !motion_vector_view_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        const int write_index = taa_history_write_index_ & 1;
+        const int read_index = 1 - write_index;
+
+        /* Transition write history image to GENERAL for compute write */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = taa_history_images_[write_index];
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Transition lit_color to shader read (from color attachment) */
+        VkImageMemoryBarrier lit_barrier{};
+        lit_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        lit_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        lit_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        lit_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        lit_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        lit_barrier.image = lit_color_image_;
+        lit_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        lit_barrier.subresourceRange.baseMipLevel = 0;
+        lit_barrier.subresourceRange.levelCount = 1;
+        lit_barrier.subresourceRange.baseArrayLayer = 0;
+        lit_barrier.subresourceRange.layerCount = 1;
+        lit_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        lit_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &lit_barrier);
+
+        /* Update descriptors for this frame's ping-pong buffers */
+        VkDescriptorImageInfo current_info{};
+        current_info.sampler = gbuffer_sampler_;
+        current_info.imageView = lit_color_view_;
+        current_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorImageInfo history_info{};
+        history_info.sampler = gbuffer_sampler_;
+        history_info.imageView = taa_history_views_[read_index];
+        history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorImageInfo motion_info{};
+        motion_info.sampler = gbuffer_sampler_;
+        motion_info.imageView = motion_vector_view_;
+        motion_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet input_writes[3]{};
+        input_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        input_writes[0].dstSet = taa_input_sets_[current_frame_];
+        input_writes[0].dstBinding = 0;
+        input_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        input_writes[0].descriptorCount = 1;
+        input_writes[0].pImageInfo = &current_info;
+
+        input_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        input_writes[1].dstSet = taa_input_sets_[current_frame_];
+        input_writes[1].dstBinding = 1;
+        input_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        input_writes[1].descriptorCount = 1;
+        input_writes[1].pImageInfo = &history_info;
+
+        input_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        input_writes[2].dstSet = taa_input_sets_[current_frame_];
+        input_writes[2].dstBinding = 2;
+        input_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        input_writes[2].descriptorCount = 1;
+        input_writes[2].pImageInfo = &motion_info;
+
+        VkDescriptorImageInfo out_info{};
+        out_info.imageView = taa_history_views_[write_index];
+        out_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet out_write{};
+        out_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        out_write.dstSet = taa_output_sets_[current_frame_];
+        out_write.dstBinding = 0;
+        out_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        out_write.descriptorCount = 1;
+        out_write.pImageInfo = &out_info;
+
+        vkUpdateDescriptorSets(device_, 3, input_writes, 0, nullptr);
+        vkUpdateDescriptorSets(device_, 1, &out_write, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, taa_compute_pipeline_);
+        VkDescriptorSet sets[2] = {taa_input_sets_[current_frame_], taa_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, taa_compute_layout_, 0, 2, sets, 0, nullptr);
+
+        Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
+        Mat4 inv_proj = mat4_inverse(projection_matrix_);
+
+        VoxelPushConstants pc{};
+        pc.inv_view = inv_view;
+        pc.inv_projection = inv_proj;
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.history_valid = taa_history_valid_ ? 1 : 0;
+
+        vkCmdPushConstants(cmd, taa_compute_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition TAA output to SHADER_READ_ONLY for denoise sampling */
+        barrier.image = taa_history_images_[write_index];
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Update denoise input to read from TAA output instead of lit_color */
+        update_denoise_color_input(current_frame_, taa_history_views_[write_index]);
+
+        taa_history_valid_ = true;
+        taa_history_write_index_ = read_index;
+    }
+
     void Renderer::destroy_compute_raymarching_resources()
     {
         if (!compute_resources_initialized_)
@@ -666,6 +812,9 @@ namespace patch
 
         /* Destroy spatial denoise resources */
         destroy_spatial_denoise_resources();
+
+        /* Destroy TAA resources */
+        destroy_taa_resources();
 
         compute_resources_initialized_ = false;
     }

@@ -41,7 +41,7 @@ PUSH_CONSTANT uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int _reserved0;
+    int taa_quality;
 } pc;
 
 layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {

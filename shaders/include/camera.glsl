@@ -49,6 +49,62 @@ void camera_generate_ray(
 }
 
 /*
+ * Halton sequence for TAA jitter (base 2 and 3)
+ */
+float halton(int index, int base) {
+    float f = 1.0;
+    float r = 0.0;
+    int i = index;
+    while (i > 0) {
+        f = f / float(base);
+        r = r + f * float(i % base);
+        i = i / base;
+    }
+    return r;
+}
+
+vec2 get_taa_jitter(int frame_index) {
+    int idx = (frame_index % 16) + 1; /* 16-sample Halton sequence */
+    return vec2(halton(idx, 2), halton(idx, 3)) - 0.5; /* Center around 0 */
+}
+
+/*
+ * Generate a ray with TAA subpixel jitter.
+ */
+void camera_generate_ray_jittered(
+    ivec2 pixel,
+    ivec2 screen_size,
+    mat4 inv_view,
+    mat4 inv_projection,
+    vec3 camera_pos,
+    bool is_orthographic,
+    vec2 jitter, /* Subpixel offset in range [-0.5, 0.5] */
+    out vec3 ray_origin,
+    out vec3 ray_dir
+) {
+    vec2 uv = (vec2(pixel) + 0.5 + jitter) / vec2(screen_size);
+    vec2 ndc = uv * 2.0 - 1.0;
+
+    if (is_orthographic) {
+        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
+        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
+        vec4 near_view = inv_projection * near_clip;
+        vec4 far_view = inv_projection * far_clip;
+        vec3 near_world = (inv_view * vec4(near_view.xyz, 1.0)).xyz;
+        vec3 far_world = (inv_view * vec4(far_view.xyz, 1.0)).xyz;
+        ray_origin = near_world;
+        ray_dir = normalize(far_world - near_world);
+    } else {
+        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
+        vec4 ray_view = inv_projection * ray_clip;
+        ray_view.z = -1.0;
+        ray_view.w = 0.0;
+        ray_dir = normalize((inv_view * ray_view).xyz);
+        ray_origin = camera_pos;
+    }
+}
+
+/*
  * Generate a ray from UV coordinates (for fragment shaders).
  */
 void camera_generate_ray_uv(

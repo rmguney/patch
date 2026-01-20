@@ -33,7 +33,7 @@ layout(push_constant) uniform Constants {
     int shadow_contact;
     int ao_quality;
     int lod_quality;
-    int _reserved0;
+    int taa_quality;
 } pc;
 
 #include "include/gbuffer_sample.glsl"
@@ -258,18 +258,20 @@ void main() {
         /* Bias along light direction instead of normal - ensures shadow ray starts
            outside occluders regardless of surface orientation */
         float light_bias = pc.voxel_size * 1.0;
-        float normal_bias = pc.voxel_size * 0.3;
+        /* Angle-dependent normal bias: steeper angles need less bias */
+        float angle_factor = max(0.2, dot(-SUN_DIR, normal));
+        float normal_bias = pc.voxel_size * 0.3 / angle_factor;
         vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
-        /* Scale samples: quality 1=3, 2=4, 3=5 - temporal accumulation handles noise */
-        int num_samples = 2 + pc.shadow_quality;
+        /* Scale samples: quality 1=4, 2=5, 3=6 - temporal accumulation handles noise */
+        int num_samples = 3 + pc.shadow_quality;
         float shadow_sum = 0.0;
 
         /* Contact hardening only when enabled, otherwise use constant penumbra */
         float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
         float penumbra = base_penumbra;
 
-        if (pc.shadow_contact != 0 && pc.shadow_quality >= 3) {
+        if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
             /* Contact hardening: trace center ray to find occluder distance */
             float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
 
@@ -282,14 +284,16 @@ void main() {
         }
 
         for (int s = 0; s < num_samples; s++) {
-            /* Golden angle for optimal angular distribution (avoids spiral banding) */
-            float golden_angle = 2.399963229; /* 137.5 degrees in radians */
-            float angle = float(s) * golden_angle + temporal_noise * 6.28318;
+            /* Per-sample temporal variation breaks up patterns across frames */
+            float sample_temporal = fract(temporal_noise + float(s) * 0.1618033989);
 
-            /* Stratified radius with independent jitter (decoupled from angle) */
-            float radius_noise = fract(spatial_noise * 2.236 + float(s) * 0.381966);
-            float radius = sqrt((float(s) + 0.5) / float(num_samples)) * penumbra;
-            radius *= 0.6 + radius_noise * 0.4; /* Jitter radius within ring */
+            /* Golden angle + per-sample temporal offset for angular distribution */
+            float golden_angle = 2.399963229; /* 137.5 degrees in radians */
+            float angle = float(s) * golden_angle + sample_temporal * 6.28318;
+
+            /* Stratified radius with temporal jitter for better frame-to-frame coverage */
+            float radius_base = sqrt((float(s) + sample_temporal) / float(num_samples));
+            float radius = radius_base * penumbra;
 
             vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
             vec3 jittered_light = normalize(SUN_DIR + jitter);

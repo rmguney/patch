@@ -166,7 +166,7 @@ namespace patch
             return (float)len * unit_px * 6.0f - unit_px;
         }
 
-        void set_orthographic(float width, float height, float depth);
+        void set_orthographic(float width, float height, float depth, float near_plane = 0.1f);
         void set_perspective(float fov_y_degrees, float near_val, float far_val);
         void set_view_angle(float yaw_degrees, float distance);
         void set_view_angle_at(float yaw_degrees, float distance, Vec3 target);
@@ -192,6 +192,8 @@ namespace patch
         int get_lod_quality() const { return lod_quality_; }
         void set_denoise_quality(int level);
         int get_denoise_quality() const { return denoise_quality_; }
+        void set_taa_quality(int level);
+        int get_taa_quality() const { return taa_quality_; }
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -341,6 +343,7 @@ namespace patch
         float ortho_base_depth_;
         float ortho_half_width_;
         float ortho_half_height_;
+        float ortho_near_plane_ = 0.1f;
         ProjectionMode projection_mode_;
         PresentMode present_mode_ = PresentMode::Mailbox; /* Default: uncapped FPS */
         float perspective_fov_y_degrees_;
@@ -386,6 +389,7 @@ namespace patch
         int ao_quality_ = QUALITY_DEFAULT_AO;
         int lod_quality_ = QUALITY_DEFAULT_LOD;
         int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
+        int taa_quality_ = QUALITY_DEFAULT_TAA;
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -479,6 +483,21 @@ namespace patch
         VkFramebuffer deferred_lighting_intermediate_fb_ = VK_NULL_HANDLE;
 
         bool spatial_denoise_initialized_ = false;
+
+        /* TAA (Temporal Anti-Aliasing) resources */
+        VkImage taa_history_images_[2] = {};
+        VkDeviceMemory taa_history_memory_[2] = {};
+        VkImageView taa_history_views_[2] = {};
+        VkPipeline taa_compute_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout taa_compute_layout_ = VK_NULL_HANDLE;
+        VkDescriptorPool taa_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout taa_input_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout taa_output_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSet taa_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet taa_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        bool taa_history_valid_ = false;
+        int taa_history_write_index_ = 0;
+        bool taa_initialized_ = false;
 
         bool compute_raymarching_enabled_ = true; /* Use compute path when available */
         bool compute_resources_initialized_ = false;
@@ -658,6 +677,7 @@ namespace patch
         bool create_gbuffer_descriptor_sets();
         bool create_deferred_lighting_descriptor_sets();
         void update_deferred_shadow_buffer_descriptor(uint32_t frame_index, VkImageView shadow_view);
+        void update_denoise_color_input(uint32_t frame_index, VkImageView color_view);
         void destroy_gbuffer_resources();
         bool init_deferred_pipeline();
         bool init_deferred_descriptors();
@@ -718,6 +738,13 @@ namespace patch
         void destroy_spatial_denoise_resources();
         void dispatch_spatial_denoise();
         void blit_denoised_to_swapchain(uint32_t image_index);
+
+        /* TAA compute infrastructure */
+        bool create_taa_history_resources();
+        bool create_taa_pipeline();
+        bool create_taa_descriptor_sets();
+        void destroy_taa_resources();
+        void dispatch_taa_resolve();
 
         /* Raymarched particle rendering */
         bool init_particle_resources();

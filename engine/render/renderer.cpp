@@ -115,6 +115,7 @@ namespace patch
         ao_quality_ = QUALITY_PRESETS[preset].ao;
         lod_quality_ = QUALITY_PRESETS[preset].lod;
         denoise_quality_ = QUALITY_PRESETS[preset].denoise;
+        taa_quality_ = QUALITY_PRESETS[preset].taa;
     }
 
     void Renderer::update_adaptive_quality(float frame_time_ms)
@@ -586,16 +587,17 @@ namespace patch
         }
     }
 
-    void Renderer::set_orthographic(float width, float height, float depth)
+    void Renderer::set_orthographic(float width, float height, float depth, float near_plane)
     {
         projection_mode_ = ProjectionMode::Orthographic;
         ortho_base_width_ = width;
         ortho_base_height_ = height;
         ortho_base_depth_ = depth;
+        ortho_near_plane_ = near_plane;
         float aspect = window_.aspect_ratio();
         float half_width = width * aspect * 0.5f;
         float half_height = height * 0.5f;
-        projection_matrix_ = mat4_ortho(-half_width, half_width, -half_height, half_height, 0.1f, depth);
+        projection_matrix_ = mat4_ortho(-half_width, half_width, -half_height, half_height, ortho_near_plane_, depth);
         ortho_half_width_ = half_width;
         ortho_half_height_ = half_height;
     }
@@ -622,7 +624,7 @@ namespace patch
         recreate_swapchain();
         if (ortho_base_width_ > 0.0f && ortho_base_height_ > 0.0f && ortho_base_depth_ > 0.0f)
         {
-            set_orthographic(ortho_base_width_, ortho_base_height_, ortho_base_depth_);
+            set_orthographic(ortho_base_width_, ortho_base_height_, ortho_base_depth_, ortho_near_plane_);
         }
         if (projection_mode_ == ProjectionMode::Perspective)
         {

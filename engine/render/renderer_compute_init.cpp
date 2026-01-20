@@ -110,6 +110,28 @@ namespace patch
 
         spatial_denoise_initialized_ = true;
 
+        /* Initialize TAA resources */
+        if (!create_taa_history_resources())
+        {
+            fprintf(stderr, "Failed to create TAA history resources\n");
+            return false;
+        }
+
+        if (!create_taa_pipeline())
+        {
+            fprintf(stderr, "Failed to create TAA pipeline\n");
+            return false;
+        }
+
+        if (!create_taa_descriptor_sets())
+        {
+            fprintf(stderr, "Failed to create TAA descriptor sets\n");
+            return false;
+        }
+
+        taa_history_write_index_ = 0;
+        taa_history_valid_ = false;
+
         compute_resources_initialized_ = true;
         printf("  Compute raymarching pipelines initialized\n");
         return true;

@@ -1,0 +1,141 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Constants {
+    mat4 inv_view;
+    mat4 inv_projection;
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float chunk_size;
+    vec3 camera_pos;
+    int history_valid;
+    ivec3 grid_size;
+    int total_chunks;
+    ivec3 chunks_dim;
+    int frame_count;
+    int _pad0;
+    int debug_mode;
+    int is_orthographic;
+    int max_steps;
+    float near_plane;
+    float far_plane;
+    int object_count;
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int taa_quality;
+} pc;
+
+/* Set 0: inputs */
+layout(SET_BINDING(0, 0)) uniform sampler2D current_color;
+layout(SET_BINDING(0, 1)) uniform sampler2D history_color;
+layout(SET_BINDING(0, 2)) uniform sampler2D motion_vectors;
+
+/* Set 1: output */
+layout(rgba8, SET_BINDING(1, 0)) writeonly uniform image2D out_resolved;
+
+const float HISTORY_BLEND_MAX = 0.9;   /* Higher = smoother edges but more ghosting */
+const float HISTORY_BLEND_MIN = 0.2;   /* Lower = faster response during motion */
+const float VARIANCE_CLAMP_GAMMA = 1.0; /* Tighter clamping for color to reduce ghosting */
+
+/* RGB to YCoCg for better clamping */
+vec3 rgb_to_ycocg(vec3 rgb) {
+    return vec3(
+        0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b,
+        0.5 * rgb.r - 0.5 * rgb.b,
+        -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b
+    );
+}
+
+vec3 ycocg_to_rgb(vec3 ycocg) {
+    float y = ycocg.x;
+    float co = ycocg.y;
+    float cg = ycocg.z;
+    return vec3(
+        y + co - cg,
+        y + cg,
+        y - co - cg
+    );
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_resolved);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
+    vec3 current = texelFetch(current_color, pixel, 0).rgb;
+
+    if (pc.history_valid == 0)
+    {
+        imageStore(out_resolved, pixel, vec4(current, 1.0));
+        return;
+    }
+
+    vec2 motion = texture(motion_vectors, uv).xy;
+    vec2 prev_uv = uv + motion;
+
+    /* Reject history if reprojected outside screen */
+    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0))))
+    {
+        imageStore(out_resolved, pixel, vec4(current, 1.0));
+        return;
+    }
+
+    /* Compute neighborhood min/max in YCoCg space (3x3) */
+    vec3 current_ycocg = rgb_to_ycocg(current);
+    vec3 min_color = current_ycocg;
+    vec3 max_color = current_ycocg;
+    vec3 m1 = vec3(0.0); /* First moment (mean) */
+    vec3 m2 = vec3(0.0); /* Second moment (variance) */
+
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        for (int dx = -1; dx <= 1; dx++)
+        {
+            ivec2 neighbor = pixel + ivec2(dx, dy);
+            neighbor = clamp(neighbor, ivec2(0), size - ivec2(1));
+            vec3 s = rgb_to_ycocg(texelFetch(current_color, neighbor, 0).rgb);
+            min_color = min(min_color, s);
+            max_color = max(max_color, s);
+            m1 += s;
+            m2 += s * s;
+        }
+    }
+
+    /* Use variance-based AABB for tighter clamping */
+    m1 /= 9.0;
+    m2 /= 9.0;
+    vec3 sigma = sqrt(max(m2 - m1 * m1, vec3(0.0)));
+    vec3 aabb_min = m1 - sigma * VARIANCE_CLAMP_GAMMA;
+    vec3 aabb_max = m1 + sigma * VARIANCE_CLAMP_GAMMA;
+
+    /* Sample history and convert to YCoCg */
+    vec3 history = texture(history_color, prev_uv).rgb;
+    vec3 history_ycocg = rgb_to_ycocg(history);
+
+    /* Clip history to AABB */
+    history_ycocg = clamp(history_ycocg, aabb_min, aabb_max);
+
+    /* Convert back to RGB */
+    history = ycocg_to_rgb(history_ycocg);
+
+    /* Blend factor based on motion - fast objects get less history */
+    float motion_len = length(motion * vec2(size));
+    float velocity_weight = clamp(motion_len / 2.0, 0.0, 1.0);
+    float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
+
+    vec3 resolved = mix(current, history, history_blend);
+    imageStore(out_resolved, pixel, vec4(resolved, 1.0));
+}

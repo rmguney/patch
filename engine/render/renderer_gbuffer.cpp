@@ -643,6 +643,12 @@ namespace patch
         {
             vkCmdEndRenderPass(command_buffers_[current_frame_]);
 
+            /* TAA resolve: blend current lit frame with history */
+            if (taa_initialized_ && taa_quality_ > 0)
+            {
+                dispatch_taa_resolve();
+            }
+
             PROFILE_BEGIN(PROFILE_RENDER_DENOISE);
             dispatch_spatial_denoise();
             blit_denoised_to_swapchain(image_index);

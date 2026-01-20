@@ -412,6 +412,27 @@ namespace patch
         spatial_denoise_initialized_ = false;
     }
 
+    void Renderer::update_denoise_color_input(uint32_t frame_index, VkImageView color_view)
+    {
+        if (!spatial_denoise_initialized_ || !spatial_denoise_descriptor_pool_ || frame_index >= MAX_FRAMES_IN_FLIGHT)
+            return;
+
+        VkDescriptorImageInfo color_info{};
+        color_info.sampler = gbuffer_sampler_;
+        color_info.imageView = color_view ? color_view : lit_color_view_;
+        color_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = spatial_denoise_input_sets_[frame_index];
+        write.dstBinding = 2;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &color_info;
+
+        vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    }
+
     void Renderer::set_denoise_quality(int level)
     {
         denoise_quality_ = level < 0 ? 0 : (level > 1 ? 1 : level);

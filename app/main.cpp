@@ -161,6 +161,7 @@ int patch_main(int argc, char *argv[])
             ui.settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
             ui.settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
             ui.settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
+            ui.settings.taa_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].taa;
 
             if (current_scene == ActiveScene::BallPit)
             {
@@ -548,6 +549,7 @@ int patch_main(int argc, char *argv[])
             test_settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
             test_settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
             test_settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
+            test_settings.taa_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].taa;
             settings = &test_settings;
         }
 
@@ -567,6 +569,7 @@ int patch_main(int argc, char *argv[])
                 renderer.set_ao_quality(settings->ao_quality);
                 renderer.set_lod_quality(settings->lod_quality);
                 renderer.set_denoise_quality(settings->denoise_quality);
+                renderer.set_taa_quality(settings->taa_quality);
             }
         }
 

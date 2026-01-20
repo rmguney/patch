@@ -7,6 +7,7 @@
 #define QUALITY_DEFAULT_AO 0             /* 0=None, 1=Fair, 2=Good, 3=High */
 #define QUALITY_DEFAULT_LOD 0            /* 0=Fair, 1=Good, 2=High */
 #define QUALITY_DEFAULT_DENOISE 1        /* 0=Off, 1=On */
+#define QUALITY_DEFAULT_TAA 1            /* 0=Off, 1=On */
 
 /* Quality preset enumeration */
 typedef enum
@@ -26,13 +27,14 @@ typedef struct
     int32_t ao;
     int32_t lod;
     int32_t denoise;
+    int32_t taa;
 } QualityPresetSettings;
 
 static const QualityPresetSettings QUALITY_PRESETS[] = {
-    {1, 0, 0, 0, 1}, /* Default */
-    {1, 1, 1, 1, 1}, /* Fair */
-    {2, 1, 2, 1, 1}, /* Good */
-    {3, 1, 3, 2, 1}  /* High */
+    {1, 0, 0, 0, 1, 1}, /* Default */
+    {1, 1, 1, 1, 1, 1}, /* Fair */
+    {2, 1, 2, 1, 1, 1}, /* Good */
+    {3, 1, 3, 2, 1, 1}  /* High */
 };
 
 /*
@@ -84,7 +86,7 @@ namespace patch
         int32_t shadow_contact;
         int32_t ao_quality;
         int32_t lod_quality;
-        int32_t _reserved0;
+        int32_t taa_quality;
     };
 
     /*
