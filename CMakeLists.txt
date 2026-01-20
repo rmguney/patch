@@ -209,6 +209,8 @@ set(ENGINE_RENDER_SOURCES
     engine/render/gpu_buffer.h
     engine/render/gpu_chunk.h
     engine/render/gpu_volume.h
+    engine/render/gpu_spatial_grid.h
+    engine/render/gpu_spatial_grid.cpp
     engine/render/voxel_push_constants.h
     engine/render/draw_list.h
 )

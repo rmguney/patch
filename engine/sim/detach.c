@@ -78,6 +78,11 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
         voxel_object_world_queue_split(world, obj_index);
     }
 
+    if (destroyed_count > 0)
+    {
+        obj->voxel_revision++;
+    }
+
     PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
     return destroyed_count;
 }

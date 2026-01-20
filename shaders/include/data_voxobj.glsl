@@ -101,6 +101,22 @@ float vobj_get_bounding_radius(int object_idx) {
 }
 
 /*
+ * Calculate minimum possible t-value for ray-sphere intersection.
+ * Used for depth rejection before expensive marching.
+ * Returns large value (1e10) if ray cannot hit the sphere.
+ */
+float vobj_get_min_t(vec3 ray_origin, vec3 ray_dir, int object_idx) {
+    vec3 center = vobj_get_world_position(object_idx);
+    float radius = vobj_get_bounding_radius(object_idx);
+    vec3 oc = ray_origin - center;
+    float b = dot(oc, ray_dir);
+    float c = dot(oc, oc) - radius * radius;
+    float disc = b * b - c;
+    if (disc < 0.0) return 1e10;
+    return max(0.0, -b - sqrt(disc));
+}
+
+/*
  * Quick ray-sphere rejection test.
  * Returns true if the ray could possibly hit the object's bounding sphere.
  */

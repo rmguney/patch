@@ -44,12 +44,18 @@ void voxel_object_recalc_shape(VoxelObject *obj)
             {
                 if (obj->voxels[vobj_index(x, y, z)].material != 0)
                 {
-                    if (x < min_x) min_x = x;
-                    if (x > max_x) max_x = x;
-                    if (y < min_y) min_y = y;
-                    if (y > max_y) max_y = y;
-                    if (z < min_z) min_z = z;
-                    if (z > max_z) max_z = z;
+                    if (x < min_x)
+                        min_x = x;
+                    if (x > max_x)
+                        max_x = x;
+                    if (y < min_y)
+                        min_y = y;
+                    if (y > max_y)
+                        max_y = y;
+                    if (z < min_z)
+                        min_z = z;
+                    if (z > max_z)
+                        max_z = z;
                     com_x += (float)x + 0.5f;
                     com_y += (float)y + 0.5f;
                     com_z += (float)z + 0.5f;
@@ -108,7 +114,7 @@ void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index)
 
     VoxelObject *obj = &world->objects[obj_index];
     if (obj->shape_dirty)
-        return;  /* Already in dirty list */
+        return; /* Already in dirty list */
 
     obj->shape_dirty = true;
     obj->next_dirty = world->first_dirty;
@@ -201,6 +207,8 @@ int32_t voxel_object_world_add_sphere(VoxelObjectWorld *world, Vec3 position,
         }
     }
 
+    obj->voxel_revision = 1;
+
     voxel_object_recalc_shape(obj);
     return slot;
 }
@@ -245,6 +253,8 @@ int32_t voxel_object_world_add_box(VoxelObjectWorld *world, Vec3 position,
             }
         }
     }
+
+    obj->voxel_revision = 1;
 
     voxel_object_recalc_shape(obj);
     return slot;
@@ -304,6 +314,8 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
         obj->active = false;
         return -1;
     }
+
+    obj->voxel_revision = 1;
 
     float src_center_x = origin.x + (float)size_x * voxel_size * 0.5f;
     float src_center_y = origin.y + (float)size_y * voxel_size * 0.5f;
@@ -510,7 +522,7 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 }
 
 static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
-                                     int32_t start_x, int32_t start_y, int32_t start_z)
+                                    int32_t start_x, int32_t start_y, int32_t start_z)
 {
     static int32_t stack[VOBJ_TOTAL_VOXELS];
     int32_t stack_top = 0;
@@ -600,7 +612,7 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     new_obj->orientation = obj->orientation;
     new_obj->voxel_size = obj->voxel_size;
     new_obj->active = true;
-    new_obj->shape_dirty = false;  /* Will be marked via dirty-list later */
+    new_obj->shape_dirty = false; /* Will be marked via dirty-list later */
     new_obj->voxel_count = 0;
 
     for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
@@ -613,6 +625,9 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
             obj->voxel_count--;
         }
     }
+
+    obj->voxel_revision++;
+    new_obj->voxel_revision = 1;
 
     int32_t new_obj_idx = world->object_count;
     world->object_count++;

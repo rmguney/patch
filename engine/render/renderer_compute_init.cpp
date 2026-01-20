@@ -150,8 +150,8 @@ namespace patch
             return false;
         }
 
-        /* Set 1: Voxel objects (atlas sampler, metadata buffer) */
-        VkDescriptorSetLayoutBinding vobj_bindings[2]{};
+        /* Set 1: Voxel objects (atlas sampler, metadata buffer, spatial grid) */
+        VkDescriptorSetLayoutBinding vobj_bindings[3]{};
         vobj_bindings[0].binding = 0;
         vobj_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         vobj_bindings[0].descriptorCount = 1;
@@ -162,9 +162,14 @@ namespace patch
         vobj_bindings[1].descriptorCount = 1;
         vobj_bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+        vobj_bindings[2].binding = 2;
+        vobj_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        vobj_bindings[2].descriptorCount = 1;
+        vobj_bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
         VkDescriptorSetLayoutCreateInfo vobj_layout_info{};
         vobj_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        vobj_layout_info.bindingCount = 2;
+        vobj_layout_info.bindingCount = 3;
         vobj_layout_info.pBindings = vobj_bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &vobj_layout_info, nullptr, &gbuffer_compute_vobj_layout_) != VK_SUCCESS)
@@ -361,7 +366,7 @@ namespace patch
         /* Create descriptor pool */
         VkDescriptorPoolSize pool_sizes[4]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3; /* voxel data, headers, vobj metadata */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 4; /* voxel data, headers, vobj metadata, spatial grid */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2; /* material palette, temporal ubo */
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -474,7 +479,7 @@ namespace patch
 
             vkUpdateDescriptorSets(device_, 4, terrain_writes, 0, nullptr);
 
-            /* Set 1: Voxel objects */
+            /* Set 1: Voxel objects + spatial grid */
             if (vobj_atlas_view_ && vobj_atlas_sampler_)
             {
                 VkDescriptorImageInfo atlas_info{};
@@ -487,7 +492,12 @@ namespace patch
                 vobj_meta_info.offset = 0;
                 vobj_meta_info.range = VK_WHOLE_SIZE;
 
-                VkWriteDescriptorSet vobj_writes[2]{};
+                VkDescriptorBufferInfo spatial_grid_info{};
+                spatial_grid_info.buffer = spatial_grid_buffer_.buffer;
+                spatial_grid_info.offset = 0;
+                spatial_grid_info.range = sizeof(GPUSpatialGridBuffer);
+
+                VkWriteDescriptorSet vobj_writes[3]{};
                 vobj_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 vobj_writes[0].dstSet = gbuffer_compute_vobj_sets_[i];
                 vobj_writes[0].dstBinding = 0;
@@ -502,7 +512,14 @@ namespace patch
                 vobj_writes[1].descriptorCount = 1;
                 vobj_writes[1].pBufferInfo = &vobj_meta_info;
 
-                vkUpdateDescriptorSets(device_, 2, vobj_writes, 0, nullptr);
+                vobj_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                vobj_writes[2].dstSet = gbuffer_compute_vobj_sets_[i];
+                vobj_writes[2].dstBinding = 2;
+                vobj_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                vobj_writes[2].descriptorCount = 1;
+                vobj_writes[2].pBufferInfo = &spatial_grid_info;
+
+                vkUpdateDescriptorSets(device_, 3, vobj_writes, 0, nullptr);
             }
 
             /* Set 2: G-buffer output images (albedo, normal, material, depth, world_pos, motion_vector) */

@@ -707,7 +707,7 @@ namespace patch
         /* Mip generation */
         if (needs_mip_regen)
         {
-            if (needs_full_rebuild || terrain_dirty)
+            if (needs_full_rebuild || terrain_dirty || needs_object_stamp)
             {
                 volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
                                             shadow_mip1_.data(), shadow_mip2_.data());

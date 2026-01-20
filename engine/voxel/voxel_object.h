@@ -29,15 +29,16 @@ extern "C"
         VObjVoxel voxels[VOBJ_TOTAL_VOXELS];
         float voxel_size;
         int32_t voxel_count;
+        uint32_t voxel_revision;
 
         float radius;
         Vec3 shape_half_extents;
 
         bool active;
-        bool shape_dirty;        /* Deferred recalc flag */
-        uint8_t occupancy_mask;  /* 8 regions of 8³ voxels each */
-        int32_t next_free;       /* Free-list chain (-1 = end or not free) */
-        int32_t next_dirty;      /* Dirty-list chain (-1 = end or not dirty) */
+        bool shape_dirty;       /* Deferred recalc flag */
+        uint8_t occupancy_mask; /* 8 regions of 8³ voxels each */
+        int32_t next_free;      /* Free-list chain (-1 = end or not free) */
+        int32_t next_dirty;     /* Dirty-list chain (-1 = end or not dirty) */
     } VoxelObject;
 
 #define VOBJ_SPLIT_QUEUE_SIZE 256

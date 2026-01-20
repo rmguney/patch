@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "gpu_spatial_grid.h"
 #include "shaders_embedded.h"
 #include <cstring>
 #include <cstdio>
@@ -135,6 +136,17 @@ namespace patch
             destroy_buffer(&vobj_staging_buffer_);
         }
 
+        if (spatial_grid_buffer_.buffer)
+        {
+            if (spatial_grid_mapped_)
+            {
+                vkUnmapMemory(device_, spatial_grid_buffer_.memory);
+                spatial_grid_mapped_ = nullptr;
+            }
+            destroy_buffer(&spatial_grid_buffer_);
+        }
+        spatial_grid_valid_ = false;
+
         vobj_resources_initialized_ = false;
     }
 
@@ -241,6 +253,25 @@ namespace patch
 
         vkMapMemory(device_, vobj_staging_buffer_.memory, 0, staging_size, 0, &vobj_staging_mapped_);
 
+        VkDeviceSize grid_buffer_size = sizeof(GPUSpatialGridBuffer);
+        create_buffer(grid_buffer_size,
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      &spatial_grid_buffer_);
+
+        vkMapMemory(device_, spatial_grid_buffer_.memory, 0, grid_buffer_size, 0, &spatial_grid_mapped_);
+
+        memset(&spatial_grid_data_, 0, sizeof(spatial_grid_data_));
+        spatial_grid_data_.params.cell_size = GPU_GRID_CELL_SIZE;
+        spatial_grid_data_.params.inv_cell_size = 1.0f / GPU_GRID_CELL_SIZE;
+        spatial_grid_data_.params.grid_dims[0] = 1;
+        spatial_grid_data_.params.grid_dims[1] = 1;
+        spatial_grid_data_.params.grid_dims[2] = 1;
+        spatial_grid_data_.params.total_cells = 1;
+        spatial_grid_data_.params.total_entries = 0;
+        memcpy(spatial_grid_mapped_, &spatial_grid_data_, sizeof(GPUSpatialGridBuffer));
+        spatial_grid_valid_ = false;
+
         VkCommandBufferAllocateInfo cmd_alloc{};
         cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -272,7 +303,7 @@ namespace patch
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
 
         vkEndCommandBuffer(cmd);
@@ -605,7 +636,7 @@ namespace patch
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
 
@@ -628,30 +659,18 @@ namespace patch
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
 
         vkEndCommandBuffer(cmd);
 
-        /* Submit with timeline semaphore for async completion */
-        uint64_t signal_value = ++upload_timeline_value_;
-
-        VkTimelineSemaphoreSubmitInfo timeline_submit{};
-        timeline_submit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timeline_submit.signalSemaphoreValueCount = 1;
-        timeline_submit.pSignalSemaphoreValues = &signal_value;
-
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.pNext = &timeline_submit;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &cmd;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = &upload_timeline_semaphore_;
 
         vkQueueSubmit(graphics_queue_, 1, &submit_info, VK_NULL_HANDLE);
-
-        /* No vkQueueWaitIdle - GPU synchronization via timeline semaphore */
+        vkQueueWaitIdle(graphics_queue_);
     }
 
     void Renderer::upload_vobj_metadata(const VoxelObjectWorld *world)
@@ -780,6 +799,120 @@ namespace patch
         }
 
         vobj_visible_count_ = visible_idx;
+
+        if (spatial_grid_buffer_.buffer && spatial_grid_mapped_ && visible_idx > 0)
+        {
+            GPUSpatialGridParams &params = spatial_grid_data_.params;
+            params.cell_size = GPU_GRID_CELL_SIZE;
+            params.inv_cell_size = 1.0f / GPU_GRID_CELL_SIZE;
+            params._pad_pre_bounds[0] = 0.0f;
+            params._pad_pre_bounds[1] = 0.0f;
+            params.bounds_min[0] = world->bounds.min_x;
+            params.bounds_min[1] = world->bounds.min_y;
+            params.bounds_min[2] = world->bounds.min_z;
+            params.bounds_min[3] = 0.0f;
+
+            float extent_x = world->bounds.max_x - world->bounds.min_x;
+            float extent_y = world->bounds.max_y - world->bounds.min_y;
+            float extent_z = world->bounds.max_z - world->bounds.min_z;
+
+            params.grid_dims[0] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_x / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[1] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_y / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[2] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_z / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[3] = 0;
+
+            params.total_cells = params.grid_dims[0] * params.grid_dims[1] * params.grid_dims[2];
+            if (params.total_cells > GPU_GRID_MAX_CELLS)
+                params.total_cells = GPU_GRID_MAX_CELLS;
+
+            memset(spatial_grid_data_.cells, 0, sizeof(GPUSpatialCell) * GPU_GRID_MAX_CELLS);
+
+            uint32_t cell_counts[GPU_GRID_MAX_CELLS] = {};
+            for (int32_t vi = 0; vi < visible_idx; vi++)
+            {
+                const VoxelObjectGPU *gpu_obj = &gpu_data[vi];
+                float radius = gpu_obj->bounds_max[0] * 1.732051f;
+
+                Vec3 obj_min = {gpu_obj->position[0] - radius, gpu_obj->position[1] - radius, gpu_obj->position[2] - radius};
+                Vec3 obj_max = {gpu_obj->position[0] + radius, gpu_obj->position[1] + radius, gpu_obj->position[2] + radius};
+
+                int32_t cx_min, cy_min, cz_min, cx_max, cy_max, cz_max;
+                gpu_grid_cell_coords(obj_min, params.inv_cell_size, params.bounds_min, &cx_min, &cy_min, &cz_min);
+                gpu_grid_cell_coords(obj_max, params.inv_cell_size, params.bounds_min, &cx_max, &cy_max, &cz_max);
+
+                cx_min = std::max(0, std::min(cx_min, params.grid_dims[0] - 1));
+                cy_min = std::max(0, std::min(cy_min, params.grid_dims[1] - 1));
+                cz_min = std::max(0, std::min(cz_min, params.grid_dims[2] - 1));
+                cx_max = std::max(0, std::min(cx_max, params.grid_dims[0] - 1));
+                cy_max = std::max(0, std::min(cy_max, params.grid_dims[1] - 1));
+                cz_max = std::max(0, std::min(cz_max, params.grid_dims[2] - 1));
+
+                for (int32_t cz = cz_min; cz <= cz_max; cz++)
+                    for (int32_t cy = cy_min; cy <= cy_max; cy++)
+                        for (int32_t cx = cx_min; cx <= cx_max; cx++)
+                        {
+                            int32_t cell_idx = gpu_grid_cell_hash(cx, cy, cz, params.grid_dims[0], params.grid_dims[1]);
+                            if (cell_idx >= 0 && cell_idx < params.total_cells && cell_counts[cell_idx] < GPU_GRID_MAX_PER_CELL)
+                                cell_counts[cell_idx]++;
+                        }
+            }
+
+            uint32_t prefix_sum = 0;
+            for (int32_t i = 0; i < params.total_cells; i++)
+            {
+                spatial_grid_data_.cells[i].cell_start = prefix_sum;
+                spatial_grid_data_.cells[i].cell_count = 0;
+                prefix_sum += cell_counts[i];
+            }
+            params.total_entries = static_cast<int32_t>(std::min(prefix_sum, static_cast<uint32_t>(GPU_GRID_MAX_ENTRIES)));
+
+            for (int32_t vi = 0; vi < visible_idx; vi++)
+            {
+                const VoxelObjectGPU *gpu_obj = &gpu_data[vi];
+                float radius = gpu_obj->bounds_max[0] * 1.732051f;
+
+                Vec3 obj_min = {gpu_obj->position[0] - radius, gpu_obj->position[1] - radius, gpu_obj->position[2] - radius};
+                Vec3 obj_max = {gpu_obj->position[0] + radius, gpu_obj->position[1] + radius, gpu_obj->position[2] + radius};
+
+                int32_t cx_min, cy_min, cz_min, cx_max, cy_max, cz_max;
+                gpu_grid_cell_coords(obj_min, params.inv_cell_size, params.bounds_min, &cx_min, &cy_min, &cz_min);
+                gpu_grid_cell_coords(obj_max, params.inv_cell_size, params.bounds_min, &cx_max, &cy_max, &cz_max);
+
+                cx_min = std::max(0, std::min(cx_min, params.grid_dims[0] - 1));
+                cy_min = std::max(0, std::min(cy_min, params.grid_dims[1] - 1));
+                cz_min = std::max(0, std::min(cz_min, params.grid_dims[2] - 1));
+                cx_max = std::max(0, std::min(cx_max, params.grid_dims[0] - 1));
+                cy_max = std::max(0, std::min(cy_max, params.grid_dims[1] - 1));
+                cz_max = std::max(0, std::min(cz_max, params.grid_dims[2] - 1));
+
+                for (int32_t cz = cz_min; cz <= cz_max; cz++)
+                    for (int32_t cy = cy_min; cy <= cy_max; cy++)
+                        for (int32_t cx = cx_min; cx <= cx_max; cx++)
+                        {
+                            int32_t cell_idx = gpu_grid_cell_hash(cx, cy, cz, params.grid_dims[0], params.grid_dims[1]);
+                            if (cell_idx >= 0 && cell_idx < params.total_cells)
+                            {
+                                GPUSpatialCell &cell = spatial_grid_data_.cells[cell_idx];
+                                uint32_t entry_idx = cell.cell_start + cell.cell_count;
+                                if (entry_idx < static_cast<uint32_t>(GPU_GRID_MAX_ENTRIES) &&
+                                    cell.cell_count < GPU_GRID_MAX_PER_CELL)
+                                {
+                                    spatial_grid_data_.entries[entry_idx] = static_cast<uint32_t>(vi);
+                                    cell.cell_count++;
+                                }
+                            }
+                        }
+            }
+
+            memcpy(spatial_grid_mapped_, &spatial_grid_data_, sizeof(GPUSpatialGridBuffer));
+            spatial_grid_valid_ = true;
+        }
+        else if (spatial_grid_buffer_.buffer && spatial_grid_mapped_)
+        {
+            spatial_grid_data_.params.total_entries = 0;
+            memcpy(spatial_grid_mapped_, &spatial_grid_data_, sizeof(GPUSpatialGridBuffer));
+            spatial_grid_valid_ = false;
+        }
     }
 
     void Renderer::render_voxel_objects_raymarched(const VoxelObjectWorld *world)
@@ -790,7 +923,16 @@ namespace patch
         if (!vobj_resources_initialized_ || vobj_pipeline_ == VK_NULL_HANDLE)
             return;
 
-        static int32_t prev_object_count = 0;
+        if (world != vobj_last_world_)
+        {
+            vobj_last_world_ = world;
+            vobj_prev_object_count_ = 0;
+            memset(vobj_dirty_mask_, 0, sizeof(vobj_dirty_mask_));
+            for (uint32_t i = 0; i < vobj_max_objects_; i++)
+            {
+                vobj_revision_cache_[i] = 0;
+            }
+        }
 
         /*
          * Ensure GPU atlas stays in sync when voxel grids change due to destruction/splitting.
@@ -800,10 +942,10 @@ namespace patch
         for (int32_t i = 0; i < world->object_count && i < max_tracked; i++)
         {
             const VoxelObject *obj = &world->objects[i];
-            const int32_t current_count = (obj->active ? obj->voxel_count : 0);
-            if (vobj_voxel_count_cache_[i] != current_count)
+            const uint32_t current_revision = obj->active ? obj->voxel_revision : 0u;
+            if (vobj_revision_cache_[i] != current_revision)
             {
-                vobj_voxel_count_cache_[i] = current_count;
+                vobj_revision_cache_[i] = current_revision;
                 if (obj->active)
                 {
                     mark_vobj_dirty(static_cast<uint32_t>(i));
@@ -811,11 +953,11 @@ namespace patch
             }
         }
 
-        for (int32_t i = prev_object_count; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_); i++)
+        for (int32_t i = vobj_prev_object_count_; i < world->object_count && i < static_cast<int32_t>(vobj_max_objects_); i++)
         {
             mark_vobj_dirty(static_cast<uint32_t>(i));
         }
-        prev_object_count = world->object_count;
+        vobj_prev_object_count_ = world->object_count;
 
         constexpr int32_t MAX_UPLOADS_PER_FRAME = 8;
         int32_t uploads = 0;
@@ -855,7 +997,7 @@ namespace patch
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
         pc.pad1 = 0.0f;
-        pc.object_count = world->object_count;
+        pc.object_count = vobj_visible_count_;
         pc.atlas_dim = static_cast<int32_t>(VOBJ_GRID_DIM);
         pc.near_plane = 0.1f;
         pc.far_plane = 1000.0f;
@@ -867,7 +1009,7 @@ namespace patch
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
 
-        uint32_t instance_count = static_cast<uint32_t>(world->object_count);
+        uint32_t instance_count = static_cast<uint32_t>(vobj_visible_count_);
         if (instance_count > vobj_max_objects_)
             instance_count = vobj_max_objects_;
 
