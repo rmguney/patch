@@ -221,7 +221,7 @@ int patch_main(int argc, char *argv[])
     bool mouse_was_down = false;
     bool show_overlay = false;
     int32_t dbg_total_uploaded = 0;
-    DebugSceneInfo dbg_info = {};
+    DebugInfo dbg_info = {};
     DebugExportFeedback dbg_feedback = {};
     float fps_smooth = 0.0f;
 
@@ -635,16 +635,8 @@ int patch_main(int argc, char *argv[])
 
         PROFILE_BEGIN(PROFILE_RENDER_MAIN);
 
-        const BallPitStats *overlay_stats = nullptr;
-
         if (active_scene && current_scene == ActiveScene::BallPit)
         {
-            BallPitData *data = (BallPitData *)active_scene->user_data;
-            if (data)
-            {
-                overlay_stats = &data->stats;
-            }
-
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             VoxelObjectWorld *objects = ball_pit_get_objects(active_scene);
             ParticleSystem *particles = ball_pit_get_particles(active_scene);
@@ -781,69 +773,63 @@ int patch_main(int argc, char *argv[])
         }
         PROFILE_END(PROFILE_RENDER_MAIN);
 
-        /* Populate debug info */
-        bool dbg_has_info = false;
+        /* Populate debug info (scene-agnostic) */
+        debug_info_clear(&dbg_info);
+        VoxelVolume *dbg_terrain = nullptr;
+        VoxelObjectWorld *dbg_objects = nullptr;
+        ParticleSystem *dbg_particles = nullptr;
+
         if (active_scene && current_scene == ActiveScene::BallPit)
         {
-            VoxelObjectWorld *dbg_objects = ball_pit_get_objects(active_scene);
-            VoxelVolume *dbg_terrain = ball_pit_get_terrain(active_scene);
-
-            dbg_info.object_count = dbg_objects ? dbg_objects->object_count : -1;
-            dbg_info.total_chunks = dbg_terrain ? dbg_terrain->total_chunks : 0;
-            dbg_info.active_chunks = dbg_terrain ? dbg_terrain->active_chunks : 0;
-            dbg_info.solid_voxels = dbg_terrain ? dbg_terrain->total_solid_voxels : 0;
-            dbg_info.dirty_queue_count = dbg_terrain ? dbg_terrain->dirty_count : 0;
-            dbg_info.total_uploaded = dbg_total_uploaded;
-            dbg_info.dirty_overflow = dbg_terrain && dbg_terrain->dirty_ring_overflow;
-            dbg_info.gbuffer_init = renderer.DEBUG_is_gbuffer_initialized();
-            dbg_info.gbuffer_pipeline_valid = renderer.DEBUG_is_gbuffer_pipeline_valid();
-            dbg_info.gbuffer_descriptors_valid = renderer.DEBUG_is_gbuffer_descriptors_valid();
-            dbg_info.voxel_res_init = renderer.DEBUG_is_voxel_resources_initialized();
-            dbg_info.vobj_res_init = renderer.DEBUG_is_vobj_resources_initialized();
-            dbg_info.terrain_debug_mode = renderer.DEBUG_get_terrain_debug_mode();
-            dbg_info.terrain_draw_count = renderer.DEBUG_get_terrain_draw_count();
-
-            if (dbg_terrain)
+            dbg_info.scene_name = "Ball Pit";
+            dbg_terrain = ball_pit_get_terrain(active_scene);
+            dbg_objects = ball_pit_get_objects(active_scene);
+            dbg_particles = ball_pit_get_particles(active_scene);
+            BallPitData *data = (BallPitData *)active_scene->user_data;
+            if (data)
             {
-                dbg_info.bounds_min[0] = dbg_terrain->bounds.min_x;
-                dbg_info.bounds_min[1] = dbg_terrain->bounds.min_y;
-                dbg_info.bounds_min[2] = dbg_terrain->bounds.min_z;
-                dbg_info.bounds_max[0] = dbg_terrain->bounds.max_x;
-                dbg_info.bounds_max[1] = dbg_terrain->bounds.max_y;
-                dbg_info.bounds_max[2] = dbg_terrain->bounds.max_z;
-                dbg_info.chunks_x = dbg_terrain->chunks_x;
-                dbg_info.chunks_y = dbg_terrain->chunks_y;
-                dbg_info.chunks_z = dbg_terrain->chunks_z;
-                dbg_info.voxel_size = dbg_terrain->voxel_size;
+                dbg_info.spawn_count = data->stats.spawn_count;
+                dbg_info.tick_count = data->stats.tick_count;
             }
-
-            Vec3 cam = renderer.get_camera_position();
-            dbg_info.camera_pos[0] = cam.x;
-            dbg_info.camera_pos[1] = cam.y;
-            dbg_info.camera_pos[2] = cam.z;
-
-            dbg_has_info = true;
         }
+        else if (active_scene && current_scene == ActiveScene::Roam)
+        {
+            dbg_info.scene_name = "Roam";
+            dbg_terrain = roam_get_terrain(active_scene);
+            dbg_objects = roam_get_objects(active_scene);
+            dbg_particles = roam_get_particles(active_scene);
+            const RoamStats *roam_stats = roam_get_stats(active_scene);
+            if (roam_stats)
+            {
+                dbg_info.particle_count = roam_stats->particles_active;
+            }
+        }
+
+        debug_info_populate_volume(&dbg_info, dbg_terrain);
+        debug_info_populate_objects(&dbg_info, dbg_objects);
+        debug_info_populate_particles(&dbg_info, dbg_particles);
+        debug_info_populate_renderer(&dbg_info, &renderer);
+        debug_info_populate_profiler(&dbg_info);
+        dbg_info.total_uploaded = dbg_total_uploaded;
 
         bool btn_clicked = false;
         bool render_ui = show_overlay || app_ui_is_blocking(&ui);
-        if (show_overlay)
+        if (show_overlay && active_scene)
         {
             PROFILE_BEGIN(PROFILE_RENDER_UI_OVERLAY);
-            btn_clicked = draw_overlay(renderer, fps_smooth, overlay_stats,
-                                       window.width(), window.height(),
-                                       dbg_has_info ? &dbg_info : nullptr,
-                                       window.mouse().x, window.mouse().y,
-                                       mouse_clicked, &dbg_feedback);
+            btn_clicked = draw_debug_overlay(renderer,
+                                             window.width(), window.height(),
+                                             &dbg_info,
+                                             window.mouse().x, window.mouse().y,
+                                             mouse_clicked, &dbg_feedback);
             PROFILE_END(PROFILE_RENDER_UI_OVERLAY);
         }
 
-        if (dbg_has_info && (do_export || btn_clicked))
+        if (active_scene && (do_export || btn_clicked))
         {
-            const char *debug_filename = "debug_info.txt";
-            const char *profile_filename = "profile_results.csv";
-            dbg_feedback.success = export_all_debug(debug_filename, profile_filename, &dbg_info, fps_smooth, &renderer);
-            snprintf(dbg_feedback.filename, sizeof(dbg_feedback.filename), "%s + %s", debug_filename, profile_filename);
+            const char *report_filename = "debug_report.txt";
+            dbg_feedback.success = export_debug_report(report_filename, &dbg_info);
+            snprintf(dbg_feedback.filename, sizeof(dbg_feedback.filename), "%s", report_filename);
             dbg_feedback.timer = 3.0f;
         }
 
@@ -872,10 +858,8 @@ int patch_main(int argc, char *argv[])
                 printf("Test mode: completed %d frames\n", test_frames);
                 PROFILE_END(PROFILE_FRAME_TOTAL);
                 PROFILE_FRAME_END();
-#ifdef PATCH_PROFILE
-                export_profile_csv(profile_csv, &renderer);
-                printf("Profile exported to %s\n", profile_csv);
-#endif
+                export_debug_report(profile_csv, &dbg_info);
+                printf("Debug report exported to %s\n", profile_csv);
                 break;
             }
         }

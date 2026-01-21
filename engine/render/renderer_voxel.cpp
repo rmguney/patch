@@ -243,6 +243,9 @@ namespace patch
             return;
         }
 
+        /* Reset scene-dependent state for clean temporal accumulation */
+        reset_scene_state();
+
         if (!voxel_resources_initialized_ || voxel_total_chunks_ != vol->total_chunks)
         {
             if (voxel_resources_initialized_)
@@ -466,6 +469,7 @@ namespace patch
             {
                 destroy_shadow_volume_resources();
                 create_shadow_volume_resources(w0, h0, d0);
+                update_shadow_volume_descriptor();
             }
 
             upload_shadow_volume(mip0.data(), w0, h0, d0,
@@ -942,6 +946,40 @@ namespace patch
 
         PROFILE_END(PROFILE_CHUNK_UPLOAD);
         return dirty_count;
+    }
+
+    void Renderer::reset_scene_state()
+    {
+        /* Invalidate temporal history - prevents using stale data from previous scene */
+        temporal_shadow_history_valid_ = false;
+        temporal_ao_history_valid_ = false;
+        taa_history_valid_ = false;
+
+        /* Reset shadow volume CPU-side state to trigger full rebuild */
+        shadow_volume_initialized_ = false;
+
+        /* Reset shadow object tracking */
+        for (uint32_t i = 0; i < MAX_SHADOW_OBJECTS; i++)
+        {
+            shadow_object_states_[i].valid = false;
+        }
+        shadow_stamp_cursor_ = 0;
+        shadow_object_count_ = 0;
+        shadow_particle_count_ = 0;
+        shadow_needs_terrain_update_ = false;
+
+        /* Reset voxel object tracking */
+        vobj_last_world_ = nullptr;
+        vobj_prev_object_count_ = 0;
+        memset(vobj_dirty_mask_, 0, sizeof(vobj_dirty_mask_));
+        memset(vobj_revision_cache_, 0, sizeof(vobj_revision_cache_));
+
+        /* Reset camera interpolation state to avoid motion vector artifacts */
+        camera_initialized_ = false;
+
+        /* Sync previous frame matrices to current to prevent temporal reprojection artifacts */
+        prev_view_matrix_ = view_matrix_;
+        prev_projection_matrix_ = projection_matrix_;
     }
 
 }

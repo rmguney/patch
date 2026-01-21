@@ -146,6 +146,9 @@ namespace patch
         bool is_vobj_dirty(uint32_t index) const;
         void clear_vobj_dirty(uint32_t index);
 
+        /* Reset renderer state for scene switch (invalidates temporal history, clears object tracking) */
+        void reset_scene_state();
+
         void begin_ui();
         void end_ui();
         void draw_ui_quad(float cx, float cy, float w, float h, Vec3 color, float alpha);

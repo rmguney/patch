@@ -419,6 +419,7 @@ namespace patch
     void Renderer::begin_frame(uint32_t *image_index)
     {
         total_frame_count_++;
+        terrain_draw_count_ = 0;
 
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         frustum_ = frustum_from_view_proj(view_proj);
