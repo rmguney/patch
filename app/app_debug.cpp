@@ -118,6 +118,15 @@ void debug_info_populate_profiler(DebugInfo *info)
     info->render_ao_ms = profile_get_avg_ms(PROFILE_RENDER_AO);
     info->render_denoise_ms = profile_get_avg_ms(PROFILE_RENDER_DENOISE);
     info->render_ui_overlay_ms = profile_get_avg_ms(PROFILE_RENDER_UI_OVERLAY);
+
+    /* Sub-profiling for render_main (spike investigation) */
+    info->render_volume_begin_ms = profile_get_avg_ms(PROFILE_RENDER_VOLUME_BEGIN);
+    info->render_chunk_upload_ms = profile_get_avg_ms(PROFILE_RENDER_CHUNK_UPLOAD);
+    info->render_shadow_volume_ms = profile_get_avg_ms(PROFILE_RENDER_SHADOW_VOLUME);
+    info->render_main_max_ms = profile_get_max_ms(PROFILE_RENDER_MAIN);
+
+    /* Trend detection */
+    info->frame_trend_ratio = profile_get_trend_ratio(PROFILE_FRAME_TOTAL);
 #endif
 }
 
@@ -160,7 +169,10 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     fprintf(f, "--- Render Timing ---\n");
     fprintf(f, "Total: %.2fms\n", info->render_total_ms);
     fprintf(f, "G-buffer: %.2fms, Objects: %.2fms\n", info->render_gbuffer_ms, info->render_objects_ms);
-    fprintf(f, "Shadow: %.2fms, Main: %.2fms\n", info->render_shadow_ms, info->render_main_ms);
+    fprintf(f, "Shadow: %.2fms, Main: %.2fms (max: %.2fms)\n",
+            info->render_shadow_ms, info->render_main_ms, info->render_main_max_ms);
+    fprintf(f, "  Main breakdown: vol_begin=%.3fms, chunk_upload=%.3fms, shadow_vol=%.3fms\n",
+            info->render_volume_begin_ms, info->render_chunk_upload_ms, info->render_shadow_volume_ms);
     fprintf(f, "Lighting: %.2fms, AO: %.2fms, Denoise: %.2fms\n",
             info->render_lighting_ms, info->render_ao_ms, info->render_denoise_ms);
     fprintf(f, "UI Overlay: %.2fms\n\n", info->render_ui_overlay_ms);
@@ -207,6 +219,15 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     fprintf(f, "\n================================================================================\n");
     fprintf(f, "                         PROFILE DATA (CSV)\n");
     fprintf(f, "================================================================================\n\n");
+
+    /* Header comments for test parser (GPU timings, budget info, trend) */
+    fprintf(f, "# GPU Timings: shadow=%.3fms, main=%.3fms, total=%.3fms\n",
+            info->gpu_shadow_ms, info->gpu_main_ms, info->gpu_total_ms);
+    fprintf(f, "# Budget: %.1f%% used, %d overruns, %.2fms worst\n",
+            info->budget_pct, info->budget_overruns, info->budget_worst_ms);
+    fprintf(f, "# Trend: %.2fx (last_third/first_third, >1.5 = degradation)\n",
+            info->frame_trend_ratio);
+
     fprintf(f, "category,avg_ms,max_ms,min_ms,p50_ms,p95_ms,samples\n");
 
     const char *names[] = {
@@ -215,7 +236,8 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
         "voxel_raycast", "voxel_edit", "voxel_occupancy", "voxel_upload",
         "render_total", "render_shadow", "render_main", "render_ui_overlay", "render_ui",
         "volume_init", "prop_spawn",
-        "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise"};
+        "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise",
+        "render_volume_begin", "render_chunk_upload", "render_shadow_volume"};
 
     const int name_count = (int)(sizeof(names) / sizeof(names[0]));
     const int count = (PROFILE_COUNT < name_count) ? PROFILE_COUNT : name_count;

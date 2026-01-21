@@ -51,6 +51,9 @@ int patch_main(int argc, char *argv[])
     const char *profile_csv = "profile_results.csv";
     bool has_camera_pos = false;
     float camera_pos_x = 0.0f, camera_pos_y = 0.0f, camera_pos_z = 0.0f;
+    bool has_camera_approach = false;
+    float camera_start[3] = {0.0f, 0.0f, 0.0f};
+    float camera_end[3] = {0.0f, 0.0f, 0.0f};
 
     for (int i = 1; i < argc; i++)
     {
@@ -72,6 +75,16 @@ int patch_main(int argc, char *argv[])
             camera_pos_y = static_cast<float>(atof(argv[++i]));
             camera_pos_z = static_cast<float>(atof(argv[++i]));
             has_camera_pos = true;
+        }
+        else if (strcmp(argv[i], "--camera-approach") == 0 && i + 6 < argc)
+        {
+            camera_start[0] = static_cast<float>(atof(argv[++i]));
+            camera_start[1] = static_cast<float>(atof(argv[++i]));
+            camera_start[2] = static_cast<float>(atof(argv[++i]));
+            camera_end[0] = static_cast<float>(atof(argv[++i]));
+            camera_end[1] = static_cast<float>(atof(argv[++i]));
+            camera_end[2] = static_cast<float>(atof(argv[++i]));
+            has_camera_approach = true;
         }
     }
 
@@ -198,8 +211,25 @@ int patch_main(int argc, char *argv[])
 
     /* Camera setup: use test camera position if specified, otherwise default isometric */
     bool test_camera_active = false;
+    bool test_camera_approach = false;
     Vec3 test_camera_pos = vec3_create(0.0f, 0.0f, 0.0f);
-    if (test_frames > 0 && has_camera_pos)
+    Vec3 test_camera_start = vec3_create(0.0f, 0.0f, 0.0f);
+    Vec3 test_camera_end = vec3_create(0.0f, 0.0f, 0.0f);
+    int frames_elapsed = 0;
+
+    if (test_frames > 0 && has_camera_approach)
+    {
+        test_camera_start = vec3_create(camera_start[0], camera_start[1], camera_start[2]);
+        test_camera_end = vec3_create(camera_end[0], camera_end[1], camera_end[2]);
+        test_camera_pos = test_camera_start;
+        test_camera_active = true;
+        test_camera_approach = true;
+        renderer.set_perspective(60.0f, 0.1f, 200.0f);
+        printf("Test mode: camera approach (%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) over %d frames\n",
+               camera_start[0], camera_start[1], camera_start[2],
+               camera_end[0], camera_end[1], camera_end[2], test_frames);
+    }
+    else if (test_frames > 0 && has_camera_pos)
     {
         test_camera_pos = vec3_create(camera_pos_x, camera_pos_y, camera_pos_z);
         test_camera_active = true;
@@ -564,11 +594,22 @@ int patch_main(int argc, char *argv[])
         }
         else if (test_camera_active && active_scene)
         {
-            /* Test mode: fixed camera looking at scene center */
+            /* Test mode: fixed or interpolated camera looking at scene center */
             Vec3 center = vec3_create(
                 (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
                 active_scene->bounds.min_y + 2.0f,
                 (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+
+            if (test_camera_approach && test_frames > 0)
+            {
+                float t = static_cast<float>(frames_elapsed) / static_cast<float>(test_frames);
+                if (t > 1.0f) t = 1.0f;
+                /* Linear interpolation between start and end camera positions */
+                test_camera_pos.x = test_camera_start.x + (test_camera_end.x - test_camera_start.x) * t;
+                test_camera_pos.y = test_camera_start.y + (test_camera_end.y - test_camera_start.y) * t;
+                test_camera_pos.z = test_camera_start.z + (test_camera_end.z - test_camera_start.z) * t;
+            }
+
             renderer.set_look_at(test_camera_pos, center);
         }
         else if (active_scene && current_scene == ActiveScene::BallPit)
@@ -646,7 +687,11 @@ int patch_main(int argc, char *argv[])
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_VOLUME_BEGIN);
                 volume_begin_frame(terrain);
+                PROFILE_END(PROFILE_RENDER_VOLUME_BEGIN);
+
+                PROFILE_BEGIN(PROFILE_RENDER_CHUNK_UPLOAD);
                 int32_t dirty_indices[VOLUME_MAX_DIRTY_PER_FRAME];
                 int32_t uploaded = renderer.upload_dirty_chunks(terrain, dirty_indices, VOLUME_MAX_DIRTY_PER_FRAME);
                 if (uploaded > 0)
@@ -654,10 +699,13 @@ int patch_main(int argc, char *argv[])
                     dbg_total_uploaded += uploaded;
                     volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
                 }
+                PROFILE_END(PROFILE_RENDER_CHUNK_UPLOAD);
 
                 if (uploaded > 0 || has_objects_or_particles)
                 {
+                    PROFILE_BEGIN(PROFILE_RENDER_SHADOW_VOLUME);
                     renderer.update_shadow_volume(terrain, objects, particles);
+                    PROFILE_END(PROFILE_RENDER_SHADOW_VOLUME);
                 }
             }
 
@@ -712,7 +760,11 @@ int patch_main(int argc, char *argv[])
 
             if (terrain)
             {
+                PROFILE_BEGIN(PROFILE_RENDER_VOLUME_BEGIN);
                 volume_begin_frame(terrain);
+                PROFILE_END(PROFILE_RENDER_VOLUME_BEGIN);
+
+                PROFILE_BEGIN(PROFILE_RENDER_CHUNK_UPLOAD);
                 int32_t dirty_indices[VOLUME_MAX_DIRTY_PER_FRAME];
                 int32_t uploaded = renderer.upload_dirty_chunks(terrain, dirty_indices, VOLUME_MAX_DIRTY_PER_FRAME);
                 if (uploaded > 0)
@@ -720,10 +772,13 @@ int patch_main(int argc, char *argv[])
                     dbg_total_uploaded += uploaded;
                     volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
                 }
+                PROFILE_END(PROFILE_RENDER_CHUNK_UPLOAD);
 
                 if (uploaded > 0 || has_objects_or_particles)
                 {
+                    PROFILE_BEGIN(PROFILE_RENDER_SHADOW_VOLUME);
                     renderer.update_shadow_volume(terrain, objects, particles);
+                    PROFILE_END(PROFILE_RENDER_SHADOW_VOLUME);
                 }
             }
 
@@ -853,6 +908,7 @@ int patch_main(int argc, char *argv[])
         if (test_frames > 0)
         {
             frames_remaining--;
+            frames_elapsed++;
             if (frames_remaining <= 0)
             {
                 printf("Test mode: completed %d frames\n", test_frames);

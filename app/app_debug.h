@@ -84,6 +84,15 @@ struct DebugInfo
     float render_ao_ms;
     float render_denoise_ms;
     float render_ui_overlay_ms;
+
+    /* Sub-profiling for render_main (spike investigation) */
+    float render_volume_begin_ms;
+    float render_chunk_upload_ms;
+    float render_shadow_volume_ms;
+    float render_main_max_ms;
+
+    /* Trend detection (last 1/3 avg / first 1/3 avg) */
+    float frame_trend_ratio;
 };
 
 struct DebugExportFeedback

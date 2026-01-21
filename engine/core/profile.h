@@ -57,6 +57,11 @@ extern "C"
         PROFILE_RENDER_AO,
         PROFILE_RENDER_DENOISE,
 
+        /* Sub-profiling for render_main (spike investigation) */
+        PROFILE_RENDER_VOLUME_BEGIN,
+        PROFILE_RENDER_CHUNK_UPLOAD,
+        PROFILE_RENDER_SHADOW_VOLUME,
+
         PROFILE_COUNT
     } ProfileCategory;
 
@@ -83,7 +88,10 @@ extern "C"
         "  Objects",
         "  Lighting",
         "  AO",
-        "  Denoise"};
+        "  Denoise",
+        "    Volume Begin",
+        "    Chunk Upload",
+        "    Shadow Volume"};
 
     /* Per-category profiling state with rolling history */
     typedef struct
@@ -222,6 +230,45 @@ extern "C"
     static inline float profile_get_p95_ms(ProfileCategory cat) { return profile_get_percentile_ms(cat, 95); }
     static inline float profile_get_p99_ms(ProfileCategory cat) { return profile_get_percentile_ms(cat, 99); }
 
+    /* Trend detection: compare first third vs last third of history buffer
+     * Returns ratio of last_third_avg / first_third_avg
+     * >1.5 indicates degradation over time */
+    static inline float profile_get_trend_ratio(ProfileCategory cat)
+    {
+        ProfileSlot *slot = &g_profile_slots[cat];
+        if (slot->history_count < 6)
+            return 1.0f;
+
+        int32_t third = slot->history_count / 3;
+        if (third < 2) third = 2;
+
+        float first_sum = 0.0f;
+        float last_sum = 0.0f;
+
+        /* Calculate oldest third average (first entries in ring buffer) */
+        int32_t start_idx = (slot->history_index - slot->history_count + PROFILE_HISTORY_SIZE) % PROFILE_HISTORY_SIZE;
+        for (int32_t i = 0; i < third; i++)
+        {
+            int32_t idx = (start_idx + i) % PROFILE_HISTORY_SIZE;
+            first_sum += slot->history_ms[idx];
+        }
+
+        /* Calculate newest third average (last entries in ring buffer) */
+        for (int32_t i = 0; i < third; i++)
+        {
+            int32_t idx = (slot->history_index - third + i + PROFILE_HISTORY_SIZE) % PROFILE_HISTORY_SIZE;
+            last_sum += slot->history_ms[idx];
+        }
+
+        float first_avg = first_sum / (float)third;
+        float last_avg = last_sum / (float)third;
+
+        if (first_avg < 0.001f)
+            return 1.0f;
+
+        return last_avg / first_avg;
+    }
+
     static inline void profile_reset(ProfileCategory cat)
     {
         ProfileSlot *slot = &g_profile_slots[cat];
@@ -326,6 +373,9 @@ typedef enum
     PROFILE_RENDER_LIGHTING,
     PROFILE_RENDER_AO,
     PROFILE_RENDER_DENOISE,
+    PROFILE_RENDER_VOLUME_BEGIN,
+    PROFILE_RENDER_CHUNK_UPLOAD,
+    PROFILE_RENDER_SHADOW_VOLUME,
     PROFILE_CHUNK_UPLOAD,
     PROFILE_COUNT
 } ProfileCategory;

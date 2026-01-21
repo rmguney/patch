@@ -9,7 +9,7 @@
 #include <windows.h>
 
 static const int TEST_FRAMES = 300;
-static const int LAUNCH_WAIT_MS = 15000; /* 15 seconds - needs time for GPU warmup and test frames */
+static const int LAUNCH_WAIT_MS = 30000; /* 30 seconds - needs time for GPU warmup and longer spike tests */
 
 static const float FRAME_BUDGET_MS = 16.667f;
 static const char *TEMP_CSV = "profile_temp.csv";
@@ -104,6 +104,8 @@ struct ProfileData
     float budget_pct;
     int budget_overruns;
     float worst_frame_ms;
+    /* Trend detection (last_third_avg / first_third_avg) */
+    float trend_ratio;
     int32_t samples;
     bool valid;
 };
@@ -262,6 +264,19 @@ static void parse_budget_header(const char *line, ProfileData *data)
     }
 }
 
+static void parse_trend_header(const char *line, ProfileData *data)
+{
+    /* Parse: # Trend: 1.23x (last_third/first_third, >1.5 = degradation) */
+    const char *prefix = "# Trend:";
+    if (strncmp(line, prefix, strlen(prefix)) != 0)
+        return;
+
+    const char *p = line + strlen(prefix);
+    while (*p == ' ')
+        p++;
+    data->trend_ratio = (float)atof(p);
+}
+
 static ProfileData parse_profile_csv(const char *filepath)
 {
     ProfileData data = {};
@@ -279,6 +294,7 @@ static ProfileData parse_profile_csv(const char *filepath)
         {
             parse_gpu_timings_header(line, &data);
             parse_budget_header(line, &data);
+            parse_trend_header(line, &data);
             continue;
         }
 
@@ -409,6 +425,16 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
 
     int spike_issues = 0;
 
+    /* Absolute catastrophic spike detection: >100ms = immediate fail
+     * This catches the 2 FPS (500ms) spikes that occur with close-up camera movement */
+    static const float CATASTROPHIC_FRAME_MS = 100.0f;
+    if (data.worst_frame_ms > CATASTROPHIC_FRAME_MS)
+    {
+        printf("CATASTROPHIC SPIKE: %.2fms worst frame (threshold: %.1fms)\n",
+               data.worst_frame_ms, CATASTROPHIC_FRAME_MS);
+        spike_issues += 3;  /* Guaranteed fail (spike_issues > 1 fails) */
+    }
+
     /* 60 FPS floor: max frame < 33ms (2x budget for occasional spikes) */
     if (data.frame_max_ms > 33.33f)
     {
@@ -423,9 +449,9 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
         spike_issues++;
     }
 
-    /* Spike ratio: max/avg > 5x is pathological */
+    /* Spike ratio: max/avg > 3x is pathological */
     float spike_ratio = data.frame_max_ms / data.frame_avg_ms;
-    if (spike_ratio > 5.0f)
+    if (spike_ratio > 3.0f)
     {
         printf("SPIKE WARNING: Spike ratio %.1fx (max/avg) indicates severe hitching\n", spike_ratio);
         spike_issues++;
@@ -451,12 +477,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
             spike_issues++;
         }
 
-        /* Worst frame > 100ms is catastrophic stutter */
-        if (data.worst_frame_ms > 100.0f)
-        {
-            printf("WORST FRAME FAIL: %.2fms worst frame - catastrophic stutter\n", data.worst_frame_ms);
-            spike_issues += 2;
-        }
+        /* Note: worst_frame > 100ms already caught by CATASTROPHIC_SPIKE check above */
     }
 
     /* CPU dispatch timing validation for close-up scenarios */
@@ -533,10 +554,151 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
         spike_issues++;
     }
 
-    /* Fail only if more than 3 spike issues detected */
-    if (spike_issues > 3)
+    /* Stricter variance check for close-up scenarios */
+    if (is_closeup && variance_ratio > 2.0f)
     {
-        printf("SPIKE FAIL: %d spike issues detected (threshold: >3)\n", spike_issues);
+        printf("VARIANCE FAIL: Close-up P95/avg ratio %.2f exceeds 2.0 threshold\n", variance_ratio);
+        spike_issues++;
+    }
+
+    /* Fail if more than 1 spike issue detected */
+    if (spike_issues > 1)
+    {
+        printf("SPIKE FAIL: %d spike issues detected (threshold: >1)\n", spike_issues);
+        (*failed)++;
+        return false;
+    }
+
+    switch (status)
+    {
+    case PERF_PASS:
+        (*passed)++;
+        break;
+    case PERF_WARN:
+        (*warned)++;
+        break;
+    case PERF_FAIL:
+        (*failed)++;
+        break;
+    }
+
+    return (status != PERF_FAIL);
+}
+
+/* Camera approach test: camera moves from start to end position over the test duration
+ * This tests performance degradation during camera movement toward terrain */
+static bool run_approach_test(const char *exe_path, const char *test_name, int frames,
+                               const float *camera_start, const float *camera_end,
+                               const PerfThreshold &threshold,
+                               int *passed, int *warned, int *failed, int scene_id = 1)
+{
+    char args[512];
+    snprintf(args, sizeof(args),
+             "--scene %d --test-frames %d --profile-csv %s "
+             "--camera-approach %.1f %.1f %.1f %.1f %.1f %.1f",
+             scene_id, frames, TEMP_CSV,
+             camera_start[0], camera_start[1], camera_start[2],
+             camera_end[0], camera_end[1], camera_end[2]);
+
+    printf("\n");
+    printf("================================================================================\n");
+    printf("  %s\n", test_name);
+    printf("================================================================================\n");
+    printf("Configuration: %d frames, camera approach (%.1f,%.1f,%.1f)->(%.1f,%.1f,%.1f)\n",
+           frames, camera_start[0], camera_start[1], camera_start[2],
+           camera_end[0], camera_end[1], camera_end[2]);
+    printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n\n",
+           threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
+    fflush(stdout);
+
+    DeleteFileA(TEMP_CSV);
+
+    int result = launch_app(exe_path, args, LAUNCH_WAIT_MS * 2, 0);
+    if (result != 0)
+    {
+        printf("FAIL: App exited with code %d\n", result);
+        (*failed)++;
+        return false;
+    }
+
+    ProfileData data = parse_profile_csv(TEMP_CSV);
+    if (!data.valid)
+    {
+        printf("FAIL: Could not parse profile data\n");
+        (*failed)++;
+        return false;
+    }
+
+    float frame_budget_pct = (data.frame_avg_ms / FRAME_BUDGET_MS) * 100.0f;
+    float effective_fps = 1000.0f / data.frame_avg_ms;
+
+    printf("Frame Timing (target: %.2fms):\n", FRAME_BUDGET_MS);
+    printf("  Average:     %7.2f ms  (%5.1f%% budget)\n", data.frame_avg_ms, frame_budget_pct);
+    printf("  Maximum:     %7.2f ms\n", data.frame_max_ms);
+    printf("  95th pct:    %7.2f ms\n", data.frame_p95_ms);
+    printf("  Samples:     %d\n", data.samples);
+    printf("  Effective:   %.1f FPS\n", effective_fps);
+    if (data.budget_overruns > 0)
+    {
+        printf("  Overruns:    %d (%.1f%% of frames)\n", data.budget_overruns,
+               (float)data.budget_overruns / (float)data.samples * 100.0f);
+        printf("  Worst:       %7.2f ms\n", data.worst_frame_ms);
+    }
+    printf("\n");
+
+    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
+    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
+           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+
+    int spike_issues = 0;
+
+    /* Catastrophic spike detection for movement tests */
+    static const float CATASTROPHIC_FRAME_MS = 100.0f;
+    if (data.worst_frame_ms > CATASTROPHIC_FRAME_MS)
+    {
+        printf("CATASTROPHIC SPIKE: %.2fms worst frame (threshold: %.1fms)\n",
+               data.worst_frame_ms, CATASTROPHIC_FRAME_MS);
+        spike_issues += 3;
+    }
+
+    /* Spike ratio check */
+    float spike_ratio = data.frame_max_ms / data.frame_avg_ms;
+    if (spike_ratio > 3.0f)
+    {
+        printf("SPIKE WARNING: Spike ratio %.1fx (max/avg) indicates severe hitching\n", spike_ratio);
+        spike_issues++;
+    }
+
+    /* Variance check */
+    float variance_ratio = data.frame_p95_ms / data.frame_avg_ms;
+    if (variance_ratio > 2.5f)
+    {
+        printf("VARIANCE WARNING: P95/avg ratio %.2f indicates unstable pacing (threshold: 2.5)\n", variance_ratio);
+        spike_issues++;
+    }
+
+    /* Movement tests are inherently close-up, apply stricter variance */
+    if (variance_ratio > 2.0f)
+    {
+        printf("VARIANCE FAIL: Movement P95/avg ratio %.2f exceeds 2.0 threshold\n", variance_ratio);
+        spike_issues++;
+    }
+
+    /* Trend detection: >1.5x degradation over test duration indicates accumulation issue */
+    if (data.trend_ratio > 1.5f)
+    {
+        printf("TREND WARNING: Performance degraded %.2fx over test duration (threshold: 1.5x)\n", data.trend_ratio);
+        spike_issues++;
+    }
+    if (data.trend_ratio > 2.0f)
+    {
+        printf("TREND FAIL: Severe degradation %.2fx over test duration\n", data.trend_ratio);
+        spike_issues++;
+    }
+
+    if (spike_issues > 1)
+    {
+        printf("SPIKE FAIL: %d spike issues detected (threshold: >1)\n", spike_issues);
         (*failed)++;
         return false;
     }
@@ -614,10 +776,37 @@ int main(int argc, char *argv[])
     run_perf_test(exe_path, "GROUND LEVEL (touching terrain)", 60, 0,
                   THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, ground_level_camera, 1);
 
+    /* Mid-range culling test: catches negative hit distance bug at specific distances */
+    float midrange_camera[3] = {4.0f, 3.0f, 4.0f};
+    run_perf_test(exe_path, "MID-RANGE CULLING CHECK", 60, 0,
+                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, midrange_camera, 1);
+
+    /* Delayed spike test: runs 900 frames (~15s) to catch spikes that occur after 10 seconds */
+    /* Uses exact camera position from debug report where culling/spikes occur */
+    float delayed_spike_camera[3] = {-4.42f, 13.41f, 1.60f};
+    run_perf_test(exe_path, "DELAYED SPIKE TEST (15s)", 900, 0,
+                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, delayed_spike_camera, 1);
+
     /* Extreme close-up test: camera nearly touching objects */
     float extreme_closeup_camera[3] = {1.5f, 2.0f, 1.5f};
     run_perf_test(exe_path, "EXTREME CLOSE-UP (250 objects)", 30, 250,
                   THRESHOLD_EXTREME_CLOSEUP, &passed, &warned, &failed, extreme_closeup_camera, 0);
+
+    /* Camera movement tests: detect spikes during camera motion toward terrain */
+    float approach_start_far[3] = {30.0f, 20.0f, 30.0f};
+    float approach_end_close[3] = {2.0f, 3.0f, 2.0f};
+    run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", 600, approach_start_far, approach_end_close,
+                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
+
+    float orbit_start[3] = {4.0f, 3.0f, 0.0f};
+    float orbit_end[3] = {0.0f, 3.0f, 4.0f};
+    run_approach_test(exe_path, "ORBIT CLOSEUP (lateral)", 300, orbit_start, orbit_end,
+                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
+
+    float descent_start[3] = {10.0f, 15.0f, 10.0f};
+    float descent_end[3] = {5.0f, 2.0f, 5.0f};
+    run_approach_test(exe_path, "SPIRAL DESCENT (high->low)", 600, descent_start, descent_end,
+                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
 
     /* Distance scaling test series: verify performance scales linearly with distance */
     /* Uses scene 1 (roam terrain) with 0 objects to isolate pure terrain performance */
@@ -631,6 +820,7 @@ int main(int argc, char *argv[])
     static const float DISTANCE_TESTS[] = {2.0f, 4.0f, 8.0f, 16.0f, 32.0f};
     static const int NUM_DISTANCE_TESTS = 5;
     float distance_results[5] = {0};
+    bool distance_catastrophic = false;
 
     for (int i = 0; i < NUM_DISTANCE_TESTS; i++)
     {
@@ -654,6 +844,13 @@ int main(int argc, char *argv[])
             {
                 distance_results[i] = data.frame_avg_ms;
                 printf("  Distance %5.0f: %7.2f ms\n", dist, data.frame_avg_ms);
+
+                /* Check for catastrophic spikes even in distance tests */
+                if (data.worst_frame_ms > 100.0f)
+                {
+                    printf("    CATASTROPHIC SPIKE at distance %.0f: %.2fms\n", dist, data.worst_frame_ms);
+                    distance_catastrophic = true;
+                }
             }
         }
     }
@@ -662,7 +859,12 @@ int main(int argc, char *argv[])
     /* Note: Inside-volume raymarching is inherently slower than outside-volume
        because every ray traverses terrain vs many rays missing the volume entirely.
        A 5x ratio is expected for inside vs outside scenarios. Fail at 8x (regression). */
-    if (distance_results[0] > 0 && distance_results[NUM_DISTANCE_TESTS - 1] > 0)
+    if (distance_catastrophic)
+    {
+        printf("\n  DISTANCE SCALING FAIL: Catastrophic spikes detected during test\n");
+        failed++;
+    }
+    else if (distance_results[0] > 0 && distance_results[NUM_DISTANCE_TESTS - 1] > 0)
     {
         float ratio = distance_results[0] / distance_results[NUM_DISTANCE_TESTS - 1];
         printf("\n  Close/Far ratio: %.2fx\n", ratio);
