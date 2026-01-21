@@ -246,6 +246,8 @@ endif()
 set(GAME_C_SOURCES
     game/ball_pit.h
     game/ball_pit.c
+    game/roam.h
+    game/roam.c
 )
 
 set(GAME_CXX_SOURCES
