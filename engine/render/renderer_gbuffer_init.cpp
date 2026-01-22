@@ -174,7 +174,7 @@ namespace patch
         pipeline_info.renderPass = gbuffer_render_pass_;
         pipeline_info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &gbuffer_pipeline_);
+        VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, &gbuffer_pipeline_);
 
         vkDestroyShaderModule(device_, frag_module, nullptr);
         vkDestroyShaderModule(device_, vert_module, nullptr);
@@ -351,7 +351,7 @@ namespace patch
         pipeline_info.renderPass = render_pass_;
         pipeline_info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &deferred_lighting_pipeline_);
+        VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, &deferred_lighting_pipeline_);
 
         vkDestroyShaderModule(device_, frag_module, nullptr);
         vkDestroyShaderModule(device_, vert_module, nullptr);
@@ -807,7 +807,7 @@ namespace patch
         pipeline_info.renderPass = depth_prime_render_pass_;
         pipeline_info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &depth_prime_pipeline_);
+        VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, &depth_prime_pipeline_);
 
         vkDestroyShaderModule(device_, vert_module, nullptr);
         vkDestroyShaderModule(device_, frag_module, nullptr);

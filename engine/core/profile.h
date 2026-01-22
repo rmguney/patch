@@ -62,6 +62,12 @@ extern "C"
         PROFILE_RENDER_CHUNK_UPLOAD,
         PROFILE_RENDER_SHADOW_VOLUME,
 
+        /* Sub-profiling for shadow volume (spike investigation) */
+        PROFILE_SHADOW_TERRAIN_PACK,
+        PROFILE_SHADOW_OBJECT_STAMP,
+        PROFILE_SHADOW_MIP_REGEN,
+        PROFILE_SHADOW_UPLOAD,
+
         PROFILE_COUNT
     } ProfileCategory;
 
@@ -91,7 +97,11 @@ extern "C"
         "  Denoise",
         "    Volume Begin",
         "    Chunk Upload",
-        "    Shadow Volume"};
+        "    Shadow Volume",
+        "      Terrain Pack",
+        "      Object Stamp",
+        "      Mip Regen",
+        "      Upload"};
 
     /* Per-category profiling state with rolling history */
     typedef struct

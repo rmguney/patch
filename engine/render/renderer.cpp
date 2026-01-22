@@ -199,6 +199,12 @@ namespace patch
             return false;
         }
 
+        if (!create_pipeline_cache())
+        {
+            init_error_ = "Failed to create pipeline cache";
+            return false;
+        }
+
         if (!create_pipelines())
         {
             init_error_ = "Failed to create pipelines";
@@ -274,11 +280,87 @@ namespace patch
         return true;
     }
 
+    static const char *PIPELINE_CACHE_PATH = "pipeline_cache.bin";
+
+    bool Renderer::create_pipeline_cache()
+    {
+        VkPipelineCacheCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        create_info.initialDataSize = 0;
+        create_info.pInitialData = nullptr;
+
+        FILE *cache_file = fopen(PIPELINE_CACHE_PATH, "rb");
+        std::vector<uint8_t> cache_data;
+
+        if (cache_file)
+        {
+            fseek(cache_file, 0, SEEK_END);
+            long size = ftell(cache_file);
+            fseek(cache_file, 0, SEEK_SET);
+
+            if (size > 0)
+            {
+                cache_data.resize(static_cast<size_t>(size));
+                size_t read = fread(cache_data.data(), 1, cache_data.size(), cache_file);
+                if (read == cache_data.size())
+                {
+                    create_info.initialDataSize = cache_data.size();
+                    create_info.pInitialData = cache_data.data();
+                }
+            }
+            fclose(cache_file);
+        }
+
+        VkResult result = vkCreatePipelineCache(device_, &create_info, nullptr, &pipeline_cache_);
+        if (result != VK_SUCCESS)
+        {
+            fprintf(stderr, "Warning: Failed to create pipeline cache\n");
+            pipeline_cache_ = VK_NULL_HANDLE;
+        }
+
+        return true;
+    }
+
+    void Renderer::save_pipeline_cache()
+    {
+        if (pipeline_cache_ == VK_NULL_HANDLE)
+            return;
+
+        size_t cache_size = 0;
+        VkResult result = vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, nullptr);
+        if (result != VK_SUCCESS || cache_size == 0)
+            return;
+
+        std::vector<uint8_t> cache_data(cache_size);
+        result = vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, cache_data.data());
+        if (result != VK_SUCCESS)
+            return;
+
+        FILE *cache_file = fopen(PIPELINE_CACHE_PATH, "wb");
+        if (cache_file)
+        {
+            fwrite(cache_data.data(), 1, cache_size, cache_file);
+            fclose(cache_file);
+        }
+    }
+
+    void Renderer::destroy_pipeline_cache()
+    {
+        if (pipeline_cache_ != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+            pipeline_cache_ = VK_NULL_HANDLE;
+        }
+    }
+
     void Renderer::cleanup()
     {
         if (device_ != VK_NULL_HANDLE)
         {
             vkDeviceWaitIdle(device_);
+
+            save_pipeline_cache();
+            destroy_pipeline_cache();
 
             destroy_buffer(&quad_mesh_.vertex);
             destroy_buffer(&quad_mesh_.index);
@@ -306,6 +388,11 @@ namespace patch
             destroy_buffer(&voxel_material_buffer_);
             for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
             {
+                if (voxel_temporal_ubo_mapped_[i])
+                {
+                    vkUnmapMemory(device_, voxel_temporal_ubo_[i].memory);
+                    voxel_temporal_ubo_mapped_[i] = nullptr;
+                }
                 destroy_buffer(&voxel_temporal_ubo_[i]);
             }
 
@@ -425,20 +512,7 @@ namespace patch
         frustum_ = frustum_from_view_proj(view_proj);
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
 
-        if (voxel_temporal_ubo_[current_frame_].buffer)
-        {
-            VoxelTemporalUBO ubo{};
-            ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
-            ubo.view_proj = view_proj;
-
-            void *mapped = nullptr;
-            if (vkMapMemory(device_, voxel_temporal_ubo_[current_frame_].memory, 0, sizeof(VoxelTemporalUBO), 0, &mapped) == VK_SUCCESS)
-            {
-                memcpy(mapped, &ubo, sizeof(VoxelTemporalUBO));
-                vkUnmapMemory(device_, voxel_temporal_ubo_[current_frame_].memory);
-            }
-        }
-
+        /* Wait for fence FIRST - ensures GPU is done with this frame slot before we write to it */
         int64_t wait_start = platform_get_ticks();
         VkResult fence_status = vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, 0);
         if (fence_status == VK_TIMEOUT)
@@ -450,6 +524,15 @@ namespace patch
         if (freq > 0)
             last_wait_fence_ms_ = (float)(wait_end - wait_start) * 1000.0f / (float)freq;
         vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
+
+        /* Now safe to write to UBO - GPU done with this frame slot */
+        if (voxel_temporal_ubo_mapped_[current_frame_])
+        {
+            VoxelTemporalUBO ubo{};
+            ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
+            ubo.view_proj = view_proj;
+            memcpy(voxel_temporal_ubo_mapped_[current_frame_], &ubo, sizeof(VoxelTemporalUBO));
+        }
 
         int64_t acquire_start = platform_get_ticks();
         vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_available_semaphores_[current_frame_], VK_NULL_HANDLE, image_index);

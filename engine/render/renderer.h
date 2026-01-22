@@ -245,6 +245,9 @@ namespace patch
                              bool enable_blend, bool depth_write,
                              VkCullModeFlags cull_mode, VkPipeline *out_pipeline);
         bool create_pipelines();
+        bool create_pipeline_cache();
+        void save_pipeline_cache();
+        void destroy_pipeline_cache();
         bool create_voxel_descriptor_layout();
         bool create_voxel_descriptors(int32_t total_chunks);
         void update_voxel_depth_descriptor();
@@ -284,6 +287,7 @@ namespace patch
         VkRenderPass render_pass_;
         VkRenderPass render_pass_load_; /* LOAD_OP_LOAD variant for UI after blit */
         VkPipelineLayout pipeline_layout_;
+        VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
         VkPipeline ui_pipeline_;
 
         /* Lighting uniforms UBO (used by deferred lighting shader) */
@@ -371,6 +375,7 @@ namespace patch
         VulkanBuffer voxel_headers_buffer_;                     /* SSBO: chunk occupancy headers */
         VulkanBuffer voxel_material_buffer_;                    /* UBO: material palette */
         VulkanBuffer voxel_temporal_ubo_[MAX_FRAMES_IN_FLIGHT]; /* UBO: prev_view_proj */
+        void *voxel_temporal_ubo_mapped_[MAX_FRAMES_IN_FLIGHT] = {}; /* Persistent mapping */
 
         /* Persistent staging buffers for chunk uploads (avoids per-frame allocation) */
         VulkanBuffer staging_voxels_buffer_;
@@ -591,6 +596,21 @@ namespace patch
         int32_t shadow_stamp_cursor_ = 0; /* Round-robin cursor for over-budget stamping */
         bool shadow_needs_terrain_update_ = false;
         std::vector<uint8_t> particle_shadow_mask_; /* Track particle-touched shadow voxels */
+
+        /* Triple-buffered async shadow volume upload with persistent staging */
+        static constexpr uint32_t SHADOW_UPLOAD_BUFFERS = 3;
+        VkFence shadow_upload_fences_[SHADOW_UPLOAD_BUFFERS] = {};
+        VulkanBuffer shadow_staging_buffers_[SHADOW_UPLOAD_BUFFERS] = {};
+        void* shadow_staging_mapped_[SHADOW_UPLOAD_BUFFERS] = {}; /* Persistent mapping */
+        VkDeviceSize shadow_staging_size_ = 0; /* Size of each staging buffer */
+        VkCommandBuffer shadow_upload_cmds_[SHADOW_UPLOAD_BUFFERS] = {};
+        bool shadow_upload_pending_[SHADOW_UPLOAD_BUFFERS] = {};
+        uint32_t shadow_upload_index_ = 0;
+        void wait_for_shadow_upload(uint32_t index);
+        void cleanup_shadow_upload(uint32_t index);
+        void cleanup_all_shadow_uploads();
+        void create_shadow_staging_buffers(VkDeviceSize size);
+        void destroy_shadow_staging_buffers();
 
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;

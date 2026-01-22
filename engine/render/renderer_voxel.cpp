@@ -4,6 +4,7 @@
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/unified_volume.h"
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -118,6 +119,7 @@ namespace patch
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &voxel_temporal_ubo_[i]);
+            vkMapMemory(device_, voxel_temporal_ubo_[i].memory, 0, temporal_ubo_size, 0, &voxel_temporal_ubo_mapped_[i]);
         }
 
         /* Create persistent staging buffers for chunk uploads (avoids per-frame allocation) */
@@ -256,6 +258,11 @@ namespace patch
                 destroy_buffer(&voxel_material_buffer_);
                 for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
                 {
+                    if (voxel_temporal_ubo_mapped_[i])
+                    {
+                        vkUnmapMemory(device_, voxel_temporal_ubo_[i].memory);
+                        voxel_temporal_ubo_mapped_[i] = nullptr;
+                    }
                     destroy_buffer(&voxel_temporal_ubo_[i]);
                 }
             }
@@ -541,6 +548,11 @@ namespace patch
         int32_t moved_count = 0;
         bool new_objects_added = false;
 
+        /* Track mip regions for incremental updates (old+new AABB per moved object) */
+        struct MipRegion { int32_t min[3], max[3]; };
+        MipRegion mip_regions[SHADOW_STAMP_BUDGET];
+        int32_t mip_region_count = 0;
+
         if (objects_present)
         {
             int32_t obj_count = objects->object_count;
@@ -616,9 +628,18 @@ namespace patch
             }
         }
 
-        /* Determine rebuild strategy */
-        bool needs_full_rebuild = volume_resized ||
-                                  volume_shadow_needs_full_rebuild(vol);
+        /* Determine rebuild strategy
+         * volume_resized = buffers changed size, must do full rebuild
+         * shadow_needs_full_rebuild = dirty chunk array overflowed, can use bitmap iteration */
+        bool bitmap_overflow = volume_shadow_needs_full_rebuild(vol) && !volume_resized;
+        bool needs_full_rebuild = volume_resized;
+
+        /* When bitmap overflowed, re-fetch dirty chunks (now scans bitmap) */
+        if (bitmap_overflow)
+        {
+            dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
+            terrain_dirty = dirty_count > 0;
+        }
 
         bool needs_terrain_repack = needs_full_rebuild || terrain_dirty;
         bool needs_object_stamp = needs_full_rebuild || moved_count > 0 || new_objects_added;
@@ -655,6 +676,7 @@ namespace patch
         }
 
         /* Terrain update: either full repack or incremental chunk updates */
+        PROFILE_BEGIN(PROFILE_SHADOW_TERRAIN_PACK);
         if (needs_full_rebuild)
         {
             uint32_t out_w, out_h, out_d;
@@ -668,8 +690,10 @@ namespace patch
                 volume_pack_shadow_chunk(vol, chunk_idx, shadow_mip0_.data(), w0, h0, d0);
             }
         }
+        PROFILE_END(PROFILE_SHADOW_TERRAIN_PACK);
 
         /* Object stamping: either full or incremental */
+        PROFILE_BEGIN(PROFILE_SHADOW_OBJECT_STAMP);
         if (needs_full_rebuild && objects && objects->object_count > 0)
         {
             unified_volume_stamp_objects_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, objects);
@@ -692,16 +716,34 @@ namespace patch
         }
         else if (moved_count > 0 && objects)
         {
-            /* Clear old AABBs before stamping at new positions */
+            /* Clear old AABBs before stamping at new positions, save for mip update */
             for (int32_t i = 0; i < moved_count; i++)
             {
                 int32_t obj_idx = moved_objects[i];
                 ShadowObjectState *state = &shadow_object_states_[obj_idx];
                 if (state->valid)
                 {
+                    /* Save old AABB as starting region */
+                    mip_regions[i].min[0] = state->aabb_min[0];
+                    mip_regions[i].min[1] = state->aabb_min[1];
+                    mip_regions[i].min[2] = state->aabb_min[2];
+                    mip_regions[i].max[0] = state->aabb_max[0];
+                    mip_regions[i].max[1] = state->aabb_max[1];
+                    mip_regions[i].max[2] = state->aabb_max[2];
+
                     unified_volume_clear_shadow_aabb(shadow_mip0_.data(), w0, h0, d0,
                                                      state->aabb_min[0], state->aabb_min[1], state->aabb_min[2],
                                                      state->aabb_max[0], state->aabb_max[1], state->aabb_max[2]);
+                }
+                else
+                {
+                    /* New object - no old region, will be set from new AABB below */
+                    mip_regions[i].min[0] = INT32_MAX;
+                    mip_regions[i].min[1] = INT32_MAX;
+                    mip_regions[i].min[2] = INT32_MAX;
+                    mip_regions[i].max[0] = INT32_MIN;
+                    mip_regions[i].max[1] = INT32_MIN;
+                    mip_regions[i].max[2] = INT32_MIN;
                 }
             }
 
@@ -709,7 +751,7 @@ namespace patch
             unified_volume_stamp_objects_incremental(shadow_mip0_.data(), w0, h0, d0,
                                                      vol, objects, moved_objects, moved_count);
 
-            /* Update state for moved objects */
+            /* Update state for moved objects and expand mip regions to include new AABBs */
             for (int32_t i = 0; i < moved_count; i++)
             {
                 int32_t obj_idx = moved_objects[i];
@@ -721,8 +763,17 @@ namespace patch
                     state->orientation = obj->orientation;
                     state->valid = true;
                     unified_volume_compute_object_shadow_aabb(obj, vol, state->aabb_min, state->aabb_max);
+
+                    /* Expand mip region to include new AABB */
+                    if (state->aabb_min[0] < mip_regions[i].min[0]) mip_regions[i].min[0] = state->aabb_min[0];
+                    if (state->aabb_min[1] < mip_regions[i].min[1]) mip_regions[i].min[1] = state->aabb_min[1];
+                    if (state->aabb_min[2] < mip_regions[i].min[2]) mip_regions[i].min[2] = state->aabb_min[2];
+                    if (state->aabb_max[0] > mip_regions[i].max[0]) mip_regions[i].max[0] = state->aabb_max[0];
+                    if (state->aabb_max[1] > mip_regions[i].max[1]) mip_regions[i].max[1] = state->aabb_max[1];
+                    if (state->aabb_max[2] > mip_regions[i].max[2]) mip_regions[i].max[2] = state->aabb_max[2];
                 }
             }
+            mip_region_count = moved_count;
         }
 
         /* Particle stamping: clear previous footprint, then re-stamp */
@@ -756,29 +807,64 @@ namespace patch
             }
             std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
         }
+        PROFILE_END(PROFILE_SHADOW_OBJECT_STAMP);
 
-        /* Mip generation */
+        /* Mip generation: prefer incremental updates when possible to avoid O(n³) full regen */
+        PROFILE_BEGIN(PROFILE_SHADOW_MIP_REGEN);
         if (needs_mip_regen)
         {
-            if (needs_full_rebuild || terrain_dirty || needs_object_stamp)
+            if (needs_full_rebuild)
             {
+                /* Volume resized - must do full mip regeneration */
                 volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
                                             shadow_mip1_.data(), shadow_mip2_.data());
             }
             else if (dirty_count > 0)
             {
-                /* Incremental mip update for dirty chunks only */
+                /* Region-based mip update: compute bounding box of all dirty chunks
+                 * and regenerate mips for that region only (avoids per-chunk overhead) */
+                int32_t min_cx = INT32_MAX, min_cy = INT32_MAX, min_cz = INT32_MAX;
+                int32_t max_cx = INT32_MIN, max_cy = INT32_MIN, max_cz = INT32_MIN;
+
                 for (int32_t i = 0; i < dirty_count; i++)
                 {
                     int32_t chunk_idx = dirty_chunks[i];
-                    volume_generate_shadow_mips_for_chunk(chunk_idx,
-                                                          vol->chunks_x, vol->chunks_y, vol->chunks_z,
-                                                          shadow_mip0_.data(), w0, h0, d0,
-                                                          shadow_mip1_.data(), w1, h1, d1,
-                                                          shadow_mip2_.data(), w2, h2, d2);
+                    int32_t cx = chunk_idx % vol->chunks_x;
+                    int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
+                    int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
+
+                    if (cx < min_cx) min_cx = cx;
+                    if (cy < min_cy) min_cy = cy;
+                    if (cz < min_cz) min_cz = cz;
+                    if (cx > max_cx) max_cx = cx;
+                    if (cy > max_cy) max_cy = cy;
+                    if (cz > max_cz) max_cz = cz;
+                }
+
+                /* Convert chunk bounds to voxel coordinates */
+                volume_generate_shadow_mips_for_region(
+                    min_cx * CHUNK_SIZE, min_cy * CHUNK_SIZE, min_cz * CHUNK_SIZE,
+                    (max_cx + 1) * CHUNK_SIZE - 1, (max_cy + 1) * CHUNK_SIZE - 1, (max_cz + 1) * CHUNK_SIZE - 1,
+                    shadow_mip0_.data(), w0, h0, d0,
+                    shadow_mip1_.data(), w1, h1, d1,
+                    shadow_mip2_.data(), w2, h2, d2);
+            }
+            else if (mip_region_count > 0)
+            {
+                /* Objects moved but no terrain dirty - regenerate mips only for affected regions
+                 * mip_regions contains union of old+new AABB for each moved object */
+                for (int32_t i = 0; i < mip_region_count; i++)
+                {
+                    volume_generate_shadow_mips_for_region(mip_regions[i].min[0], mip_regions[i].min[1], mip_regions[i].min[2],
+                                                           mip_regions[i].max[0], mip_regions[i].max[1], mip_regions[i].max[2],
+                                                           shadow_mip0_.data(), w0, h0, d0,
+                                                           shadow_mip1_.data(), w1, h1, d1,
+                                                           shadow_mip2_.data(), w2, h2, d2);
                 }
             }
+            /* Note: no fallback full mip regen - if no regions tracked, no mip update needed */
         }
+        PROFILE_END(PROFILE_SHADOW_MIP_REGEN);
 
         shadow_volume_initialized_ = true;
         shadow_object_count_ = objects_present ? objects->object_count : 0;
@@ -786,9 +872,11 @@ namespace patch
 
         volume_clear_shadow_dirty(vol);
 
+        PROFILE_BEGIN(PROFILE_SHADOW_UPLOAD);
         upload_shadow_volume(shadow_mip0_.data(), w0, h0, d0,
                              shadow_mip1_.data(), w1, h1, d1,
                              shadow_mip2_.data(), w2, h2, d2);
+        PROFILE_END(PROFILE_SHADOW_UPLOAD);
 
         /* Update shadow compute descriptor with new shadow volume texture */
         update_shadow_volume_descriptor();

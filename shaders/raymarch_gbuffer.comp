@@ -149,7 +149,9 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
 
     int step_count = (pc.max_steps > 0) ? pc.max_steps : DEFAULT_MAX_STEPS;
 
-    /* Terrain distance LOD: reduce steps for ortho or distant rays */
+    /* Terrain distance LOD: reduce steps for ortho or distant rays.
+       FAR rays (high t_start) can use fewer steps because distant terrain
+       is small on screen. CLOSE rays need full steps to reach far geometry. */
     if (pc.is_orthographic != 0) {
         step_count = (step_count * 3) / 4;
     } else if (t_start > 200.0) {

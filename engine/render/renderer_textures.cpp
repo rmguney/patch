@@ -88,6 +88,22 @@ namespace patch
 
     void Renderer::destroy_shadow_volume_resources()
     {
+        /* Wait for and cleanup any pending uploads first */
+        cleanup_all_shadow_uploads();
+
+        /* Destroy persistent staging buffers */
+        destroy_shadow_staging_buffers();
+
+        /* Destroy upload fences */
+        for (uint32_t i = 0; i < SHADOW_UPLOAD_BUFFERS; i++)
+        {
+            if (shadow_upload_fences_[i] != VK_NULL_HANDLE)
+            {
+                vkDestroyFence(device_, shadow_upload_fences_[i], nullptr);
+                shadow_upload_fences_[i] = VK_NULL_HANDLE;
+            }
+        }
+
         if (shadow_volume_sampler_)
         {
             vkDestroySampler(device_, shadow_volume_sampler_, nullptr);
@@ -110,6 +126,84 @@ namespace patch
         }
     }
 
+    void Renderer::wait_for_shadow_upload(uint32_t index)
+    {
+        if (!shadow_upload_pending_[index])
+            return;
+
+        if (shadow_upload_fences_[index] != VK_NULL_HANDLE)
+        {
+            /* Try non-blocking check first to avoid blocking when possible */
+            VkResult status = vkWaitForFences(device_, 1, &shadow_upload_fences_[index], VK_TRUE, 0);
+            if (status == VK_TIMEOUT)
+            {
+                /* Fence not ready - must wait. This is the blocking path that could cause spikes. */
+                vkWaitForFences(device_, 1, &shadow_upload_fences_[index], VK_TRUE, UINT64_MAX);
+            }
+            vkResetFences(device_, 1, &shadow_upload_fences_[index]);
+        }
+
+        cleanup_shadow_upload(index);
+    }
+
+    void Renderer::cleanup_shadow_upload(uint32_t index)
+    {
+        /* Only free command buffer - staging buffer is persistent */
+        if (shadow_upload_cmds_[index] != VK_NULL_HANDLE)
+        {
+            vkFreeCommandBuffers(device_, command_pool_, 1, &shadow_upload_cmds_[index]);
+            shadow_upload_cmds_[index] = VK_NULL_HANDLE;
+        }
+        shadow_upload_pending_[index] = false;
+    }
+
+    void Renderer::cleanup_all_shadow_uploads()
+    {
+        for (uint32_t i = 0; i < SHADOW_UPLOAD_BUFFERS; i++)
+        {
+            wait_for_shadow_upload(i);
+        }
+    }
+
+    void Renderer::create_shadow_staging_buffers(VkDeviceSize size)
+    {
+        if (size == shadow_staging_size_ && shadow_staging_buffers_[0].buffer != VK_NULL_HANDLE)
+            return; /* Already allocated with correct size */
+
+        /* Clean up existing buffers if size changed */
+        destroy_shadow_staging_buffers();
+
+        shadow_staging_size_ = size;
+
+        for (uint32_t i = 0; i < SHADOW_UPLOAD_BUFFERS; i++)
+        {
+            create_buffer(size,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &shadow_staging_buffers_[i]);
+
+            /* Persistently map the buffer */
+            vkMapMemory(device_, shadow_staging_buffers_[i].memory, 0, size, 0, &shadow_staging_mapped_[i]);
+        }
+    }
+
+    void Renderer::destroy_shadow_staging_buffers()
+    {
+        for (uint32_t i = 0; i < SHADOW_UPLOAD_BUFFERS; i++)
+        {
+            if (shadow_staging_mapped_[i] != nullptr)
+            {
+                vkUnmapMemory(device_, shadow_staging_buffers_[i].memory);
+                shadow_staging_mapped_[i] = nullptr;
+            }
+            if (shadow_staging_buffers_[i].buffer != VK_NULL_HANDLE)
+            {
+                destroy_buffer(&shadow_staging_buffers_[i]);
+            }
+        }
+        shadow_staging_size_ = 0;
+    }
+
     void Renderer::upload_shadow_volume(const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
                                         const uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
                                         const uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2)
@@ -117,20 +211,34 @@ namespace patch
         if (!mip0 || !shadow_volume_image_)
             return;
 
+        /* Use double-buffering: wait for buffer N-2, use buffer N */
+        uint32_t idx = shadow_upload_index_;
+        shadow_upload_index_ = (shadow_upload_index_ + 1) % SHADOW_UPLOAD_BUFFERS;
+
+        /* Wait for this buffer's previous upload to complete (if any) */
+        wait_for_shadow_upload(idx);
+
+        /* Create fence if not exists */
+        if (shadow_upload_fences_[idx] == VK_NULL_HANDLE)
+        {
+            VkFenceCreateInfo fence_info{};
+            fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            vkCreateFence(device_, &fence_info, nullptr, &shadow_upload_fences_[idx]);
+        }
+
         size_t size0 = static_cast<size_t>(w0) * h0 * d0;
         size_t size1 = static_cast<size_t>(w1) * h1 * d1;
         size_t size2 = static_cast<size_t>(w2) * h2 * d2;
         VkDeviceSize total_size = static_cast<VkDeviceSize>(size0 + size1 + size2);
 
-        VulkanBuffer staging{};
-        create_buffer(total_size,
-                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                      &staging);
+        /* Ensure persistent staging buffers are allocated */
+        if (shadow_staging_size_ < total_size || shadow_staging_mapped_[idx] == nullptr)
+        {
+            create_shadow_staging_buffers(total_size);
+        }
 
-        void *mapped = nullptr;
-        vkMapMemory(device_, staging.memory, 0, total_size, 0, &mapped);
-        uint8_t *dst = static_cast<uint8_t *>(mapped);
+        /* Copy to persistently mapped buffer - no allocation or map/unmap overhead */
+        uint8_t *dst = static_cast<uint8_t *>(shadow_staging_mapped_[idx]);
         memcpy(dst, mip0, size0);
         dst += size0;
         if (mip1)
@@ -138,7 +246,6 @@ namespace patch
         dst += size1;
         if (mip2)
             memcpy(dst, mip2, size2);
-        vkUnmapMemory(device_, staging.memory);
 
         VkCommandBufferAllocateInfo alloc_info{};
         alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -146,13 +253,12 @@ namespace patch
         alloc_info.commandPool = command_pool_;
         alloc_info.commandBufferCount = 1;
 
-        VkCommandBuffer cmd;
-        vkAllocateCommandBuffers(device_, &alloc_info, &cmd);
+        vkAllocateCommandBuffers(device_, &alloc_info, &shadow_upload_cmds_[idx]);
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(cmd, &begin_info);
+        vkBeginCommandBuffer(shadow_upload_cmds_[idx], &begin_info);
 
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -169,7 +275,7 @@ namespace patch
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-        vkCmdPipelineBarrier(cmd,
+        vkCmdPipelineBarrier(shadow_upload_cmds_[idx],
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -196,7 +302,7 @@ namespace patch
         regions[2].imageSubresource.layerCount = 1;
         regions[2].imageExtent = {w2, h2, d2};
 
-        vkCmdCopyBufferToImage(cmd, staging.buffer, shadow_volume_image_,
+        vkCmdCopyBufferToImage(shadow_upload_cmds_[idx], shadow_staging_buffers_[idx].buffer, shadow_volume_image_,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 3, regions);
 
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -204,23 +310,21 @@ namespace patch
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-        vkCmdPipelineBarrier(cmd,
+        vkCmdPipelineBarrier(shadow_upload_cmds_[idx],
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-        vkEndCommandBuffer(cmd);
+        vkEndCommandBuffer(shadow_upload_cmds_[idx]);
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &cmd;
+        submit_info.pCommandBuffers = &shadow_upload_cmds_[idx];
 
-        vkQueueSubmit(graphics_queue_, 1, &submit_info, VK_NULL_HANDLE);
-        vkQueueWaitIdle(graphics_queue_);
-
-        vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
-        destroy_buffer(&staging);
+        /* Submit with fence - double buffering ensures we don't block on this frame's upload */
+        vkQueueSubmit(graphics_queue_, 1, &submit_info, shadow_upload_fences_[idx]);
+        shadow_upload_pending_[idx] = true;
     }
 
     bool Renderer::create_blue_noise_texture()

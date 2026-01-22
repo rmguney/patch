@@ -484,7 +484,7 @@ namespace patch
         pipeline_info.renderPass = gbuffer_render_pass_;
         pipeline_info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &vobj_pipeline_);
+        VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, &vobj_pipeline_);
 
         vkDestroyShaderModule(device_, frag_module, nullptr);
         vkDestroyShaderModule(device_, vert_module, nullptr);
@@ -817,9 +817,9 @@ namespace patch
             float extent_y = world->bounds.max_y - world->bounds.min_y;
             float extent_z = world->bounds.max_z - world->bounds.min_z;
 
-            params.grid_dims[0] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_x / GPU_GRID_CELL_SIZE) + 1));
-            params.grid_dims[1] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_y / GPU_GRID_CELL_SIZE) + 1));
-            params.grid_dims[2] = std::max(1, std::min(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_z / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[0] = (std::max)(1, (std::min)(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_x / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[1] = (std::max)(1, (std::min)(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_y / GPU_GRID_CELL_SIZE) + 1));
+            params.grid_dims[2] = (std::max)(1, (std::min)(GPU_GRID_MAX_DIMS, static_cast<int32_t>(extent_z / GPU_GRID_CELL_SIZE) + 1));
             params.grid_dims[3] = 0;
 
             params.total_cells = params.grid_dims[0] * params.grid_dims[1] * params.grid_dims[2];
@@ -841,12 +841,12 @@ namespace patch
                 gpu_grid_cell_coords(obj_min, params.inv_cell_size, params.bounds_min, &cx_min, &cy_min, &cz_min);
                 gpu_grid_cell_coords(obj_max, params.inv_cell_size, params.bounds_min, &cx_max, &cy_max, &cz_max);
 
-                cx_min = std::max(0, std::min(cx_min, params.grid_dims[0] - 1));
-                cy_min = std::max(0, std::min(cy_min, params.grid_dims[1] - 1));
-                cz_min = std::max(0, std::min(cz_min, params.grid_dims[2] - 1));
-                cx_max = std::max(0, std::min(cx_max, params.grid_dims[0] - 1));
-                cy_max = std::max(0, std::min(cy_max, params.grid_dims[1] - 1));
-                cz_max = std::max(0, std::min(cz_max, params.grid_dims[2] - 1));
+                cx_min = (std::max)(0, (std::min)(cx_min, params.grid_dims[0] - 1));
+                cy_min = (std::max)(0, (std::min)(cy_min, params.grid_dims[1] - 1));
+                cz_min = (std::max)(0, (std::min)(cz_min, params.grid_dims[2] - 1));
+                cx_max = (std::max)(0, (std::min)(cx_max, params.grid_dims[0] - 1));
+                cy_max = (std::max)(0, (std::min)(cy_max, params.grid_dims[1] - 1));
+                cz_max = (std::max)(0, (std::min)(cz_max, params.grid_dims[2] - 1));
 
                 for (int32_t cz = cz_min; cz <= cz_max; cz++)
                     for (int32_t cy = cy_min; cy <= cy_max; cy++)
@@ -865,7 +865,7 @@ namespace patch
                 spatial_grid_data_.cells[i].cell_count = 0;
                 prefix_sum += cell_counts[i];
             }
-            params.total_entries = static_cast<int32_t>(std::min(prefix_sum, static_cast<uint32_t>(GPU_GRID_MAX_ENTRIES)));
+            params.total_entries = static_cast<int32_t>((std::min)(prefix_sum, static_cast<uint32_t>(GPU_GRID_MAX_ENTRIES)));
 
             for (int32_t vi = 0; vi < visible_idx; vi++)
             {
@@ -879,12 +879,12 @@ namespace patch
                 gpu_grid_cell_coords(obj_min, params.inv_cell_size, params.bounds_min, &cx_min, &cy_min, &cz_min);
                 gpu_grid_cell_coords(obj_max, params.inv_cell_size, params.bounds_min, &cx_max, &cy_max, &cz_max);
 
-                cx_min = std::max(0, std::min(cx_min, params.grid_dims[0] - 1));
-                cy_min = std::max(0, std::min(cy_min, params.grid_dims[1] - 1));
-                cz_min = std::max(0, std::min(cz_min, params.grid_dims[2] - 1));
-                cx_max = std::max(0, std::min(cx_max, params.grid_dims[0] - 1));
-                cy_max = std::max(0, std::min(cy_max, params.grid_dims[1] - 1));
-                cz_max = std::max(0, std::min(cz_max, params.grid_dims[2] - 1));
+                cx_min = (std::max)(0, (std::min)(cx_min, params.grid_dims[0] - 1));
+                cy_min = (std::max)(0, (std::min)(cy_min, params.grid_dims[1] - 1));
+                cz_min = (std::max)(0, (std::min)(cz_min, params.grid_dims[2] - 1));
+                cx_max = (std::max)(0, (std::min)(cx_max, params.grid_dims[0] - 1));
+                cy_max = (std::max)(0, (std::min)(cy_max, params.grid_dims[1] - 1));
+                cz_max = (std::max)(0, (std::min)(cz_max, params.grid_dims[2] - 1));
 
                 for (int32_t cz = cz_min; cz <= cz_max; cz++)
                     for (int32_t cy = cy_min; cy <= cy_max; cy++)

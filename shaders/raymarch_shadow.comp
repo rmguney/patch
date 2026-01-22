@@ -67,7 +67,7 @@ layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
 layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
 
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
-const int MAX_SHADOW_STEPS = 128;  /* Reduced from 256 - shadow rays are shorter */
+const int BASE_SHADOW_STEPS = 128;  /* Base step count for far surfaces */
 const float SHADOW_MAX_DIST = 50.0;
 
 /* Sun direction */
@@ -131,7 +131,7 @@ bool sample_shadow_mip2(ivec3 voxel_pos) {
 }
 
 /* Trace shadow ray, returns hit distance (max_dist if no hit) */
-float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
+float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps) {
     vec2 box_hit = hdda_intersect_aabb(origin, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
         return max_dist;
@@ -158,7 +158,7 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
     bool mip2_empty = false;
     bool mip1_empty = false;
 
-    for (int i = 0; i < MAX_SHADOW_STEPS; i++) {
+    for (int i = 0; i < max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
@@ -174,9 +174,16 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
         }
 
         if (mip2_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip2 boundary (8x8x8 voxels) instead of stepping one voxel */
+            ivec3 mip2_min = current_mip2 << 3;
+            ivec3 mip2_max = mip2_min + 7;
+            ivec3 exit_pos = mix(mip2_min - 1, mip2_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -188,9 +195,16 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
         }
 
         if (mip1_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip to mip1 boundary (4x4x4 voxels) instead of stepping one voxel */
+            ivec3 mip1_min = current_mip1 << 2;
+            ivec3 mip1_max = mip1_min + 3;
+            ivec3 exit_pos = mix(mip1_min - 1, mip1_max + 1, greaterThan(step_dir, ivec3(0)));
+            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
+            steps_to_exit = max(steps_to_exit, vec3(1.0));
+            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
+            map_pos += step_dir * skip;
+            side_dist += vec3(skip) * delta_dist;
+            i += skip - 1;
             continue;
         }
 
@@ -211,8 +225,8 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist) {
 }
 
 /* Original interface for compatibility */
-float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist) {
-    return trace_shadow_hdda_dist(origin, rd, max_dist) < max_dist ? 0.0 : 1.0;
+float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_steps) {
+    return trace_shadow_hdda_dist(origin, rd, max_dist, max_steps) < max_dist ? 0.0 : 1.0;
 }
 
 void main() {
@@ -245,6 +259,18 @@ void main() {
 
     vec3 normal = normalize(g.normal);
 
+    /* Distance-based step reduction for FAR surfaces only.
+       Close surfaces keep full steps for shadow accuracy.
+       Far surfaces can use fewer steps - artifacts less visible at distance. */
+    float surface_dist = length(g.world_pos - pc.camera_pos);
+    int shadow_steps = BASE_SHADOW_STEPS;
+    if (surface_dist > 100.0) {
+        shadow_steps = 64;   /* Very far: half steps */
+    } else if (surface_dist > 60.0) {
+        shadow_steps = 96;   /* Far: 75% steps */
+    }
+    /* Close/mid (<60m): keep full 128 steps */
+
     float shadow = 1.0;
 
     if (pc.shadow_quality > 0) {
@@ -263,8 +289,14 @@ void main() {
         float normal_bias = pc.voxel_size * 0.3 / angle_factor;
         vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
-        /* Scale samples: quality 1=4, 2=5, 3=6 - temporal accumulation handles noise */
-        int num_samples = 3 + pc.shadow_quality;
+        /* Sample count: quality-based with reduction for far surfaces */
+        int base_samples = 3 + pc.shadow_quality;
+        int num_samples = base_samples;
+        if (surface_dist > 80.0) {
+            num_samples = max(2, base_samples - 2);  /* Far: fewer samples */
+        } else if (surface_dist > 40.0) {
+            num_samples = max(3, base_samples - 1);  /* Mid: slight reduction */
+        }
         float shadow_sum = 0.0;
 
         /* Contact hardening only when enabled, otherwise use constant penumbra */
@@ -273,7 +305,7 @@ void main() {
 
         if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
             /* Contact hardening: trace center ray to find occluder distance */
-            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST);
+            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST, shadow_steps);
 
             /* Scale penumbra: near occluder = sharper, far = softer
                If center ray misses, use full penumbra (jittered rays may still hit) */
@@ -298,7 +330,7 @@ void main() {
             vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
             vec3 jittered_light = normalize(SUN_DIR + jitter);
 
-            shadow_sum += trace_shadow_hdda(shadow_origin, jittered_light, SHADOW_MAX_DIST);
+            shadow_sum += trace_shadow_hdda(shadow_origin, jittered_light, SHADOW_MAX_DIST, shadow_steps);
         }
 
         shadow = shadow_sum / float(num_samples);

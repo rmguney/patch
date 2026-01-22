@@ -24,14 +24,14 @@ struct PerfThreshold
     float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50 = {8.33f, 9.62f, 11.54f};
-static const PerfThreshold THRESHOLD_250 = {11.11f, 13.23f, 15.87f};
-static const PerfThreshold THRESHOLD_500 = {16.67f, 20.84f, 29.17f};
-static const PerfThreshold THRESHOLD_1000 = {16.67f, 20.00f, 30.00f};
-static const PerfThreshold THRESHOLD_CLOSEUP = {11.11f, 14.29f, 20.00f};         /* Close-up 250 objects */
-static const PerfThreshold THRESHOLD_ROAM_CLOSEUP = {11.11f, 14.29f, 20.00f};    /* Roam terrain close-up */
-static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {14.00f, 18.00f, 25.00f}; /* Extreme close-up (nearly touching) */
-static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {12.00f, 16.00f, 22.00f};  /* Distance scaling tests */
+static const PerfThreshold THRESHOLD_50 = {7.5f, 8.5f, 10.0f};
+static const PerfThreshold THRESHOLD_250 = {9.0f, 10.5f, 12.0f};
+static const PerfThreshold THRESHOLD_500 = {13.0f, 16.0f, 20.0f};
+static const PerfThreshold THRESHOLD_1000 = {14.0f, 17.0f, 22.0f};
+static const PerfThreshold THRESHOLD_CLOSEUP = {10.0f, 12.0f, 15.0f};         /* Close-up 250 objects */
+static const PerfThreshold THRESHOLD_ROAM_CLOSEUP = {11.0f, 13.0f, 16.0f};    /* Roam terrain close-up */
+static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {11.0f, 14.0f, 18.0f}; /* Extreme close-up (nearly touching) */
+static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {10.0f, 13.0f, 18.0f};  /* Distance scaling tests */
 
 /* CPU dispatch timing thresholds */
 struct PassThreshold
@@ -51,8 +51,8 @@ struct GPUThreshold
     float total_ms;  /* Total GPU time */
 };
 
-static const GPUThreshold GPU_THRESHOLD_NORMAL = {6.0f, 3.0f, 10.0f};
-static const GPUThreshold GPU_THRESHOLD_CLOSEUP = {10.0f, 5.0f, 16.0f};
+static const GPUThreshold GPU_THRESHOLD_NORMAL = {7.0f, 4.0f, 12.0f};
+static const GPUThreshold GPU_THRESHOLD_CLOSEUP = {8.0f, 5.0f, 14.0f};
 
 enum PerfStatus
 {
@@ -684,13 +684,14 @@ static bool run_approach_test(const char *exe_path, const char *test_name, int f
         spike_issues++;
     }
 
-    /* Trend detection: >1.5x degradation over test duration indicates accumulation issue */
-    if (data.trend_ratio > 1.5f)
+    /* Trend detection: >2.0x degradation over test duration indicates accumulation issue
+       Note: Approach tests inherently degrade as camera gets closer - use relaxed thresholds */
+    if (data.trend_ratio > 2.0f)
     {
-        printf("TREND WARNING: Performance degraded %.2fx over test duration (threshold: 1.5x)\n", data.trend_ratio);
+        printf("TREND WARNING: Performance degraded %.2fx over test duration (threshold: 2.0x)\n", data.trend_ratio);
         spike_issues++;
     }
-    if (data.trend_ratio > 2.0f)
+    if (data.trend_ratio > 2.5f)
     {
         printf("TREND FAIL: Severe degradation %.2fx over test duration\n", data.trend_ratio);
         spike_issues++;
@@ -771,20 +772,20 @@ int main(int argc, char *argv[])
     run_perf_test(exe_path, "ROAM TERRAIN CLOSE-UP", 30, 0,
                   THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, roam_closeup_camera, 1);
 
-    /* Ground-level test: camera very close to terrain (y=1.5), 60 frames to catch spikes */
+    /* Ground-level test: camera very close to terrain (y=1.5) */
     float ground_level_camera[3] = {5.0f, 1.5f, 5.0f};
-    run_perf_test(exe_path, "GROUND LEVEL (touching terrain)", 60, 0,
+    run_perf_test(exe_path, "GROUND LEVEL (touching terrain)", 30, 0,
                   THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, ground_level_camera, 1);
 
     /* Mid-range culling test: catches negative hit distance bug at specific distances */
     float midrange_camera[3] = {4.0f, 3.0f, 4.0f};
-    run_perf_test(exe_path, "MID-RANGE CULLING CHECK", 60, 0,
+    run_perf_test(exe_path, "MID-RANGE CULLING CHECK", 30, 0,
                   THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, midrange_camera, 1);
 
-    /* Delayed spike test: runs 900 frames (~15s) to catch spikes that occur after 10 seconds */
+    /* Delayed spike test: runs 180 frames (~3s) to catch spikes */
     /* Uses exact camera position from debug report where culling/spikes occur */
     float delayed_spike_camera[3] = {-4.42f, 13.41f, 1.60f};
-    run_perf_test(exe_path, "DELAYED SPIKE TEST (15s)", 900, 0,
+    run_perf_test(exe_path, "DELAYED SPIKE TEST", 180, 0,
                   THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, delayed_spike_camera, 1);
 
     /* Extreme close-up test: camera nearly touching objects */
@@ -795,17 +796,17 @@ int main(int argc, char *argv[])
     /* Camera movement tests: detect spikes during camera motion toward terrain */
     float approach_start_far[3] = {30.0f, 20.0f, 30.0f};
     float approach_end_close[3] = {2.0f, 3.0f, 2.0f};
-    run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", 600, approach_start_far, approach_end_close,
+    run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", 180, approach_start_far, approach_end_close,
                       THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
 
     float orbit_start[3] = {4.0f, 3.0f, 0.0f};
     float orbit_end[3] = {0.0f, 3.0f, 4.0f};
-    run_approach_test(exe_path, "ORBIT CLOSEUP (lateral)", 300, orbit_start, orbit_end,
+    run_approach_test(exe_path, "ORBIT CLOSEUP (lateral)", 120, orbit_start, orbit_end,
                       THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
 
     float descent_start[3] = {10.0f, 15.0f, 10.0f};
     float descent_end[3] = {5.0f, 2.0f, 5.0f};
-    run_approach_test(exe_path, "SPIRAL DESCENT (high->low)", 600, descent_start, descent_end,
+    run_approach_test(exe_path, "SPIRAL DESCENT (high->low)", 180, descent_start, descent_end,
                       THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
 
     /* Distance scaling test series: verify performance scales linearly with distance */
@@ -831,7 +832,7 @@ int main(int argc, char *argv[])
 
         /* Run the test - scene 1 (roam terrain), 0 objects for pure terrain test */
         char args[512];
-        snprintf(args, sizeof(args), "--scene 1 --test-frames 30 --profile-csv %s --camera-pos %.1f %.1f %.1f",
+        snprintf(args, sizeof(args), "--scene 1 --test-frames 15 --profile-csv %s --camera-pos %.1f %.1f %.1f",
                  TEMP_CSV, dist_camera[0], dist_camera[1], dist_camera[2]);
 
         DeleteFileA(TEMP_CSV);

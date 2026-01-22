@@ -363,7 +363,7 @@ RoamParams roam_default_params(void)
 {
     RoamParams p;
     p.num_pillars = 15;
-    p.num_ruins = 8;
+    p.num_ruins = 0;
     p.terrain_amplitude = 3.0f;
     p.terrain_frequency = 0.1f;
     return p;

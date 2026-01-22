@@ -148,6 +148,23 @@ int32_t volume_get_shadow_dirty_chunks(VoxelVolume *vol, int32_t *out_indices, i
     if (!vol || !out_indices || max_count <= 0)
         return 0;
 
+    /* If dirty count overflowed the array, scan the bitmap instead.
+     * This avoids expensive full shadow volume rebuilds when many chunks changed. */
+    if (vol->shadow_needs_full_rebuild && vol->shadow_dirty_count >= VOLUME_SHADOW_DIRTY_MAX)
+    {
+        int32_t found = 0;
+        for (int32_t i = 0; i < vol->total_chunks && found < max_count; i++)
+        {
+            int32_t word = i >> 6;
+            int32_t bit = i & 63;
+            if (vol->shadow_dirty_bitmap[word] & (1ULL << bit))
+            {
+                out_indices[found++] = i;
+            }
+        }
+        return found;
+    }
+
     int32_t count = vol->shadow_dirty_count < max_count ? vol->shadow_dirty_count : max_count;
     for (int32_t i = 0; i < count; i++)
     {
@@ -161,12 +178,23 @@ void volume_clear_shadow_dirty(VoxelVolume *vol)
     if (!vol)
         return;
 
-    for (int32_t i = 0; i < vol->shadow_dirty_count; i++)
+    /* When bitmap overflowed, clear entire bitmap instead of just array entries */
+    if (vol->shadow_needs_full_rebuild)
     {
-        int32_t chunk_idx = vol->shadow_dirty_chunks[i];
-        int32_t word = chunk_idx >> 6;
-        int32_t bit = chunk_idx & 63;
-        vol->shadow_dirty_bitmap[word] &= ~(1ULL << bit);
+        for (int32_t i = 0; i < VOLUME_CHUNK_BITMAP_SIZE; i++)
+        {
+            vol->shadow_dirty_bitmap[i] = 0;
+        }
+    }
+    else
+    {
+        for (int32_t i = 0; i < vol->shadow_dirty_count; i++)
+        {
+            int32_t chunk_idx = vol->shadow_dirty_chunks[i];
+            int32_t word = chunk_idx >> 6;
+            int32_t bit = chunk_idx & 63;
+            vol->shadow_dirty_bitmap[word] &= ~(1ULL << bit);
+        }
     }
     vol->shadow_dirty_count = 0;
     vol->shadow_needs_full_rebuild = false;
@@ -317,6 +345,125 @@ void volume_generate_shadow_mips_for_chunk(int32_t chunk_idx,
 
                 if (m2_x >= w2 || m2_y >= h2 || m2_z >= d2)
                     continue;
+
+                uint8_t result = 0;
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    uint32_t m1_x = (m2_x << 1) + (uint32_t)(bit & 1);
+                    uint32_t m1_y = (m2_y << 1) + (uint32_t)((bit >> 1) & 1);
+                    uint32_t m1_z = (m2_z << 1) + (uint32_t)((bit >> 2) & 1);
+
+                    if (m1_x < w1 && m1_y < h1 && m1_z < d1)
+                    {
+                        size_t idx1 = m1_x + m1_y * w1 + m1_z * w1 * h1;
+                        if (mip1[idx1] != 0)
+                        {
+                            result |= (uint8_t)(1 << bit);
+                        }
+                    }
+                }
+
+                size_t idx2 = m2_x + m2_y * w2 + m2_z * w2 * h2;
+                mip2[idx2] = result;
+            }
+        }
+    }
+}
+
+void volume_generate_shadow_mips_for_region(int32_t min_x, int32_t min_y, int32_t min_z,
+                                            int32_t max_x, int32_t max_y, int32_t max_z,
+                                            const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
+                                            uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
+                                            uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2)
+{
+    if (!mip0 || !mip1 || !mip2)
+        return;
+
+    /* Clamp AABB to mip0 bounds (in mip0 coordinates) */
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (min_z < 0) min_z = 0;
+    if (max_x > (int32_t)w0) max_x = (int32_t)w0;
+    if (max_y > (int32_t)h0) max_y = (int32_t)h0;
+    if (max_z > (int32_t)d0) max_z = (int32_t)d0;
+
+    if (min_x >= max_x || min_y >= max_y || min_z >= max_z)
+        return;
+
+    /* Convert to mip1 coordinates (halved), with 1-voxel padding for boundary effects */
+    int32_t m1_min_x = (min_x >> 1) - 1;
+    int32_t m1_min_y = (min_y >> 1) - 1;
+    int32_t m1_min_z = (min_z >> 1) - 1;
+    int32_t m1_max_x = ((max_x + 1) >> 1) + 1;
+    int32_t m1_max_y = ((max_y + 1) >> 1) + 1;
+    int32_t m1_max_z = ((max_z + 1) >> 1) + 1;
+
+    if (m1_min_x < 0) m1_min_x = 0;
+    if (m1_min_y < 0) m1_min_y = 0;
+    if (m1_min_z < 0) m1_min_z = 0;
+    if (m1_max_x > (int32_t)w1) m1_max_x = (int32_t)w1;
+    if (m1_max_y > (int32_t)h1) m1_max_y = (int32_t)h1;
+    if (m1_max_z > (int32_t)d1) m1_max_z = (int32_t)d1;
+
+    /* Generate mip1 for the region */
+    for (int32_t z = m1_min_z; z < m1_max_z; z++)
+    {
+        for (int32_t y = m1_min_y; y < m1_max_y; y++)
+        {
+            for (int32_t x = m1_min_x; x < m1_max_x; x++)
+            {
+                uint32_t m1_x = (uint32_t)x;
+                uint32_t m1_y = (uint32_t)y;
+                uint32_t m1_z = (uint32_t)z;
+
+                uint8_t result = 0;
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    uint32_t m0_x = (m1_x << 1) + (uint32_t)(bit & 1);
+                    uint32_t m0_y = (m1_y << 1) + (uint32_t)((bit >> 1) & 1);
+                    uint32_t m0_z = (m1_z << 1) + (uint32_t)((bit >> 2) & 1);
+
+                    if (m0_x < w0 && m0_y < h0 && m0_z < d0)
+                    {
+                        size_t idx0 = m0_x + m0_y * w0 + m0_z * w0 * h0;
+                        if (mip0[idx0] != 0)
+                        {
+                            result |= (uint8_t)(1 << bit);
+                        }
+                    }
+                }
+
+                size_t idx1 = m1_x + m1_y * w1 + m1_z * w1 * h1;
+                mip1[idx1] = result;
+            }
+        }
+    }
+
+    /* Convert to mip2 coordinates (halved again), with padding */
+    int32_t m2_min_x = (m1_min_x >> 1) - 1;
+    int32_t m2_min_y = (m1_min_y >> 1) - 1;
+    int32_t m2_min_z = (m1_min_z >> 1) - 1;
+    int32_t m2_max_x = ((m1_max_x + 1) >> 1) + 1;
+    int32_t m2_max_y = ((m1_max_y + 1) >> 1) + 1;
+    int32_t m2_max_z = ((m1_max_z + 1) >> 1) + 1;
+
+    if (m2_min_x < 0) m2_min_x = 0;
+    if (m2_min_y < 0) m2_min_y = 0;
+    if (m2_min_z < 0) m2_min_z = 0;
+    if (m2_max_x > (int32_t)w2) m2_max_x = (int32_t)w2;
+    if (m2_max_y > (int32_t)h2) m2_max_y = (int32_t)h2;
+    if (m2_max_z > (int32_t)d2) m2_max_z = (int32_t)d2;
+
+    /* Generate mip2 for the region */
+    for (int32_t z = m2_min_z; z < m2_max_z; z++)
+    {
+        for (int32_t y = m2_min_y; y < m2_max_y; y++)
+        {
+            for (int32_t x = m2_min_x; x < m2_max_x; x++)
+            {
+                uint32_t m2_x = (uint32_t)x;
+                uint32_t m2_y = (uint32_t)y;
+                uint32_t m2_z = (uint32_t)z;
 
                 uint8_t result = 0;
                 for (int bit = 0; bit < 8; bit++)

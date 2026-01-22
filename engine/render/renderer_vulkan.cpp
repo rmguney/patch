@@ -634,7 +634,7 @@ namespace patch
         pipeline_info.renderPass = render_pass_;
         pipeline_info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, out_pipeline);
+        VkResult result = vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, out_pipeline);
 
         vkDestroyShaderModule(device_, vert_module, nullptr);
         vkDestroyShaderModule(device_, frag_module, nullptr);
@@ -872,7 +872,7 @@ namespace patch
         pipeline_info.stage = stage;
         pipeline_info.layout = layout;
 
-        VkResult result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, out_pipeline);
+        VkResult result = vkCreateComputePipelines(device_, pipeline_cache_, 1, &pipeline_info, nullptr, out_pipeline);
 
         vkDestroyShaderModule(device_, shader_module, nullptr);
 

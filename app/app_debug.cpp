@@ -237,7 +237,8 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
         "render_total", "render_shadow", "render_main", "render_ui_overlay", "render_ui",
         "volume_init", "prop_spawn",
         "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise",
-        "render_volume_begin", "render_chunk_upload", "render_shadow_volume"};
+        "render_volume_begin", "render_chunk_upload", "render_shadow_volume",
+        "shadow_terrain_pack", "shadow_object_stamp", "shadow_mip_regen", "shadow_upload"};
 
     const int name_count = (int)(sizeof(names) / sizeof(names[0]));
     const int count = (PROFILE_COUNT < name_count) ? PROFILE_COUNT : name_count;

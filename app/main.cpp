@@ -209,6 +209,10 @@ int patch_main(int argc, char *argv[])
     platform_time_init();
     PlatformTime last_time = platform_time_now();
 
+    /* Warmup period: skip first N frames for profiling to exclude initialization spike */
+    static constexpr int WARMUP_FRAMES = 5;
+    int warmup_remaining = (test_frames > 0) ? WARMUP_FRAMES : 0;
+
     /* Camera setup: use test camera position if specified, otherwise default isometric */
     bool test_camera_active = false;
     bool test_camera_approach = false;
@@ -907,9 +911,24 @@ int patch_main(int argc, char *argv[])
 
         if (test_frames > 0)
         {
-            frames_remaining--;
-            frames_elapsed++;
-            if (frames_remaining <= 0)
+            /* Warmup period: reset profiling after first few frames to exclude init spike */
+            if (warmup_remaining > 0)
+            {
+                warmup_remaining--;
+                if (warmup_remaining == 0)
+                {
+#ifdef PATCH_PROFILE
+                    profile_reset_all();
+#endif
+                }
+            }
+            else
+            {
+                frames_remaining--;
+                frames_elapsed++;
+            }
+
+            if (frames_remaining <= 0 && warmup_remaining <= 0)
             {
                 printf("Test mode: completed %d frames\n", test_frames);
                 PROFILE_END(PROFILE_FRAME_TOTAL);
