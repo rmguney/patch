@@ -31,6 +31,7 @@ static const PerfThreshold THRESHOLD_1000 = {14.0f, 17.0f, 22.0f};
 static const PerfThreshold THRESHOLD_CLOSEUP = {10.0f, 12.0f, 15.0f};         /* Close-up 250 objects */
 static const PerfThreshold THRESHOLD_ROAM_CLOSEUP = {11.0f, 13.0f, 16.0f};    /* Roam terrain close-up */
 static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {11.0f, 14.0f, 18.0f}; /* Extreme close-up (nearly touching) */
+static const PerfThreshold THRESHOLD_TOPDOWN = {14.0f, 18.0f, 25.0f};          /* Looking straight down into object pile */
 static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {10.0f, 13.0f, 18.0f};  /* Distance scaling tests */
 
 /* CPU dispatch timing thresholds */
@@ -792,6 +793,11 @@ int main(int argc, char *argv[])
     float extreme_closeup_camera[3] = {1.5f, 2.0f, 1.5f};
     run_perf_test(exe_path, "EXTREME CLOSE-UP (250 objects)", 30, 250,
                   THRESHOLD_EXTREME_CLOSEUP, &passed, &warned, &failed, extreme_closeup_camera, 0);
+
+    /* Top-down stress: camera directly above looking straight down into object pile */
+    float topdown_camera[3] = {1.9f, 7.9f, 1.9f};
+    run_perf_test(exe_path, "TOP-DOWN STRESS (250 objects)", 30, 250,
+                  THRESHOLD_TOPDOWN, &passed, &warned, &failed, topdown_camera, 0);
 
     /* Camera movement tests: detect spikes during camera motion toward terrain */
     float approach_start_far[3] = {30.0f, 20.0f, 30.0f};

@@ -4,6 +4,7 @@
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
 #include "engine/sim/detach.h"
+#include "engine/physics/collision_object.h"
 #include "content/voxel_shapes.h"
 #include "content/materials.h"
 #include "content/scenes.h"
@@ -164,6 +165,7 @@ static void ball_pit_init(Scene *scene)
     spawn_gary_on_floor(data->objects, scene->bounds, floor_y);
 
     data->particles = particle_system_create(scene->bounds);
+    data->physics = physics_world_create(data->objects, data->terrain);
 
     int32_t spawn_target = p->initial_spawns;
     const char *stress_env = getenv("PATCH_STRESS_OBJECTS");
@@ -187,6 +189,8 @@ static void ball_pit_destroy_impl(Scene *scene)
 {
     BallPitData *data = (BallPitData *)scene->user_data;
 
+    if (data->physics)
+        physics_world_destroy(data->physics);
     if (data->particles)
         particle_system_destroy(data->particles);
     if (data->objects)
@@ -236,6 +240,13 @@ static void ball_pit_tick(Scene *scene)
         voxel_object_world_process_splits(data->objects);
         voxel_object_world_process_recalcs(data->objects);
         voxel_object_world_update_raycast_grid(data->objects);
+    }
+
+    if (data->physics)
+    {
+        physics_world_sync_objects(data->physics);
+        physics_world_step(data->physics, dt);
+        physics_process_object_collisions(data->physics, dt);
     }
 
     PlatformTime t1 = platform_time_now();
@@ -488,4 +499,11 @@ ParticleSystem *ball_pit_get_particles(Scene *scene)
     if (!scene || !scene->user_data)
         return NULL;
     return ((BallPitData *)scene->user_data)->particles;
+}
+
+PhysicsWorld *ball_pit_get_physics(Scene *scene)
+{
+    if (!scene || !scene->user_data)
+        return NULL;
+    return ((BallPitData *)scene->user_data)->physics;
 }

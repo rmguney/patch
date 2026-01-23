@@ -19,6 +19,7 @@ extern "C"
 
 #define PARTICLE_MAX_COUNT 65536
 #define PARTICLE_MAX_UPDATES_PER_TICK 16384
+#define PARTICLE_MAX_COLLISION_PAIRS 8192
 #define PARTICLE_YOUNG_AGE_THRESHOLD 1.0f
 #define PARTICLE_SETTLE_VELOCITY 0.15f
 /* No PARTICLE_LIFETIME_MAX - particles are removed via circular buffer when spawning at capacity */

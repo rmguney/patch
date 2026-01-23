@@ -1,5 +1,6 @@
 # Run all tests and generate build_report.txt
 # Usage: cmake -DBUILD_DIR=<build_dir> -DEXE_PATH=<patch_samples.exe> -P run_tests.cmake
+# Set PATCH_SKIP_PERF_TESTS=1 to skip performance tests during development
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -10,6 +11,8 @@ endif()
 if(NOT EXE_PATH)
     message(FATAL_ERROR "EXE_PATH not specified")
 endif()
+
+set(SKIP_PERF_TESTS $ENV{PATCH_SKIP_PERF_TESTS})
 
 set(REPORT_FILE "${BUILD_DIR}/build_report.txt")
 
@@ -57,16 +60,21 @@ file(APPEND ${REPORT_FILE} "\n==================================================
 file(APPEND ${REPORT_FILE} "  PERFORMANCE TESTS\n")
 file(APPEND ${REPORT_FILE} "================================================================================\n\n")
 
-execute_process(
-    COMMAND "${BUILD_DIR}/test_render_perf.exe" "${EXE_PATH}"
-    WORKING_DIRECTORY ${BUILD_DIR}
-    OUTPUT_VARIABLE PERF_OUTPUT
-    ERROR_VARIABLE PERF_ERROR
-    RESULT_VARIABLE PERF_RESULT
-)
-file(APPEND ${REPORT_FILE} "${PERF_OUTPUT}\n")
-if(PERF_ERROR)
-    file(APPEND ${REPORT_FILE} "${PERF_ERROR}\n")
+if(SKIP_PERF_TESTS)
+    file(APPEND ${REPORT_FILE} "(Skipped - PATCH_SKIP_PERF_TESTS=1)\n")
+    set(PERF_RESULT 0)
+else()
+    execute_process(
+        COMMAND "${BUILD_DIR}/test_render_perf.exe" "${EXE_PATH}"
+        WORKING_DIRECTORY ${BUILD_DIR}
+        OUTPUT_VARIABLE PERF_OUTPUT
+        ERROR_VARIABLE PERF_ERROR
+        RESULT_VARIABLE PERF_RESULT
+    )
+    file(APPEND ${REPORT_FILE} "${PERF_OUTPUT}\n")
+    if(PERF_ERROR)
+        file(APPEND ${REPORT_FILE} "${PERF_ERROR}\n")
+    endif()
 endif()
 
 file(APPEND ${REPORT_FILE} "\n################################################################################\n")

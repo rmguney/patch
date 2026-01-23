@@ -3,22 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static Vec3 quat_rotate_vec3(Quat q, Vec3 v)
-{
-    float qx = q.x, qy = q.y, qz = q.z, qw = q.w;
-    float vx = v.x, vy = v.y, vz = v.z;
-
-    float tx = 2.0f * (qy * vz - qz * vy);
-    float ty = 2.0f * (qz * vx - qx * vz);
-    float tz = 2.0f * (qx * vy - qy * vx);
-
-    Vec3 result;
-    result.x = vx + qw * tx + (qy * tz - qz * ty);
-    result.y = vy + qw * ty + (qz * tx - qx * tz);
-    result.z = vz + qw * tz + (qx * ty - qy * tx);
-    return result;
-}
-
 UnifiedVolume *unified_volume_create(int32_t size_x, int32_t size_y, int32_t size_z,
                                      Vec3 origin, float voxel_size)
 {

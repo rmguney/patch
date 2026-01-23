@@ -197,7 +197,8 @@ HitInfo vobj_march_object(
     int object_idx,
     vec3 world_origin,
     vec3 world_dir,
-    int max_steps
+    int max_steps,
+    float max_t
 ) {
     HitInfo info;
     info.hit = false;
@@ -222,6 +223,11 @@ HitInfo vobj_march_object(
 
     vec2 box_t = hdda_intersect_aabb(local_origin, local_dir, local_min, local_max);
     if (box_t.x > box_t.y || box_t.y < 0.0) {
+        return info;
+    }
+
+    /* AABB entry is behind current best hit — entire object is occluded */
+    if (box_t.x > max_t) {
         return info;
     }
 

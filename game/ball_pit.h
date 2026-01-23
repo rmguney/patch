@@ -6,6 +6,7 @@
 #include "engine/voxel/connectivity.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/physics/particles.h"
+#include "engine/physics/rigidbody.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -41,6 +42,7 @@ extern "C"
         VoxelVolume *terrain;
         VoxelObjectWorld *objects;
         ParticleSystem *particles;
+        PhysicsWorld *physics;
 
         /* Terrain detachment (floating islands -> voxel objects) */
         ConnectivityWorkBuffer detach_work;
@@ -59,6 +61,7 @@ extern "C"
     VoxelVolume *ball_pit_get_terrain(Scene *scene);
     VoxelObjectWorld *ball_pit_get_objects(Scene *scene);
     ParticleSystem *ball_pit_get_particles(Scene *scene);
+    PhysicsWorld *ball_pit_get_physics(Scene *scene);
 
 #ifdef __cplusplus
 }

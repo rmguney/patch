@@ -65,6 +65,14 @@ extern "C"
         return vec3_create(v.x * s, v.y * s, v.z * s);
     }
 
+    static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, float t)
+    {
+        return vec3_create(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t);
+    }
+
     static inline float vec3_dot(Vec3 a, Vec3 b)
     {
         return a.x * b.x + a.y * b.y + a.z * b.z;
@@ -413,6 +421,80 @@ extern "C"
     static inline float lerpf(float a, float b, float t)
     {
         return a + (b - a) * t;
+    }
+
+    static inline Vec3 vec3_clamp_length(Vec3 v, float max_len)
+    {
+        float len_sq = vec3_length_sq(v);
+        if (len_sq > max_len * max_len && len_sq > K_EPSILON * K_EPSILON)
+        {
+            float inv_len = 1.0f / sqrtf(len_sq);
+            return vec3_scale(v, max_len * inv_len);
+        }
+        return v;
+    }
+
+    static inline Vec3 vec3_neg(Vec3 v)
+    {
+        return vec3_create(-v.x, -v.y, -v.z);
+    }
+
+    static inline Vec3 vec3_mul(Vec3 a, Vec3 b)
+    {
+        return vec3_create(a.x * b.x, a.y * b.y, a.z * b.z);
+    }
+
+    static inline Vec3 vec3_div(Vec3 v, float s)
+    {
+        return vec3_scale(v, 1.0f / s);
+    }
+
+    static inline float vec3_min_component(Vec3 v)
+    {
+        return minf(minf(v.x, v.y), v.z);
+    }
+
+    static inline float vec3_max_component(Vec3 v)
+    {
+        return maxf(maxf(v.x, v.y), v.z);
+    }
+
+    static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v)
+    {
+        Vec3 u = vec3_create(q.x, q.y, q.z);
+        float s = q.w;
+        Vec3 uv = vec3_cross(u, v);
+        Vec3 uuv = vec3_cross(u, uv);
+        return vec3_add(v, vec3_scale(vec3_add(vec3_scale(uv, s), uuv), 2.0f));
+    }
+
+    static inline Quat quat_from_axis_angle(Vec3 axis, float angle)
+    {
+        float half_angle = angle * 0.5f;
+        float s = sinf(half_angle);
+        float c = cosf(half_angle);
+        return quat_create(axis.x * s, axis.y * s, axis.z * s, c);
+    }
+
+    static inline Quat quat_integrate(Quat q, Vec3 omega, float dt)
+    {
+        float half_dt = dt * 0.5f;
+        Quat dq;
+        dq.x = half_dt * (omega.x * q.w + omega.y * q.z - omega.z * q.y);
+        dq.y = half_dt * (omega.y * q.w + omega.z * q.x - omega.x * q.z);
+        dq.z = half_dt * (omega.z * q.w + omega.x * q.y - omega.y * q.x);
+        dq.w = half_dt * (-omega.x * q.x - omega.y * q.y - omega.z * q.z);
+        Quat result;
+        result.x = q.x + dq.x;
+        result.y = q.y + dq.y;
+        result.z = q.z + dq.z;
+        result.w = q.w + dq.w;
+        return quat_normalize(result);
+    }
+
+    static inline Quat quat_conjugate(Quat q)
+    {
+        return quat_create(-q.x, -q.y, -q.z, q.w);
     }
 
     /* General 4x4 matrix inverse using cofactor expansion */

@@ -85,6 +85,16 @@ endif()
 set(ENGINE_PHYSICS_SOURCES
     engine/physics/particles.h
     engine/physics/particles.c
+    engine/physics/rigidbody.h
+    engine/physics/rigidbody.c
+    engine/physics/collision_object.h
+    engine/physics/collision_object.c
+    engine/physics/character.h
+    engine/physics/character.c
+    engine/physics/projectile.h
+    engine/physics/projectile.c
+    engine/physics/ragdoll.h
+    engine/physics/ragdoll.c
 )
 
 add_library(engine_physics STATIC ${ENGINE_PHYSICS_SOURCES})
@@ -103,7 +113,6 @@ endif()
 set(ENGINE_SIM_SOURCES
     engine/sim/scene.h
     engine/sim/entity.h
-    engine/sim/lighting.h
     engine/sim/ui.h
     engine/sim/ui.c
     engine/sim/detach.h
