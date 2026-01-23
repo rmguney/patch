@@ -15,7 +15,7 @@ namespace patch
         app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         app_info.pEngineName = "PatchEngine";
         app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        app_info.apiVersion = VK_API_VERSION_1_2;
+        app_info.apiVersion = VK_API_VERSION_1_4;
 
         const char *extensions[] = {
             VK_KHR_SURFACE_EXTENSION_NAME,
@@ -75,7 +75,7 @@ namespace patch
 
             printf("GPU %u: %s (%s, Vulkan %u.%u.%u)\n", i, props.deviceName, type_str, major, minor, patch);
 
-            if (props.apiVersion >= VK_API_VERSION_1_2)
+            if (props.apiVersion >= VK_API_VERSION_1_4)
             {
                 if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && discrete_gpu == VK_NULL_HANDLE)
                 {
@@ -91,7 +91,7 @@ namespace patch
         physical_device_ = (discrete_gpu != VK_NULL_HANDLE) ? discrete_gpu : integrated_gpu;
         if (physical_device_ == VK_NULL_HANDLE)
         {
-            printf("No GPU with Vulkan 1.2+ support found\n");
+            printf("No GPU with Vulkan 1.4+ support found\n");
             return false;
         }
 
@@ -418,18 +418,7 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        vkCreateImage(device_, &image_info, nullptr, &depth_image_);
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, depth_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        vkAllocateMemory(device_, &alloc_info, nullptr, &depth_image_memory_);
-        vkBindImageMemory(device_, depth_image_, depth_image_memory_, 0);
+        depth_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &depth_image_memory_);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -729,9 +718,14 @@ namespace patch
         cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         cmd_alloc.commandPool = command_pool_;
         cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cmd_alloc.commandBufferCount = 1;
+        cmd_alloc.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 
-        if (vkAllocateCommandBuffers(device_, &cmd_alloc, &upload_cmd_) != VK_SUCCESS)
+        if (vkAllocateCommandBuffers(device_, &cmd_alloc, upload_cmd_) != VK_SUCCESS)
+        {
+            return false;
+        }
+
+        if (vkAllocateCommandBuffers(device_, &cmd_alloc, vobj_upload_cmd_) != VK_SUCCESS)
         {
             return false;
         }
@@ -755,12 +749,8 @@ namespace patch
         }
         if (depth_image_)
         {
-            vkDestroyImage(device_, depth_image_, nullptr);
+            gpu_allocator_.destroy_image(depth_image_, depth_image_memory_);
             depth_image_ = VK_NULL_HANDLE;
-        }
-        if (depth_image_memory_)
-        {
-            vkFreeMemory(device_, depth_image_memory_, nullptr);
             depth_image_memory_ = VK_NULL_HANDLE;
         }
 

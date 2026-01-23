@@ -67,19 +67,11 @@ extern "C"
  * CPU↔GPU shared struct size invariants.
  * These must match shader expectations exactly; mismatches cause UB on upload.
  */
-#ifdef __cplusplus
-    static_assert(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
-    static_assert(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
-    static_assert(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
-    static_assert(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
-    static_assert(sizeof(ShadowUniforms) == 80, "ShadowUniforms size mismatch with shader");
-#else
-_Static_assert(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
-_Static_assert(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
-_Static_assert(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
-_Static_assert(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
-_Static_assert(sizeof(ShadowUniforms) == 80, "ShadowUniforms size mismatch with shader");
-#endif
+static_assert(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
+static_assert(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
+static_assert(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
+static_assert(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
+static_assert(sizeof(ShadowUniforms) == 80, "ShadowUniforms size mismatch with shader");
 
 #ifdef __cplusplus
 }

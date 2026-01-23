@@ -23,7 +23,6 @@ namespace patch
         if (particle_resources_initialized_)
             return true;
 
-        // Create particle SSBO
         VkDeviceSize buffer_size = MAX_PARTICLE_INSTANCES * sizeof(ParticleGPU);
 
         VkBufferCreateInfo buffer_info{};
@@ -32,28 +31,14 @@ namespace patch
         buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        if (vkCreateBuffer(device_, &buffer_info, nullptr, &particle_ssbo_.buffer) != VK_SUCCESS)
+        particle_ssbo_.buffer = gpu_allocator_.create_buffer(buffer_info, VMA_MEMORY_USAGE_AUTO,
+                                                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                                                             &particle_ssbo_.memory);
+        if (particle_ssbo_.buffer == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create particle SSBO\n");
             return false;
         }
-
-        VkMemoryRequirements mem_req;
-        vkGetBufferMemoryRequirements(device_, particle_ssbo_.buffer, &mem_req);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_req.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits,
-                                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &particle_ssbo_.memory) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate particle SSBO memory\n");
-            return false;
-        }
-
-        vkBindBufferMemory(device_, particle_ssbo_.buffer, particle_ssbo_.memory, 0);
         particle_ssbo_.size = buffer_size;
 
         // Create descriptor set layout
@@ -139,7 +124,7 @@ namespace patch
         VkPushConstantRange push_range{};
         push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         push_range.offset = 0;
-        push_range.size = 96; // mat4 view_proj (64) + vec3 camera_pos (12) + float pad (4) + int count (4) + int pad[3] (12)
+        push_range.size = 108; // mat4 view_proj (64) + vec3 camera_pos (12) + pad (4) + count (4) + near/far/ortho (12) + camera_forward (12)
 
         VkPipelineLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -300,13 +285,8 @@ namespace patch
 
         if (particle_ssbo_.buffer)
         {
-            vkDestroyBuffer(device_, particle_ssbo_.buffer, nullptr);
+            gpu_allocator_.destroy_buffer(particle_ssbo_.buffer, particle_ssbo_.memory);
             particle_ssbo_.buffer = VK_NULL_HANDLE;
-        }
-
-        if (particle_ssbo_.memory)
-        {
-            vkFreeMemory(device_, particle_ssbo_.memory, nullptr);
             particle_ssbo_.memory = VK_NULL_HANDLE;
         }
 
@@ -328,8 +308,7 @@ namespace patch
         uint32_t active_count = 0;
         ParticleGPU *gpu_data = nullptr;
 
-        vkMapMemory(device_, particle_ssbo_.memory, 0, MAX_PARTICLE_INSTANCES * sizeof(ParticleGPU), 0,
-                    reinterpret_cast<void **>(&gpu_data));
+        gpu_data = static_cast<ParticleGPU *>(gpu_allocator_.map(particle_ssbo_.memory));
 
         float alpha = interp_alpha_;
 
@@ -356,7 +335,7 @@ namespace patch
             active_count++;
         }
 
-        vkUnmapMemory(device_, particle_ssbo_.memory);
+        gpu_allocator_.unmap(particle_ssbo_.memory);
 
         if (active_count == 0)
             return;
@@ -375,7 +354,8 @@ namespace patch
             int32_t particle_count;
             float near_plane;
             float far_plane;
-            int32_t pad2;
+            int32_t is_orthographic;
+            float camera_forward[3];
         } pc;
 
         Mat4 vp = mat4_multiply(projection_matrix_, view_matrix_);
@@ -385,9 +365,12 @@ namespace patch
         pc.camera_pos[2] = camera_position_.z;
         pc.pad1 = 0.0f;
         pc.particle_count = static_cast<int32_t>(active_count);
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
-        pc.pad2 = 0;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.camera_forward[0] = -view_matrix_.m[2];
+        pc.camera_forward[1] = -view_matrix_.m[6];
+        pc.camera_forward[2] = -view_matrix_.m[10];
 
         vkCmdPushConstants(command_buffers_[current_frame_], particle_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

@@ -1,5 +1,4 @@
 #include "chunk.h"
-#include <string.h>
 #include <math.h>
 
 void chunk_rebuild_occupancy(Chunk *chunk)

@@ -150,8 +150,7 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     world->raycast_grid = (SpatialHashGrid *)calloc(1, sizeof(SpatialHashGrid));
     if (world->raycast_grid)
     {
-        float cell_size = 25.0f;
-        spatial_hash_init(world->raycast_grid, cell_size, bounds);
+        spatial_hash_init(world->raycast_grid, VOBJ_RAYCAST_CELL_SIZE, bounds);
     }
     world->raycast_grid_valid = false;
 
@@ -349,23 +348,21 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
 
     float closest_t = 1e30f;
 
-    int32_t candidates[256];
+    int32_t candidates[VOBJ_RAYCAST_MAX_CANDIDATES];
     int32_t candidate_count = 0;
     bool use_grid = world->raycast_grid_valid && world->raycast_grid != NULL;
 
     if (use_grid)
     {
-        float query_radius = 50.0f;
-        float max_ray_dist = 500.0f;
-        float step_size = query_radius * 1.5f;
+        float step_size = VOBJ_RAYCAST_QUERY_RADIUS * VOBJ_RAYCAST_STEP_MULT;
 
-        for (float t = 0.0f; t < max_ray_dist && candidate_count < 200; t += step_size)
+        for (float t = 0.0f; t < VOBJ_RAYCAST_MAX_DIST && candidate_count < VOBJ_RAYCAST_MAX_CANDIDATES; t += step_size)
         {
             Vec3 sample_pos = vec3_add(origin, vec3_scale(dir, t));
-            int32_t found[64];
-            int32_t found_count = spatial_hash_query(world->raycast_grid, sample_pos, query_radius,
-                                                     found, 64);
-            for (int32_t j = 0; j < found_count && candidate_count < 256; j++)
+            int32_t found[VOBJ_RAYCAST_PER_QUERY_MAX];
+            int32_t found_count = spatial_hash_query(world->raycast_grid, sample_pos, VOBJ_RAYCAST_QUERY_RADIUS,
+                                                     found, VOBJ_RAYCAST_PER_QUERY_MAX);
+            for (int32_t j = 0; j < found_count && candidate_count < VOBJ_RAYCAST_MAX_CANDIDATES; j++)
             {
                 bool already_added = false;
                 for (int32_t k = 0; k < candidate_count; k++)
@@ -426,11 +423,11 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         local_origin = vec3_add(local_origin, vec3_create(half_size, half_size, half_size));
 
         Vec3 inv_dir;
-        inv_dir.x = (fabsf(local_dir.x) > 0.0001f) ? 1.0f / local_dir.x : 1e10f;
-        inv_dir.y = (fabsf(local_dir.y) > 0.0001f) ? 1.0f / local_dir.y : 1e10f;
-        inv_dir.z = (fabsf(local_dir.z) > 0.0001f) ? 1.0f / local_dir.z : 1e10f;
+        inv_dir.x = (fabsf(local_dir.x) > VOBJ_DIR_EPSILON) ? 1.0f / local_dir.x : 1e10f;
+        inv_dir.y = (fabsf(local_dir.y) > VOBJ_DIR_EPSILON) ? 1.0f / local_dir.y : 1e10f;
+        inv_dir.z = (fabsf(local_dir.z) > VOBJ_DIR_EPSILON) ? 1.0f / local_dir.z : 1e10f;
 
-        float t_start = fmaxf(t_sphere - obj->radius * 0.2f, 0.0f);
+        float t_start = fmaxf(t_sphere - obj->radius * VOBJ_SPHERE_ENTRY_BIAS, 0.0f);
         Vec3 pos = vec3_add(local_origin, vec3_scale(local_dir, t_start));
 
         int32_t map_x = (int32_t)floorf(pos.x / obj->voxel_size);
@@ -452,7 +449,7 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         float t_current = t_start;
         Vec3 hit_normal = vec3_zero();
 
-        for (int32_t step = 0; step < VOBJ_GRID_SIZE * 6; step++)
+        for (int32_t step = 0; step < VOBJ_DDA_MAX_STEPS; step++)
         {
             if (map_x >= 0 && map_x < VOBJ_GRID_SIZE &&
                 map_y >= 0 && map_y < VOBJ_GRID_SIZE &&
@@ -569,11 +566,15 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
             else
                 world->objects[prev_idx].next_dirty = next_idx;
 
+            /* recalc_shape may deactivate if voxel_count reached 0 */
+            if (!obj->active)
+                voxel_object_world_free_slot(world, curr_idx);
+
             processed++;
         }
         else
         {
-            /* Skip inactive objects, remove from dirty list */
+            /* Inactive or clean: remove from dirty list and recycle slot */
             obj->shape_dirty = false;
             obj->next_dirty = -1;
             world->dirty_count--;
@@ -582,6 +583,9 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
                 world->first_dirty = next_idx;
             else
                 world->objects[prev_idx].next_dirty = next_idx;
+
+            if (!obj->active)
+                voxel_object_world_free_slot(world, curr_idx);
         }
 
         curr_idx = next_idx;
@@ -593,7 +597,7 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
                                     int32_t start_x, int32_t start_y, int32_t start_z)
 {
-    static int32_t stack[VOBJ_TOTAL_VOXELS];
+    static thread_local int32_t stack[VOBJ_TOTAL_VOXELS];
     int32_t stack_top = 0;
 
     int32_t start_idx = vobj_index(start_x, start_y, start_z);
@@ -629,6 +633,10 @@ static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
 
             int32_t nidx = vobj_index(nx, ny, nz);
             if (visited[nidx] || obj->voxels[nidx].material == 0)
+                continue;
+
+            /* Bounds check: prevent stack overflow */
+            if (stack_top >= VOBJ_TOTAL_VOXELS)
                 continue;
 
             visited[nidx] = 1;
@@ -672,16 +680,16 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     if (unvisited_count == 0)
         return false;
 
-    if (world->object_count >= VOBJ_MAX_OBJECTS)
+    int32_t new_obj_idx = voxel_object_world_alloc_slot(world);
+    if (new_obj_idx < 0)
         return false;
 
-    VoxelObject *new_obj = &world->objects[world->object_count];
+    VoxelObject *new_obj = &world->objects[new_obj_idx];
     memset(new_obj, 0, sizeof(VoxelObject));
     new_obj->position = obj->position;
     new_obj->orientation = obj->orientation;
     new_obj->voxel_size = obj->voxel_size;
     new_obj->active = true;
-    new_obj->shape_dirty = false; /* Will be marked via dirty-list later */
     new_obj->voxel_count = 0;
 
     for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
@@ -698,12 +706,8 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     obj->voxel_revision++;
     new_obj->voxel_revision = 1;
 
-    int32_t new_obj_idx = world->object_count;
-    world->object_count++;
-
-    /* Mark both objects dirty via the dirty-list (not just shape_dirty flag) */
-    voxel_object_world_mark_dirty(world, obj_index);
-    voxel_object_world_mark_dirty(world, new_obj_idx);
+    voxel_object_recalc_shape(new_obj);
+    voxel_object_recalc_shape(obj);
 
     /* Queue both for further splitting */
     voxel_object_world_queue_split(world, obj_index);

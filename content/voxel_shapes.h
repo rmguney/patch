@@ -30,7 +30,7 @@ extern "C"
     } VoxelShape;
 
     /* Compile-time layout validation */
-    _Static_assert(sizeof(VoxelShape) == 32 || sizeof(VoxelShape) == 40,
+    static_assert(sizeof(VoxelShape) == 32 || sizeof(VoxelShape) == 40,
                    "VoxelShape size changed - verify cross-platform layout");
 
 /* Maximum number of registered shapes */

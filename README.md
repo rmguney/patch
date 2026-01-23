@@ -36,7 +36,7 @@ cmake --build build
 
 ## Project Structure
 
-```
+```dir
 engine/     Core engine (voxels, physics, rendering)
 content/    Materials, shapes, scene definitions
 game/       Sample game scenes
@@ -46,7 +46,7 @@ app/        Application entry point
 
 ## Tools
 
-**voxelize** - Convert 3D models to voxel shapes:
+**voxelize** - Convert OBJ to voxel:
 
 ```shell
 ./build/voxelize.exe model.obj output.c --resolution 16

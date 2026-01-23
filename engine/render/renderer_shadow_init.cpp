@@ -21,27 +21,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &shadow_output_image_) != VK_SUCCESS)
+        shadow_output_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &shadow_output_memory_);
+        if (shadow_output_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create shadow output image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, shadow_output_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &shadow_output_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate shadow output memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, shadow_output_image_, shadow_output_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -85,27 +70,12 @@ namespace patch
             image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-            if (vkCreateImage(device_, &image_info, nullptr, &history_images_[i]) != VK_SUCCESS)
+            history_images_[i] = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &history_image_memory_[i]);
+            if (history_images_[i] == VK_NULL_HANDLE)
             {
                 fprintf(stderr, "Failed to create shadow history image %d\n", i);
                 return false;
             }
-
-            VkMemoryRequirements mem_reqs;
-            vkGetImageMemoryRequirements(device_, history_images_[i], &mem_reqs);
-
-            VkMemoryAllocateInfo alloc_info{};
-            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = mem_reqs.size;
-            alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            if (vkAllocateMemory(device_, &alloc_info, nullptr, &history_image_memory_[i]) != VK_SUCCESS)
-            {
-                fprintf(stderr, "Failed to allocate shadow history memory %d\n", i);
-                return false;
-            }
-
-            vkBindImageMemory(device_, history_images_[i], history_image_memory_[i], 0);
 
             VkImageViewCreateInfo view_info{};
             view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;

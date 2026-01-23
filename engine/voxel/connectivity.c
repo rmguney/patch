@@ -3,7 +3,6 @@
 #include "engine/core/profile.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol)
 {

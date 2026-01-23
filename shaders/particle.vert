@@ -20,7 +20,10 @@ layout(push_constant) uniform Constants {
     vec3 camera_pos;
     float pad1;
     int particle_count;
-    int pad2[3];
+    float near_plane;
+    float far_plane;
+    int is_orthographic;
+    float camera_forward[3];
 } pc;
 
 layout(location = 0) out vec3 out_world_pos;

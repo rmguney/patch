@@ -14,10 +14,10 @@ namespace patch
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             lighting_ubo_[i].buffer = VK_NULL_HANDLE;
-            lighting_ubo_[i].memory = VK_NULL_HANDLE;
+            lighting_ubo_[i].allocation = VK_NULL_HANDLE;
             voxel_descriptor_sets_[i] = VK_NULL_HANDLE;
             voxel_temporal_ubo_[i].buffer = VK_NULL_HANDLE;
-            voxel_temporal_ubo_[i].memory = VK_NULL_HANDLE;
+            voxel_temporal_ubo_[i].allocation = VK_NULL_HANDLE;
             gbuffer_descriptor_sets_[i] = VK_NULL_HANDLE;
             deferred_lighting_descriptor_sets_[i] = VK_NULL_HANDLE;
             temporal_shadow_input_sets_[i] = VK_NULL_HANDLE;
@@ -39,6 +39,44 @@ namespace patch
     Renderer::~Renderer()
     {
         cleanup();
+    }
+
+    void Renderer::prepare_for_scene_switch()
+    {
+        vkDeviceWaitIdle(device_);
+
+        destroy_voxel_object_resources();
+        destroy_compute_raymarching_resources();
+        destroy_shadow_volume_resources();
+
+        destroy_buffer(&voxel_data_buffer_);
+        destroy_buffer(&voxel_headers_buffer_);
+        destroy_buffer(&voxel_material_buffer_);
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            if (voxel_temporal_ubo_mapped_[i])
+            {
+                gpu_allocator_.unmap(voxel_temporal_ubo_[i].allocation);
+                voxel_temporal_ubo_mapped_[i] = nullptr;
+            }
+            destroy_buffer(&voxel_temporal_ubo_[i]);
+        }
+
+        if (staging_voxels_mapped_)
+        {
+            gpu_allocator_.unmap(staging_voxels_buffer_.allocation);
+            staging_voxels_mapped_ = nullptr;
+        }
+        if (staging_headers_mapped_)
+        {
+            gpu_allocator_.unmap(staging_headers_buffer_.allocation);
+            staging_headers_mapped_ = nullptr;
+        }
+        destroy_buffer(&staging_voxels_buffer_);
+        destroy_buffer(&staging_headers_buffer_);
+
+        reset_scene_state();
+        voxel_resources_initialized_ = false;
     }
 
     void Renderer::set_material_palette(const Vec3 *colors, int32_t count)
@@ -178,6 +216,12 @@ namespace patch
         if (!create_logical_device())
         {
             init_error_ = "Failed to create logical device";
+            return false;
+        }
+
+        if (!gpu_allocator_.init(instance_, physical_device_, device_, VK_API_VERSION_1_4))
+        {
+            init_error_ = "Failed to initialize GPU memory allocator";
             return false;
         }
 
@@ -367,12 +411,12 @@ namespace patch
 
             if (ui_vertex_mapped_)
             {
-                vkUnmapMemory(device_, ui_vertex_buffer_.memory);
+                gpu_allocator_.unmap(ui_vertex_buffer_.allocation);
                 ui_vertex_mapped_ = nullptr;
             }
             if (ui_index_mapped_)
             {
-                vkUnmapMemory(device_, ui_index_buffer_.memory);
+                gpu_allocator_.unmap(ui_index_buffer_.allocation);
                 ui_index_mapped_ = nullptr;
             }
             destroy_buffer(&ui_vertex_buffer_);
@@ -390,7 +434,7 @@ namespace patch
             {
                 if (voxel_temporal_ubo_mapped_[i])
                 {
-                    vkUnmapMemory(device_, voxel_temporal_ubo_[i].memory);
+                    gpu_allocator_.unmap(voxel_temporal_ubo_[i].allocation);
                     voxel_temporal_ubo_mapped_[i] = nullptr;
                 }
                 destroy_buffer(&voxel_temporal_ubo_[i]);
@@ -399,12 +443,12 @@ namespace patch
             /* Unmap and destroy staging buffers */
             if (staging_voxels_mapped_)
             {
-                vkUnmapMemory(device_, staging_voxels_buffer_.memory);
+                gpu_allocator_.unmap(staging_voxels_buffer_.allocation);
                 staging_voxels_mapped_ = nullptr;
             }
             if (staging_headers_mapped_)
             {
-                vkUnmapMemory(device_, staging_headers_buffer_.memory);
+                gpu_allocator_.unmap(staging_headers_buffer_.allocation);
                 staging_headers_mapped_ = nullptr;
             }
             destroy_buffer(&staging_voxels_buffer_);
@@ -427,6 +471,8 @@ namespace patch
                 vkDestroyDescriptorSetLayout(device_, temporal_shadow_output_layout_, nullptr);
 
             destroy_timestamp_query_pool();
+            destroy_voxel_object_resources();
+            destroy_compute_raymarching_resources();
             destroy_gbuffer_resources();
             destroy_shadow_volume_resources();
             destroy_blue_noise_texture();
@@ -438,9 +484,11 @@ namespace patch
                 if (history_image_views_[i])
                     vkDestroyImageView(device_, history_image_views_[i], nullptr);
                 if (history_images_[i])
-                    vkDestroyImage(device_, history_images_[i], nullptr);
-                if (history_image_memory_[i])
-                    vkFreeMemory(device_, history_image_memory_[i], nullptr);
+                {
+                    gpu_allocator_.destroy_image(history_images_[i], history_image_memory_[i]);
+                    history_images_[i] = VK_NULL_HANDLE;
+                    history_image_memory_[i] = VK_NULL_HANDLE;
+                }
             }
 
             for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -472,9 +520,11 @@ namespace patch
             if (depth_image_view_)
                 vkDestroyImageView(device_, depth_image_view_, nullptr);
             if (depth_image_)
-                vkDestroyImage(device_, depth_image_, nullptr);
-            if (depth_image_memory_)
-                vkFreeMemory(device_, depth_image_memory_, nullptr);
+            {
+                gpu_allocator_.destroy_image(depth_image_, depth_image_memory_);
+                depth_image_ = VK_NULL_HANDLE;
+                depth_image_memory_ = VK_NULL_HANDLE;
+            }
             if (depth_sampler_)
                 vkDestroySampler(device_, depth_sampler_, nullptr);
 
@@ -494,6 +544,7 @@ namespace patch
             if (swapchain_)
                 vkDestroySwapchainKHR(device_, swapchain_, nullptr);
 
+            gpu_allocator_.destroy();
             vkDestroyDevice(device_, nullptr);
         }
 

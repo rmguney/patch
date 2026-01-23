@@ -5,3 +5,5 @@
 *.tesc linguist-language=GLSL
 *.tese linguist-language=GLSL
 *.h linguist-language=C
+
+third_party/** linguist-vendored

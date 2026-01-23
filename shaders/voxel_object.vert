@@ -28,7 +28,12 @@ layout(push_constant) uniform Constants {
     float pad1;
     int object_count;
     int atlas_dim;
-    int pad2[2];
+    float near_plane;
+    float far_plane;
+    int debug_mode;
+    int lod_quality;
+    int is_orthographic;
+    float camera_forward[3];
 } pc;
 
 layout(location = 0) out vec3 out_world_pos;

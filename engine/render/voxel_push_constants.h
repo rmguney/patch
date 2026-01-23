@@ -99,13 +99,11 @@ namespace patch
         Mat4 view_proj;
     };
 
+static_assert(sizeof(struct VoxelPushConstants) == 256, "VoxelPushConstants must be 256 bytes");
+static_assert(sizeof(struct VoxelTemporalUBO) == 128, "VoxelTemporalUBO must be 128 bytes");
+
 #ifdef __cplusplus
-    static_assert(sizeof(VoxelPushConstants) == 256, "VoxelPushConstants must be 256 bytes");
-    static_assert(sizeof(VoxelTemporalUBO) == 128, "VoxelTemporalUBO must be 128 bytes");
 } // namespace patch
-#else
-_Static_assert(sizeof(struct VoxelPushConstants) == 256, "VoxelPushConstants must be 256 bytes");
-_Static_assert(sizeof(struct VoxelTemporalUBO) == 128, "VoxelTemporalUBO must be 128 bytes");
 #endif
 
 #endif

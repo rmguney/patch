@@ -26,27 +26,12 @@ namespace patch
             image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-            if (vkCreateImage(device_, &image_info, nullptr, &taa_history_images_[i]) != VK_SUCCESS)
+            taa_history_images_[i] = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &taa_history_memory_[i]);
+            if (!taa_history_images_[i])
             {
                 fprintf(stderr, "Failed to create TAA history image %d\n", i);
                 return false;
             }
-
-            VkMemoryRequirements mem_reqs;
-            vkGetImageMemoryRequirements(device_, taa_history_images_[i], &mem_reqs);
-
-            VkMemoryAllocateInfo alloc_info{};
-            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = mem_reqs.size;
-            alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            if (vkAllocateMemory(device_, &alloc_info, nullptr, &taa_history_memory_[i]) != VK_SUCCESS)
-            {
-                fprintf(stderr, "Failed to allocate TAA history memory %d\n", i);
-                return false;
-            }
-
-            vkBindImageMemory(device_, taa_history_images_[i], taa_history_memory_[i], 0);
 
             VkImageViewCreateInfo view_info{};
             view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -269,12 +254,8 @@ namespace patch
             }
             if (taa_history_images_[i])
             {
-                vkDestroyImage(device_, taa_history_images_[i], nullptr);
+                gpu_allocator_.destroy_image(taa_history_images_[i], taa_history_memory_[i]);
                 taa_history_images_[i] = VK_NULL_HANDLE;
-            }
-            if (taa_history_memory_[i])
-            {
-                vkFreeMemory(device_, taa_history_memory_[i], nullptr);
                 taa_history_memory_[i] = VK_NULL_HANDLE;
             }
         }

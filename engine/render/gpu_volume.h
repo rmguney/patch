@@ -11,7 +11,7 @@ extern "C"
 {
 #endif
 
-/* GPU raymarching ABI structs. Sizes/layout must match shaders (see _Static_assert). */
+/* GPU raymarching ABI structs. Sizes/layout must match shaders (see static_assert). */
 
 /* Maximum chunks the GPU can hold */
 #define GPU_VOLUME_MAX_CHUNKS 512
@@ -43,11 +43,7 @@ extern "C"
         int32_t pad;            /* Padding for 16-byte alignment */
     } GPUVolumeInfo;
 
-#ifdef __cplusplus
-    static_assert(sizeof(GPUVolumeInfo) == 72, "GPUVolumeInfo must be 72 bytes");
-#else
-_Static_assert(sizeof(GPUVolumeInfo) == 72, "GPUVolumeInfo must be 72 bytes");
-#endif
+static_assert(sizeof(GPUVolumeInfo) == 72, "GPUVolumeInfo must be 72 bytes");
 
     /*
      * GPUChunkHeader: Per-chunk metadata for hierarchical traversal.
@@ -68,11 +64,7 @@ _Static_assert(sizeof(GPUVolumeInfo) == 72, "GPUVolumeInfo must be 72 bytes");
         uint32_t pad;
     } GPUChunkHeader;
 
-#ifdef __cplusplus
-    static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
-#else
-_Static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
-#endif
+static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
 
     /*
      * GPUMaterialColor: Single material entry with lighting properties.
@@ -92,11 +84,7 @@ _Static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
         float pad;               /* Padding for alignment */
     } GPUMaterialColor;
 
-#ifdef __cplusplus
-    static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 bytes");
-#else
-_Static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 bytes");
-#endif
+static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 bytes");
 
     /*
      * 48 bytes = 3 vec4s. Not yet used; placeholder for future expansion.
@@ -108,11 +96,7 @@ _Static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 byte
         float ior, absorption_r, absorption_g, absorption_b;
     } GPUMaterialColorExt;
 
-#ifdef __cplusplus
-    static_assert(sizeof(GPUMaterialColorExt) == 48, "GPUMaterialColorExt must be 48 bytes");
-#else
-_Static_assert(sizeof(GPUMaterialColorExt) == 48, "GPUMaterialColorExt must be 48 bytes");
-#endif
+static_assert(sizeof(GPUMaterialColorExt) == 48, "GPUMaterialColorExt must be 48 bytes");
 
     /*
      * GPUMaterialPalette: Full material color palette.
@@ -123,11 +107,7 @@ _Static_assert(sizeof(GPUMaterialColorExt) == 48, "GPUMaterialColorExt must be 4
         GPUMaterialColor colors[GPU_MATERIAL_PALETTE_SIZE];
     } GPUMaterialPalette;
 
-#ifdef __cplusplus
-    static_assert(sizeof(GPUMaterialPalette) == 8192, "GPUMaterialPalette must be 8192 bytes");
-#else
-_Static_assert(sizeof(GPUMaterialPalette) == 8192, "GPUMaterialPalette must be 8192 bytes");
-#endif
+static_assert(sizeof(GPUMaterialPalette) == 8192, "GPUMaterialPalette must be 8192 bytes");
 
     /*
      * Build GPUVolumeInfo from a VoxelVolume.

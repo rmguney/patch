@@ -1,7 +1,6 @@
 #if defined(_WIN32)
 
 #include <windows.h>
-#include <shellapi.h>
 #include <cstdlib>
 
 int patch_main(int argc, char *argv[]);

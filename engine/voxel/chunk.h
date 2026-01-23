@@ -27,11 +27,7 @@ extern "C"
         uint8_t material;
     } VoxelCell;
 
-#ifdef __cplusplus
-    static_assert(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
-#else
-_Static_assert(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
-#endif
+static_assert(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
 
     /*
      * Chunk state for lifecycle management.

@@ -10,6 +10,7 @@
 #include "engine/render/draw_list.h"
 #include "engine/render/voxel_push_constants.h"
 #include "engine/render/gpu_spatial_grid.h"
+#include "engine/render/gpu_memory.h"
 #include "engine/platform/window.h"
 #include <cstdint>
 #include <vector>
@@ -26,8 +27,8 @@ namespace patch
 
     struct VulkanBuffer
     {
-        VkBuffer buffer;
-        VkDeviceMemory memory;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
     };
 
     struct MeshBuffers
@@ -79,6 +80,7 @@ namespace patch
     {
     public:
         static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+        static constexpr int32_t RAYMARCH_MAX_STEPS = 512;
 
         static constexpr uint32_t GBUFFER_ALBEDO = 0;
         static constexpr uint32_t GBUFFER_NORMAL = 1;
@@ -122,6 +124,7 @@ namespace patch
         void render_gbuffer_terrain(const VoxelVolume *vol);
         void render_deferred_lighting(uint32_t image_index);
 
+        void prepare_for_scene_switch();
         void init_volume_for_raymarching(const VoxelVolume *vol);
         /*
          * Upload dirty chunks to GPU. Returns count of chunks uploaded.
@@ -257,7 +260,6 @@ namespace patch
         void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                            VkMemoryPropertyFlags properties, VulkanBuffer *buffer);
         void destroy_buffer(VulkanBuffer *buffer);
-        uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties);
 
         void create_quad_mesh();
         void create_ui_buffers();
@@ -270,6 +272,7 @@ namespace patch
         VkInstance instance_;
         VkPhysicalDevice physical_device_;
         VkDevice device_;
+        GpuAllocator gpu_allocator_;
         VkQueue graphics_queue_;
         VkQueue present_queue_;
         uint32_t graphics_family_;
@@ -318,13 +321,15 @@ namespace patch
         PendingDestroy pending_destroys_[MAX_PENDING_DESTROYS];
         uint32_t pending_destroy_count_;
 
-        /* Reusable upload command buffer */
-        VkCommandBuffer upload_cmd_;
+        /* Per-frame upload command buffers - separate for terrain and vobj to avoid
+           resetting a pending command buffer (causes device lost on some drivers) */
+        VkCommandBuffer upload_cmd_[MAX_FRAMES_IN_FLIGHT];
+        VkCommandBuffer vobj_upload_cmd_[MAX_FRAMES_IN_FLIGHT];
 
         uint32_t current_frame_;
 
         VkImage depth_image_;
-        VkDeviceMemory depth_image_memory_;
+        VmaAllocation depth_image_memory_;
         VkImageView depth_image_view_;
         VkSampler depth_sampler_;
 
@@ -371,10 +376,10 @@ namespace patch
         VkDescriptorPool voxel_descriptor_pool_;
         VkDescriptorSet voxel_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
 
-        VulkanBuffer voxel_data_buffer_;                        /* SSBO: chunk voxel material IDs */
-        VulkanBuffer voxel_headers_buffer_;                     /* SSBO: chunk occupancy headers */
-        VulkanBuffer voxel_material_buffer_;                    /* UBO: material palette */
-        VulkanBuffer voxel_temporal_ubo_[MAX_FRAMES_IN_FLIGHT]; /* UBO: prev_view_proj */
+        VulkanBuffer voxel_data_buffer_;                             /* SSBO: chunk voxel material IDs */
+        VulkanBuffer voxel_headers_buffer_;                          /* SSBO: chunk occupancy headers */
+        VulkanBuffer voxel_material_buffer_;                         /* UBO: material palette */
+        VulkanBuffer voxel_temporal_ubo_[MAX_FRAMES_IN_FLIGHT];      /* UBO: prev_view_proj */
         void *voxel_temporal_ubo_mapped_[MAX_FRAMES_IN_FLIGHT] = {}; /* Persistent mapping */
 
         /* Persistent staging buffers for chunk uploads (avoids per-frame allocation) */
@@ -436,7 +441,7 @@ namespace patch
 
         /* Shadow output buffer for compute pass */
         VkImage shadow_output_image_;
-        VkDeviceMemory shadow_output_memory_;
+        VmaAllocation shadow_output_memory_;
         VkImageView shadow_output_view_;
 
         /* AO compute infrastructure */
@@ -449,12 +454,12 @@ namespace patch
 
         /* AO output buffer */
         VkImage ao_output_image_ = VK_NULL_HANDLE;
-        VkDeviceMemory ao_output_memory_ = VK_NULL_HANDLE;
+        VmaAllocation ao_output_memory_ = VK_NULL_HANDLE;
         VkImageView ao_output_view_ = VK_NULL_HANDLE;
 
         /* AO history buffers for temporal accumulation */
         VkImage ao_history_images_[2] = {};
-        VkDeviceMemory ao_history_image_memory_[2] = {};
+        VmaAllocation ao_history_image_memory_[2] = {};
         VkImageView ao_history_image_views_[2] = {};
         bool temporal_ao_history_valid_ = false;
         int ao_history_write_index_ = 0;
@@ -479,12 +484,12 @@ namespace patch
 
         /* Intermediate lit color buffer (lighting output before denoise) */
         VkImage lit_color_image_ = VK_NULL_HANDLE;
-        VkDeviceMemory lit_color_memory_ = VK_NULL_HANDLE;
+        VmaAllocation lit_color_memory_ = VK_NULL_HANDLE;
         VkImageView lit_color_view_ = VK_NULL_HANDLE;
 
         /* Denoised color buffer (denoise output) */
         VkImage denoised_color_image_ = VK_NULL_HANDLE;
-        VkDeviceMemory denoised_color_memory_ = VK_NULL_HANDLE;
+        VmaAllocation denoised_color_memory_ = VK_NULL_HANDLE;
         VkImageView denoised_color_view_ = VK_NULL_HANDLE;
 
         /* Intermediate framebuffer for lighting pass targeting lit_color_image_ */
@@ -494,7 +499,7 @@ namespace patch
 
         /* TAA (Temporal Anti-Aliasing) resources */
         VkImage taa_history_images_[2] = {};
-        VkDeviceMemory taa_history_memory_[2] = {};
+        VmaAllocation taa_history_memory_[2] = {};
         VkImageView taa_history_views_[2] = {};
         VkPipeline taa_compute_pipeline_ = VK_NULL_HANDLE;
         VkPipelineLayout taa_compute_layout_ = VK_NULL_HANDLE;
@@ -518,7 +523,7 @@ namespace patch
     private:
         /* History buffers for temporal accumulation (ping-pong) */
         VkImage history_images_[2];
-        VkDeviceMemory history_image_memory_[2];
+        VmaAllocation history_image_memory_[2];
         VkImageView history_image_views_[2];
         int history_write_index_;
 
@@ -533,7 +538,7 @@ namespace patch
 
         /* G-buffer resources for deferred rendering */
         VkImage gbuffer_images_[GBUFFER_COUNT];
-        VkDeviceMemory gbuffer_memory_[GBUFFER_COUNT];
+        VmaAllocation gbuffer_memory_[GBUFFER_COUNT];
         VkImageView gbuffer_views_[GBUFFER_COUNT];
         VkSampler gbuffer_sampler_;
         VkRenderPass gbuffer_render_pass_;
@@ -566,7 +571,7 @@ namespace patch
 
         /* Shadow volume for sparse RT tracing */
         VkImage shadow_volume_image_;
-        VkDeviceMemory shadow_volume_memory_;
+        VmaAllocation shadow_volume_memory_;
         VkImageView shadow_volume_view_;
         VkSampler shadow_volume_sampler_;
         uint32_t shadow_volume_dims_[3];
@@ -579,6 +584,9 @@ namespace patch
         bool shadow_volume_initialized_;
         int32_t shadow_object_count_ = 0;
         int32_t shadow_particle_count_ = 0;
+        int32_t shadow_particle_aabb_min_[3] = {0, 0, 0};
+        int32_t shadow_particle_aabb_max_[3] = {0, 0, 0};
+        bool shadow_particle_aabb_valid_ = false;
 
         /* Shadow stamping budget: track per-object state to avoid full rebuild */
         static constexpr uint32_t MAX_SHADOW_OBJECTS = 512;
@@ -601,8 +609,8 @@ namespace patch
         static constexpr uint32_t SHADOW_UPLOAD_BUFFERS = 3;
         VkFence shadow_upload_fences_[SHADOW_UPLOAD_BUFFERS] = {};
         VulkanBuffer shadow_staging_buffers_[SHADOW_UPLOAD_BUFFERS] = {};
-        void* shadow_staging_mapped_[SHADOW_UPLOAD_BUFFERS] = {}; /* Persistent mapping */
-        VkDeviceSize shadow_staging_size_ = 0; /* Size of each staging buffer */
+        void *shadow_staging_mapped_[SHADOW_UPLOAD_BUFFERS] = {}; /* Persistent mapping */
+        VkDeviceSize shadow_staging_size_ = 0;                    /* Size of each staging buffer */
         VkCommandBuffer shadow_upload_cmds_[SHADOW_UPLOAD_BUFFERS] = {};
         bool shadow_upload_pending_[SHADOW_UPLOAD_BUFFERS] = {};
         uint32_t shadow_upload_index_ = 0;
@@ -614,20 +622,20 @@ namespace patch
 
         /* Blue noise texture for temporal sampling */
         VkImage blue_noise_image_;
-        VkDeviceMemory blue_noise_memory_;
+        VmaAllocation blue_noise_memory_;
         VkImageView blue_noise_view_;
         VkSampler blue_noise_sampler_;
 
         /* Motion vectors for temporal reprojection */
         VkImage motion_vector_image_;
-        VkDeviceMemory motion_vector_memory_;
+        VmaAllocation motion_vector_memory_;
         VkImageView motion_vector_view_;
 
         /* Voxel object GPU raymarching */
         static constexpr uint32_t VOBJ_ATLAS_MAX_OBJECTS = 512;
         static constexpr uint32_t VOBJ_GRID_DIM = 16;
         VkImage vobj_atlas_image_ = VK_NULL_HANDLE;
-        VkDeviceMemory vobj_atlas_memory_ = VK_NULL_HANDLE;
+        VmaAllocation vobj_atlas_memory_ = VK_NULL_HANDLE;
         VkImageView vobj_atlas_view_ = VK_NULL_HANDLE;
         VkSampler vobj_atlas_sampler_ = VK_NULL_HANDLE;
         VulkanBuffer vobj_metadata_buffer_[MAX_FRAMES_IN_FLIGHT];
@@ -662,7 +670,7 @@ namespace patch
         struct SizedBuffer
         {
             VkBuffer buffer = VK_NULL_HANDLE;
-            VkDeviceMemory memory = VK_NULL_HANDLE;
+            VmaAllocation memory = VK_NULL_HANDLE;
             VkDeviceSize size = 0;
         };
         SizedBuffer particle_ssbo_;

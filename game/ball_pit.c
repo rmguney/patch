@@ -226,7 +226,6 @@ static void ball_pit_tick(Scene *scene)
         PROFILE_END(PROFILE_PROP_SPAWN);
     }
 
-
     PROFILE_BEGIN(PROFILE_SIM_PARTICLES);
     particle_system_update(data->particles, dt);
     PROFILE_END(PROFILE_SIM_PARTICLES);
@@ -290,9 +289,10 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             int32_t destroyed = detach_object_at_point(
                 data->objects, obj_hit.object_index, obj_hit.impact_point, destroy_radius,
                 destroyed_positions, destroyed_materials, MAX_DESTROYED);
+            int32_t destroyed_cap = destroyed < MAX_DESTROYED ? destroyed : MAX_DESTROYED;
 
             float voxel_size = data->objects->voxel_size;
-            for (int32_t i = 0; i < destroyed; i++)
+            for (int32_t i = 0; i < destroyed_cap; i++)
             {
                 Vec3 color = material_get_color(destroyed_materials[i]);
                 Vec3 dir = vec3_sub(destroyed_positions[i], obj_hit.impact_point);

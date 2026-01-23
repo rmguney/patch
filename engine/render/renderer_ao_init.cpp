@@ -21,27 +21,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &ao_output_image_) != VK_SUCCESS)
+        ao_output_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &ao_output_memory_);
+        if (ao_output_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create AO output image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, ao_output_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &ao_output_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate AO output memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, ao_output_image_, ao_output_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -85,27 +70,12 @@ namespace patch
             image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-            if (vkCreateImage(device_, &image_info, nullptr, &ao_history_images_[i]) != VK_SUCCESS)
+            ao_history_images_[i] = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &ao_history_image_memory_[i]);
+            if (ao_history_images_[i] == VK_NULL_HANDLE)
             {
                 fprintf(stderr, "Failed to create AO history image %d\n", i);
                 return false;
             }
-
-            VkMemoryRequirements mem_reqs;
-            vkGetImageMemoryRequirements(device_, ao_history_images_[i], &mem_reqs);
-
-            VkMemoryAllocateInfo alloc_info{};
-            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = mem_reqs.size;
-            alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            if (vkAllocateMemory(device_, &alloc_info, nullptr, &ao_history_image_memory_[i]) != VK_SUCCESS)
-            {
-                fprintf(stderr, "Failed to allocate AO history memory %d\n", i);
-                return false;
-            }
-
-            vkBindImageMemory(device_, ao_history_images_[i], ao_history_image_memory_[i], 0);
 
             VkImageViewCreateInfo view_info{};
             view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -528,12 +498,8 @@ namespace patch
         }
         if (ao_output_image_)
         {
-            vkDestroyImage(device_, ao_output_image_, nullptr);
+            gpu_allocator_.destroy_image(ao_output_image_, ao_output_memory_);
             ao_output_image_ = VK_NULL_HANDLE;
-        }
-        if (ao_output_memory_)
-        {
-            vkFreeMemory(device_, ao_output_memory_, nullptr);
             ao_output_memory_ = VK_NULL_HANDLE;
         }
 
@@ -546,12 +512,8 @@ namespace patch
             }
             if (ao_history_images_[i])
             {
-                vkDestroyImage(device_, ao_history_images_[i], nullptr);
+                gpu_allocator_.destroy_image(ao_history_images_[i], ao_history_image_memory_[i]);
                 ao_history_images_[i] = VK_NULL_HANDLE;
-            }
-            if (ao_history_image_memory_[i])
-            {
-                vkFreeMemory(device_, ao_history_image_memory_[i], nullptr);
                 ao_history_image_memory_[i] = VK_NULL_HANDLE;
             }
         }

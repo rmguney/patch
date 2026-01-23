@@ -5,10 +5,30 @@
 #include <stdlib.h>
 #include <math.h>
 
+#define ROAM_BASE_HEIGHT 2.0f
+#define ROAM_GRASS_DEPTH_MULT 1.5f
+#define ROAM_DIRT_DEPTH_MULT 4.0f
+#define ROAM_PILLAR_BASE_MULT 1.2f
+#define ROAM_PILLAR_TOP_MULT 0.8f
+#define ROAM_PILLAR_BASE_DEPTH 2.0f
+#define ROAM_STRUCTURE_MARGIN 2.0f
+#define ROAM_STRUCTURE_SEED 12345
+#define ROAM_PILLAR_HEIGHT_MIN 3.0f
+#define ROAM_PILLAR_HEIGHT_MAX 8.0f
+#define ROAM_PILLAR_RADIUS_MIN 0.3f
+#define ROAM_PILLAR_RADIUS_MAX 0.6f
+#define ROAM_RAYCAST_MAX_DIST 100.0f
+#define ROAM_DESTROY_RADIUS_MULT 3.0f
+#define ROAM_PARTICLE_VEL_NORM 2.0f
+#define ROAM_PARTICLE_VEL_SPREAD 3.0f
+#define ROAM_PARTICLE_VEL_Y_MAX 4.0f
+#define ROAM_PARTICLE_VEL_Y_MIN 1.0f
+#define ROAM_PARTICLE_SIZE_BASE 0.3f
+#define ROAM_PARTICLE_SIZE_VAR 0.4f
+
 static const uint8_t PASTEL_MATERIALS[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
-    MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE
-};
+    MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE};
 static const int32_t PASTEL_COUNT = sizeof(PASTEL_MATERIALS) / sizeof(PASTEL_MATERIALS[0]);
 
 static float noise_hash(int32_t x, int32_t z, uint32_t seed)
@@ -71,7 +91,7 @@ static void generate_terrain(RoamData *data, const SceneDescriptor *desc)
     float voxel_size = data->voxel_size;
     uint32_t seed = desc->rng_seed;
 
-    float base_height = 2.0f;
+    float base_height = ROAM_BASE_HEIGHT;
 
     for (float x = vol->bounds.min_x; x < vol->bounds.max_x; x += voxel_size)
     {
@@ -86,11 +106,11 @@ static void generate_terrain(RoamData *data, const SceneDescriptor *desc)
                 float depth = surface_y - y;
 
                 uint8_t mat;
-                if (depth < voxel_size * 1.5f)
+                if (depth < voxel_size * ROAM_GRASS_DEPTH_MULT)
                 {
                     mat = MAT_GRASS;
                 }
-                else if (depth < voxel_size * 4.0f)
+                else if (depth < voxel_size * ROAM_DIRT_DEPTH_MULT)
                 {
                     mat = MAT_DIRT;
                 }
@@ -110,10 +130,10 @@ static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float rad
     for (float y = 0.0f; y < height; y += voxel_size)
     {
         float r = radius;
-        if (y < voxel_size * 2.0f)
-            r = radius * 1.2f;
-        if (y > height - voxel_size * 2.0f)
-            r = radius * 0.8f;
+        if (y < voxel_size * ROAM_PILLAR_BASE_DEPTH)
+            r = radius * ROAM_PILLAR_BASE_MULT;
+        if (y > height - voxel_size * ROAM_PILLAR_BASE_DEPTH)
+            r = radius * ROAM_PILLAR_TOP_MULT;
 
         for (float dx = -r; dx <= r; dx += voxel_size)
         {
@@ -129,43 +149,14 @@ static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float rad
     }
 }
 
-static void generate_ruin_wall(VoxelVolume *vol, Vec3 base, float length, float height, float thickness,
-                               bool along_x, uint8_t material, float voxel_size, RngState *rng)
-{
-    for (float y = 0.0f; y < height; y += voxel_size)
-    {
-        float decay = (y / height) * 0.5f;
-
-        for (float l = 0.0f; l < length; l += voxel_size)
-        {
-            if (rng_float(rng) < decay)
-                continue;
-
-            for (float t = 0.0f; t < thickness; t += voxel_size)
-            {
-                Vec3 pos;
-                if (along_x)
-                {
-                    pos = vec3_create(base.x + l, base.y + y, base.z + t);
-                }
-                else
-                {
-                    pos = vec3_create(base.x + t, base.y + y, base.z + l);
-                }
-                volume_set_at(vol, pos, material);
-            }
-        }
-    }
-}
-
 static void generate_structures(RoamData *data, const SceneDescriptor *desc)
 {
     VoxelVolume *vol = data->terrain;
     float voxel_size = data->voxel_size;
     RngState rng;
-    rng_seed(&rng, desc->rng_seed + 12345);
+    rng_seed(&rng, desc->rng_seed + ROAM_STRUCTURE_SEED);
 
-    float margin = 2.0f;
+    float margin = ROAM_STRUCTURE_MARGIN;
     float area_min_x = vol->bounds.min_x + margin;
     float area_max_x = vol->bounds.max_x - margin;
     float area_min_z = vol->bounds.min_z + margin;
@@ -175,10 +166,10 @@ static void generate_structures(RoamData *data, const SceneDescriptor *desc)
     {
         float x = rng_range_f32(&rng, area_min_x, area_max_x);
         float z = rng_range_f32(&rng, area_min_z, area_max_z);
-        float base_y = 2.0f + terrain_height(x, z, data->params.terrain_amplitude, data->params.terrain_frequency, desc->rng_seed);
+        float base_y = ROAM_BASE_HEIGHT + terrain_height(x, z, data->params.terrain_amplitude, data->params.terrain_frequency, desc->rng_seed);
 
-        float height = rng_range_f32(&rng, 3.0f, 8.0f);
-        float radius = rng_range_f32(&rng, 0.3f, 0.6f);
+        float height = rng_range_f32(&rng, ROAM_PILLAR_HEIGHT_MIN, ROAM_PILLAR_HEIGHT_MAX);
+        float radius = rng_range_f32(&rng, ROAM_PILLAR_RADIUS_MIN, ROAM_PILLAR_RADIUS_MAX);
         uint8_t mat = PASTEL_MATERIALS[rng_range_u32(&rng, (uint32_t)PASTEL_COUNT)];
 
         Vec3 base = vec3_create(x, base_y, z);
@@ -186,38 +177,6 @@ static void generate_structures(RoamData *data, const SceneDescriptor *desc)
     }
 
     data->stats.pillar_count = data->params.num_pillars;
-
-    for (int32_t i = 0; i < data->params.num_ruins; i++)
-    {
-        float x = rng_range_f32(&rng, area_min_x + 2.0f, area_max_x - 2.0f);
-        float z = rng_range_f32(&rng, area_min_z + 2.0f, area_max_z - 2.0f);
-        float base_y = 2.0f + terrain_height(x, z, data->params.terrain_amplitude, data->params.terrain_frequency, desc->rng_seed);
-
-        uint8_t mat = PASTEL_MATERIALS[rng_range_u32(&rng, (uint32_t)PASTEL_COUNT)];
-        float wall_height = rng_range_f32(&rng, 2.0f, 5.0f);
-        float wall_length = rng_range_f32(&rng, 2.0f, 4.0f);
-        float thickness = voxel_size * 2.0f;
-
-        Vec3 base = vec3_create(x, base_y, z);
-        bool along_x = rng_float(&rng) > 0.5f;
-        generate_ruin_wall(vol, base, wall_length, wall_height, thickness, along_x, mat, voxel_size, &rng);
-
-        if (rng_float(&rng) > 0.5f)
-        {
-            Vec3 base2;
-            if (along_x)
-            {
-                base2 = vec3_create(x + wall_length - thickness, base_y, z);
-            }
-            else
-            {
-                base2 = vec3_create(x, base_y, z + wall_length - thickness);
-            }
-            generate_ruin_wall(vol, base2, wall_length * 0.7f, wall_height * 0.8f, thickness, !along_x, mat, voxel_size, &rng);
-        }
-    }
-
-    data->stats.ruin_count = data->params.num_ruins;
 }
 
 static void roam_init(Scene *scene)
@@ -286,11 +245,11 @@ static void spawn_destruction_particles(RoamData *data, Vec3 pos, Vec3 normal, u
     for (int32_t i = 0; i < count; i++)
     {
         Vec3 vel;
-        vel.x = normal.x * 2.0f + rng_signed_half(rng) * 3.0f;
-        vel.y = normal.y * 2.0f + rng_float(rng) * 4.0f + 1.0f;
-        vel.z = normal.z * 2.0f + rng_signed_half(rng) * 3.0f;
+        vel.x = normal.x * ROAM_PARTICLE_VEL_NORM + rng_signed_half(rng) * ROAM_PARTICLE_VEL_SPREAD;
+        vel.y = normal.y * ROAM_PARTICLE_VEL_NORM + rng_float(rng) * ROAM_PARTICLE_VEL_Y_MAX + ROAM_PARTICLE_VEL_Y_MIN;
+        vel.z = normal.z * ROAM_PARTICLE_VEL_NORM + rng_signed_half(rng) * ROAM_PARTICLE_VEL_SPREAD;
 
-        float size = data->voxel_size * (0.3f + rng_float(rng) * 0.4f);
+        float size = data->voxel_size * (ROAM_PARTICLE_SIZE_BASE + rng_float(rng) * ROAM_PARTICLE_SIZE_VAR);
 
         particle_system_add(data->particles, rng, pos, vel, color, size);
     }
@@ -314,7 +273,7 @@ static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool l
 
     Vec3 hit_pos, hit_normal;
     uint8_t hit_material;
-    float dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir, 100.0f,
+    float dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir, ROAM_RAYCAST_MAX_DIST,
                                 &hit_pos, &hit_normal, &hit_material);
 
     if (dist < 0.0f)
@@ -322,7 +281,7 @@ static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool l
 
     spawn_destruction_particles(data, hit_pos, hit_normal, hit_material, &scene->rng);
 
-    float radius = data->voxel_size * 3.0f;
+    float radius = data->voxel_size * ROAM_DESTROY_RADIUS_MULT;
     volume_edit_begin(data->terrain);
 
     for (float dx = -radius; dx <= radius; dx += data->voxel_size)
@@ -363,7 +322,6 @@ RoamParams roam_default_params(void)
 {
     RoamParams p;
     p.num_pillars = 15;
-    p.num_ruins = 0;
     p.terrain_amplitude = 3.0f;
     p.terrain_frequency = 0.1f;
     return p;

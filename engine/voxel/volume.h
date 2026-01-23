@@ -243,6 +243,11 @@ extern "C"
                                                uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
                                                uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2);
 
+    void volume_restore_shadow_region(const VoxelVolume *vol, uint8_t *mip0,
+                                      uint32_t w0, uint32_t h0, uint32_t d0,
+                                      int32_t min_vx, int32_t min_vy, int32_t min_vz,
+                                      int32_t max_vx, int32_t max_vy, int32_t max_vz);
+
     void volume_generate_shadow_mips_for_region(int32_t min_x, int32_t min_y, int32_t min_z,
                                                 int32_t max_x, int32_t max_y, int32_t max_z,
                                                 const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,

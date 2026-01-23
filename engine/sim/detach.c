@@ -1,7 +1,6 @@
 #include "detach.h"
 #include "engine/core/profile.h"
 #include <string.h>
-#include <math.h>
 
 int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
                                Vec3 impact_point, float destroy_radius,
@@ -57,11 +56,11 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
                             out_positions[destroyed_count] = voxel_pos;
                         if (out_materials)
                             out_materials[destroyed_count] = obj->voxels[idx].material;
+                        destroyed_count++;
                     }
 
                     obj->voxels[idx].material = 0;
                     obj->voxel_count--;
-                    destroyed_count++;
                 }
             }
         }
@@ -70,6 +69,7 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
     if (obj->voxel_count <= 0)
     {
         obj->active = false;
+        voxel_object_world_free_slot(world, obj_index);
     }
     else
     {

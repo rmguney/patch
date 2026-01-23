@@ -18,7 +18,7 @@
  *
  * 4. REGISTER: Add pointer to g_voxel_shapes[] below.
  *
- * 5. UPDATE: Increment g_voxel_shape_count and _Static_assert.
+ * 5. UPDATE: Increment g_voxel_shape_count and static_assert.
  *
  * === GENERATED SHAPES (from voxelize tool) ===
  *
@@ -28,8 +28,8 @@
  * === LINK-TIME VALIDATION ===
  *
  * - Missing shape file → linker error (unresolved symbol)
- * - Missing registration → _Static_assert fails
- * - ID mismatch → _Static_assert fails
+ * - Missing registration → static_assert fails
+ * - ID mismatch → static_assert fails
  */
 
 #include "voxel_shapes.h"
@@ -51,4 +51,4 @@ const VoxelShape *const g_voxel_shapes[VOXEL_SHAPE_MAX_COUNT] = {
 
 const int32_t g_voxel_shape_count = 3;
 
-_Static_assert(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");
+static_assert(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");

@@ -15,7 +15,6 @@ extern "C"
     typedef struct
     {
         int32_t num_pillars;
-        int32_t num_ruins;
         float terrain_amplitude;
         float terrain_frequency;
     } RoamParams;
@@ -24,7 +23,6 @@ extern "C"
     {
         int32_t terrain_voxels;
         int32_t pillar_count;
-        int32_t ruin_count;
         int32_t particles_active;
     } RoamStats;
 

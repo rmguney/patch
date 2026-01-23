@@ -21,27 +21,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &lit_color_image_) != VK_SUCCESS)
+        lit_color_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &lit_color_memory_);
+        if (!lit_color_image_)
         {
             fprintf(stderr, "Failed to create lit color image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, lit_color_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &lit_color_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate lit color memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, lit_color_image_, lit_color_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -80,27 +65,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &denoised_color_image_) != VK_SUCCESS)
+        denoised_color_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &denoised_color_memory_);
+        if (!denoised_color_image_)
         {
             fprintf(stderr, "Failed to create denoised color image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, denoised_color_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &denoised_color_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate denoised color memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, denoised_color_image_, denoised_color_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -358,12 +328,8 @@ namespace patch
         }
         if (lit_color_image_)
         {
-            vkDestroyImage(device_, lit_color_image_, nullptr);
+            gpu_allocator_.destroy_image(lit_color_image_, lit_color_memory_);
             lit_color_image_ = VK_NULL_HANDLE;
-        }
-        if (lit_color_memory_)
-        {
-            vkFreeMemory(device_, lit_color_memory_, nullptr);
             lit_color_memory_ = VK_NULL_HANDLE;
         }
 
@@ -374,12 +340,8 @@ namespace patch
         }
         if (denoised_color_image_)
         {
-            vkDestroyImage(device_, denoised_color_image_, nullptr);
+            gpu_allocator_.destroy_image(denoised_color_image_, denoised_color_memory_);
             denoised_color_image_ = VK_NULL_HANDLE;
-        }
-        if (denoised_color_memory_)
-        {
-            vkFreeMemory(device_, denoised_color_memory_, nullptr);
             denoised_color_memory_ = VK_NULL_HANDLE;
         }
 

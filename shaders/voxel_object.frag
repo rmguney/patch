@@ -67,7 +67,8 @@ layout(push_constant) uniform Constants {
     float far_plane;
     int debug_mode;
     int lod_quality;
-    int pad2[2];
+    int is_orthographic;
+    float camera_forward[3];
 } pc;
 
 const int VOBJ_BASE_STEPS = 48;
@@ -77,7 +78,15 @@ void main() {
         discard;
     }
 
-    vec3 world_ray_dir = normalize(in_world_pos - in_ray_origin);
+    vec3 world_ray_dir;
+    vec3 ray_origin;
+    if (pc.is_orthographic != 0) {
+        ray_origin = in_world_pos;
+        world_ray_dir = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
+    } else {
+        ray_origin = in_ray_origin;
+        world_ray_dir = normalize(in_world_pos - in_ray_origin);
+    }
 
     /* Calculate LOD-adjusted step count based on distance AND screen coverage */
     int max_steps = vobj_calc_combined_lod_steps(
@@ -87,7 +96,7 @@ void main() {
         VOBJ_BASE_STEPS
     );
 
-    HitInfo hit = vobj_march_object(in_object_index, in_ray_origin, world_ray_dir, max_steps);
+    HitInfo hit = vobj_march_object(in_object_index, ray_origin, world_ray_dir, max_steps);
 
     if (!hit.hit) {
         discard;
@@ -103,8 +112,16 @@ void main() {
     out_albedo = vec4(color, 1.0);
     out_normal = vec4(hit.normal * 0.5 + 0.5, 1.0);
     out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
-    out_linear_depth = hit.t;
     out_world_pos = vec4(hit.pos, 1.0);
+
+    float linear_depth;
+    if (pc.is_orthographic != 0) {
+        vec3 cam_fwd = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
+        linear_depth = dot(hit.pos - pc.camera_pos, cam_fwd) - pc.near_plane;
+    } else {
+        linear_depth = hit.t;
+    }
+    out_linear_depth = linear_depth;
 
     /* Motion vectors for temporal effects */
     vec4 curr_clip = pc.view_proj * vec4(hit.pos, 1.0);
@@ -113,5 +130,5 @@ void main() {
     vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
     out_motion_vector = prev_uv - curr_uv;
 
-    gl_FragDepth = clamp(camera_linear_depth_to_ndc(hit.t, pc.near_plane, pc.far_plane), 0.0, 1.0);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
 }

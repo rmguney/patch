@@ -36,7 +36,8 @@ layout(push_constant) uniform Constants {
     int particle_count;
     float near_plane;
     float far_plane;
-    int pad2;
+    int is_orthographic;
+    float camera_forward[3];
 } pc;
 
 // Get box face normal from hit point
@@ -66,9 +67,17 @@ void main() {
     vec3 box_min = center - vec3(half_size);
     vec3 box_max = center + vec3(half_size);
 
-    vec3 ray_dir = normalize(in_world_pos - in_ray_origin);
+    vec3 ray_origin;
+    vec3 ray_dir;
+    if (pc.is_orthographic != 0) {
+        ray_origin = in_world_pos;
+        ray_dir = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
+    } else {
+        ray_origin = in_ray_origin;
+        ray_dir = normalize(in_world_pos - in_ray_origin);
+    }
 
-    vec2 t_hit = hdda_intersect_aabb(in_ray_origin, ray_dir, box_min, box_max);
+    vec2 t_hit = hdda_intersect_aabb(ray_origin, ray_dir, box_min, box_max);
 
     if (t_hit.x > t_hit.y || t_hit.y < 0.0) {
         discard;
@@ -77,7 +86,7 @@ void main() {
     /* Use entry point if outside box, exit point if inside (camera inside particle) */
     float t = t_hit.x > 0.0 ? t_hit.x : t_hit.y;
     t = max(t, 0.001);
-    vec3 hit_point = in_ray_origin + ray_dir * t;
+    vec3 hit_point = ray_origin + ray_dir * t;
 
     /* Normal: use entry face if outside, exit face if inside */
     vec3 normal = box_normal(hit_point, box_min, box_max);
@@ -85,7 +94,13 @@ void main() {
         normal = -normal; /* Flip normal when viewing from inside */
     }
 
-    float linear_depth = t;
+    float linear_depth;
+    if (pc.is_orthographic != 0) {
+        vec3 cam_fwd = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
+        linear_depth = dot(hit_point - pc.camera_pos, cam_fwd) - pc.near_plane;
+    } else {
+        linear_depth = t;
+    }
 
     out_albedo = vec4(color, 1.0);
     out_normal = vec4(normal * 0.5 + 0.5, 1.0);
@@ -94,5 +109,5 @@ void main() {
     out_world_pos = vec4(hit_point, 1.0);
     out_motion_vector = vec2(0.0);
 
-    gl_FragDepth = clamp(camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane), 0.0, 1.0);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
 }

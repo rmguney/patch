@@ -138,7 +138,7 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
  *   Mid:   < 80/120/160 units -> medium (36)
  *   Far:   >= threshold      -> reduced (28)
  *
- * Minimum 20 steps sufficient for typical object traversal (most rays don't cross full diagonal).
+ * Minimum 28 steps to ensure full grid diagonal traversal (sqrt(16^2+16^2+16^2) ~ 27.7).
  */
 int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps) {
     float quality_scale = float(max(lod_quality + 1, 1));
@@ -153,7 +153,7 @@ int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps
     } else {
         steps = 28;                   // Reduced detail
     }
-    return max(steps, 20);            // Minimum for typical object traversal
+    return max(steps, 28);            // Minimum for typical object traversal
 }
 
 /*
@@ -180,7 +180,7 @@ int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
     } else {
         steps = (base_steps * 2) / 3; // ~32 steps
     }
-    return max(steps, 20);            // Minimum for typical object traversal
+    return max(steps, 28);            // Minimum for typical object traversal
 }
 
 /*
@@ -255,16 +255,20 @@ HitInfo vobj_march_object(
             last_region = region;
             int region_idx = region.x + region.y * 2 + region.z * 4;
             if ((occupancy & (1u << region_idx)) == 0u) {
-                /* Skip to region boundary instead of stepping 1 voxel */
+                /* Skip to region boundary along the DDA exit axis */
                 ivec3 region_min = region * 8;
                 ivec3 region_max = region_min + 7;
-                /* Calculate steps to exit region on each axis */
-                ivec3 exit_pos = mix(region_min - 1, region_max + 1, greaterThan(dda.step_dir, ivec3(0)));
-                vec3 steps_to_exit = vec3(exit_pos - dda.map_pos) / vec3(dda.step_dir);
-                steps_to_exit = max(steps_to_exit, vec3(1.0));
-                int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
-                dda.map_pos += dda.step_dir * skip;
-                i += skip - 1; /* Account for loop increment */
+                ivec3 cells_to_exit;
+                cells_to_exit.x = (dda.step_dir.x > 0) ? (region_max.x - dda.map_pos.x + 1) : (dda.map_pos.x - region_min.x + 1);
+                cells_to_exit.y = (dda.step_dir.y > 0) ? (region_max.y - dda.map_pos.y + 1) : (dda.map_pos.y - region_min.y + 1);
+                cells_to_exit.z = (dda.step_dir.z > 0) ? (region_max.z - dda.map_pos.z + 1) : (dda.map_pos.z - region_min.z + 1);
+                vec3 t_exit = dda.side_dist + vec3(cells_to_exit - 1) * dda.delta_dist;
+                bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
+                ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
+                int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
+                dda.map_pos += ivec3(mask) * dda.step_dir * cells_to_exit;
+                dda.side_dist += vec3(skip_per_axis) * dda.delta_dist;
+                i += max(skip - 1, 0);
                 continue;
             }
         }

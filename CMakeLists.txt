@@ -47,7 +47,7 @@ set(ENGINE_CORE_SOURCES
 
 add_library(engine_core STATIC ${ENGINE_CORE_SOURCES})
 target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-set_property(TARGET engine_core PROPERTY C_STANDARD 11)
+set_property(TARGET engine_core PROPERTY C_STANDARD 23)
 set_property(TARGET engine_core PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_core PROPERTY C_EXTENSIONS OFF)
 
@@ -71,7 +71,7 @@ set(ENGINE_VOXEL_SOURCES
 
 add_library(engine_voxel STATIC ${ENGINE_VOXEL_SOURCES})
 target_link_libraries(engine_voxel PUBLIC engine_core)
-set_property(TARGET engine_voxel PROPERTY C_STANDARD 11)
+set_property(TARGET engine_voxel PROPERTY C_STANDARD 23)
 set_property(TARGET engine_voxel PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_voxel PROPERTY C_EXTENSIONS OFF)
 
@@ -89,7 +89,7 @@ set(ENGINE_PHYSICS_SOURCES
 
 add_library(engine_physics STATIC ${ENGINE_PHYSICS_SOURCES})
 target_link_libraries(engine_physics PUBLIC engine_core engine_voxel engine_sim)
-set_property(TARGET engine_physics PROPERTY C_STANDARD 11)
+set_property(TARGET engine_physics PROPERTY C_STANDARD 23)
 set_property(TARGET engine_physics PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_physics PROPERTY C_EXTENSIONS OFF)
 
@@ -112,7 +112,7 @@ set(ENGINE_SIM_SOURCES
 
 add_library(engine_sim STATIC ${ENGINE_SIM_SOURCES})
 target_link_libraries(engine_sim PUBLIC engine_core engine_voxel)
-set_property(TARGET engine_sim PROPERTY C_STANDARD 11)
+set_property(TARGET engine_sim PROPERTY C_STANDARD 23)
 set_property(TARGET engine_sim PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_sim PROPERTY C_EXTENSIONS OFF)
 
@@ -145,7 +145,7 @@ set(CONTENT_SOURCES
 
 add_library(content STATIC ${CONTENT_SOURCES})
 target_link_libraries(content PUBLIC engine_core)
-set_property(TARGET content PROPERTY C_STANDARD 11)
+set_property(TARGET content PROPERTY C_STANDARD 23)
 set_property(TARGET content PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET content PROPERTY C_EXTENSIONS OFF)
 
@@ -163,10 +163,10 @@ set(ENGINE_PLATFORM_SOURCES
 add_library(engine_platform STATIC ${ENGINE_PLATFORM_SOURCES})
 target_link_libraries(engine_platform PUBLIC engine_core ${Vulkan_LIBRARIES})
 target_include_directories(engine_platform PUBLIC ${Vulkan_INCLUDE_DIRS})
-set_property(TARGET engine_platform PROPERTY C_STANDARD 11)
+set_property(TARGET engine_platform PROPERTY C_STANDARD 23)
 set_property(TARGET engine_platform PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_platform PROPERTY C_EXTENSIONS OFF)
-set_property(TARGET engine_platform PROPERTY CXX_STANDARD 20)
+set_property(TARGET engine_platform PROPERTY CXX_STANDARD 23)
 set_property(TARGET engine_platform PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET engine_platform PROPERTY CXX_EXTENSIONS OFF)
 
@@ -207,7 +207,8 @@ set(ENGINE_RENDER_SOURCES
     engine/render/ui_font.cpp
     engine/render/ui_renderer.h
     engine/render/ui_renderer.cpp
-    engine/render/gpu_buffer.h
+    engine/render/gpu_memory.h
+    engine/render/gpu_memory.cpp
     engine/render/gpu_chunk.h
     engine/render/gpu_volume.h
     engine/render/gpu_spatial_grid.h
@@ -225,7 +226,8 @@ target_link_libraries(engine_render PUBLIC
     ${Vulkan_LIBRARIES}
 )
 target_include_directories(engine_render PUBLIC ${Vulkan_INCLUDE_DIRS})
-set_property(TARGET engine_render PROPERTY CXX_STANDARD 20)
+target_include_directories(engine_render PUBLIC ${CMAKE_SOURCE_DIR}/third_party/vma)
+set_property(TARGET engine_render PROPERTY CXX_STANDARD 23)
 set_property(TARGET engine_render PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET engine_render PROPERTY CXX_EXTENSIONS OFF)
 
@@ -264,10 +266,10 @@ target_link_libraries(game PUBLIC
     engine_render
     content
 )
-set_property(TARGET game PROPERTY C_STANDARD 11)
+set_property(TARGET game PROPERTY C_STANDARD 23)
 set_property(TARGET game PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET game PROPERTY C_EXTENSIONS OFF)
-set_property(TARGET game PROPERTY CXX_STANDARD 20)
+set_property(TARGET game PROPERTY CXX_STANDARD 23)
 set_property(TARGET game PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET game PROPERTY CXX_EXTENSIONS OFF)
 
@@ -303,7 +305,7 @@ target_link_libraries(patch_samples PRIVATE
     engine_physics
     engine_core
 )
-set_property(TARGET patch_samples PROPERTY CXX_STANDARD 20)
+set_property(TARGET patch_samples PROPERTY CXX_STANDARD 23)
 set_property(TARGET patch_samples PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET patch_samples PROPERTY CXX_EXTENSIONS OFF)
 
@@ -437,7 +439,7 @@ else()
         set(SPV_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${SHADER_NAME}.spv")
         add_custom_command(
             OUTPUT ${SPV_OUTPUT}
-            COMMAND Vulkan::glslc -DPATCH_VULKAN=1 --target-env=vulkan1.2 -I${SHADER_INCLUDE_DIR} ${SHADER} -o ${SPV_OUTPUT}
+            COMMAND Vulkan::glslc -DPATCH_VULKAN=1 --target-env=vulkan1.4 -I${SHADER_INCLUDE_DIR} ${SHADER} -o ${SPV_OUTPUT}
             DEPENDS ${SHADER} ${CMAKE_BINARY_DIR}/shaders/.cleaned ${SHADER_INCLUDES}
             COMMENT "Compiling ${SHADER_NAME}"
             VERBATIM
@@ -512,68 +514,68 @@ enable_testing()
 
 add_executable(test_core tests/test_core.c)
 target_link_libraries(test_core PRIVATE engine_core)
-set_property(TARGET test_core PROPERTY C_STANDARD 11)
+set_property(TARGET test_core PROPERTY C_STANDARD 23)
 add_test(NAME core COMMAND test_core)
 
 add_executable(test_voxel tests/test_voxel.c)
 target_link_libraries(test_voxel PRIVATE engine_voxel content engine_platform)
-set_property(TARGET test_voxel PROPERTY C_STANDARD 11)
+set_property(TARGET test_voxel PROPERTY C_STANDARD 23)
 add_test(NAME voxel COMMAND test_voxel)
 
 add_executable(test_content tests/test_content.c)
 target_link_libraries(test_content PRIVATE content engine_core)
-set_property(TARGET test_content PROPERTY C_STANDARD 11)
+set_property(TARGET test_content PROPERTY C_STANDARD 23)
 add_test(NAME content COMMAND test_content)
 
 add_executable(test_connectivity tests/test_connectivity.c)
 target_link_libraries(test_connectivity PRIVATE engine_voxel content engine_platform)
-set_property(TARGET test_connectivity PROPERTY C_STANDARD 11)
+set_property(TARGET test_connectivity PROPERTY C_STANDARD 23)
 add_test(NAME connectivity COMMAND test_connectivity)
 
 add_executable(test_terrain_detach tests/test_terrain_detach.c)
 target_link_libraries(test_terrain_detach PRIVATE engine_sim engine_voxel content engine_platform)
-set_property(TARGET test_terrain_detach PROPERTY C_STANDARD 11)
+set_property(TARGET test_terrain_detach PROPERTY C_STANDARD 23)
 add_test(NAME terrain_detach COMMAND test_terrain_detach)
 
 add_executable(test_physics tests/test_physics.c)
 target_link_libraries(test_physics PRIVATE engine_physics engine_sim engine_voxel content engine_platform)
 target_compile_definitions(test_physics PRIVATE PATCH_PROFILE)
-set_property(TARGET test_physics PROPERTY C_STANDARD 11)
+set_property(TARGET test_physics PROPERTY C_STANDARD 23)
 add_test(NAME physics COMMAND test_physics)
 
 add_executable(test_scenes tests/test_scenes.c)
 target_link_libraries(test_scenes PRIVATE game engine_sim engine_physics engine_voxel engine_platform content)
-set_property(TARGET test_scenes PROPERTY C_STANDARD 11)
+set_property(TARGET test_scenes PROPERTY C_STANDARD 23)
 add_test(NAME scenes COMMAND test_scenes)
 
 add_executable(test_gpu_layout tests/test_gpu_layout.cpp)
 target_link_libraries(test_gpu_layout PRIVATE engine_voxel engine_core)
 target_include_directories(test_gpu_layout PRIVATE ${CMAKE_BINARY_DIR}/generated)
-set_property(TARGET test_gpu_layout PROPERTY CXX_STANDARD 20)
+set_property(TARGET test_gpu_layout PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_gpu_layout PROPERTY CXX_STANDARD_REQUIRED ON)
 add_test(NAME gpu_layout COMMAND test_gpu_layout)
 
 add_executable(test_profile tests/test_profile.c)
 target_link_libraries(test_profile PRIVATE engine_voxel engine_platform content)
 target_compile_definitions(test_profile PRIVATE PATCH_PROFILE)
-set_property(TARGET test_profile PROPERTY C_STANDARD 11)
+set_property(TARGET test_profile PROPERTY C_STANDARD 23)
 add_test(NAME profile COMMAND test_profile)
 
 add_executable(test_profile_validation tests/test_profile_validation.c)
 target_link_libraries(test_profile_validation PRIVATE engine_voxel engine_platform content)
 target_compile_definitions(test_profile_validation PRIVATE PATCH_PROFILE)
-set_property(TARGET test_profile_validation PROPERTY C_STANDARD 11)
+set_property(TARGET test_profile_validation PROPERTY C_STANDARD 23)
 add_test(NAME profile_validation COMMAND test_profile_validation)
 
 add_executable(test_profile_stress tests/test_profile_stress.c)
 target_link_libraries(test_profile_stress PRIVATE engine_voxel engine_platform content)
 target_compile_definitions(test_profile_stress PRIVATE PATCH_PROFILE)
-set_property(TARGET test_profile_stress PROPERTY C_STANDARD 11)
+set_property(TARGET test_profile_stress PROPERTY C_STANDARD 23)
 add_test(NAME profile_stress COMMAND test_profile_stress)
 
 add_executable(test_stress tests/test_stress.c)
 target_link_libraries(test_stress PRIVATE engine_sim engine_physics engine_voxel engine_platform content)
-set_property(TARGET test_stress PROPERTY C_STANDARD 11)
+set_property(TARGET test_stress PROPERTY C_STANDARD 23)
 add_test(NAME stress COMMAND test_stress)
 
 # Mark all unit tests as setting up the "unit_tests" fixture
@@ -584,7 +586,7 @@ set_tests_properties(${UNIT_TESTS} PROPERTIES FIXTURES_SETUP unit_tests)
 # Launch test (runs app executable, must run after all unit tests)
 # -----------------------------------------------------------------------------
 add_executable(test_launch tests/test_launch.cpp)
-set_property(TARGET test_launch PROPERTY CXX_STANDARD 20)
+set_property(TARGET test_launch PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_launch PROPERTY CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     target_compile_options(test_launch PRIVATE /W4)
@@ -597,7 +599,7 @@ set_tests_properties(launch PROPERTIES FIXTURES_REQUIRED unit_tests)
 
 # Render performance test (runs app and validates profiling data)
 add_executable(test_render_perf tests/test_render_perf.cpp)
-set_property(TARGET test_render_perf PROPERTY CXX_STANDARD 20)
+set_property(TARGET test_render_perf PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_render_perf PROPERTY CXX_STANDARD_REQUIRED ON)
 if(MSVC)
     target_compile_options(test_render_perf PRIVATE /W4)
@@ -622,7 +624,7 @@ add_custom_command(TARGET patch_samples POST_BUILD
 # Tool: voxelize (OBJ mesh to C voxel shape converter)
 # -----------------------------------------------------------------------------
 add_executable(voxelize tools/voxelize.cpp)
-set_property(TARGET voxelize PROPERTY CXX_STANDARD 20)
+set_property(TARGET voxelize PROPERTY CXX_STANDARD 23)
 set_property(TARGET voxelize PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET voxelize PROPERTY CXX_EXTENSIONS OFF)
 

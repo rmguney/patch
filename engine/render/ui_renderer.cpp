@@ -1,7 +1,6 @@
 #include "ui_renderer.h"
 #include "renderer.h"
 #include "ui_font.h"
-#include <math.h>
 #include <cstdio>
 
 namespace patch

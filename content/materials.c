@@ -18,13 +18,13 @@
  *
  * 5. REGISTER: Add pointer to g_materials[] using designated initializer.
  *
- * 6. UPDATE: Increment g_material_count and _Static_assert.
+ * 6. UPDATE: Increment g_material_count and static_assert.
  *
  * === LINK-TIME VALIDATION ===
  *
  * - Missing material file → linker error (unresolved symbol)
  * - Missing registration → undefined material (NULL pointer)
- * - ID mismatch → _Static_assert fails
+ * - ID mismatch → static_assert fails
  */
 
 #include "materials.h"
@@ -100,5 +100,5 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
 
 const int32_t g_material_count = 30;
 
-_Static_assert(MAT_GREEN + 1 == 30, "Material count must match g_material_count");
-_Static_assert(MAT_GREEN < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+static_assert(MAT_GREEN + 1 == 30, "Material count must match g_material_count");
+static_assert(MAT_GREEN < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

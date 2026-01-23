@@ -103,13 +103,8 @@ namespace patch
 
         if (vobj_atlas_image_)
         {
-            vkDestroyImage(device_, vobj_atlas_image_, nullptr);
+            gpu_allocator_.destroy_image(vobj_atlas_image_, vobj_atlas_memory_);
             vobj_atlas_image_ = VK_NULL_HANDLE;
-        }
-
-        if (vobj_atlas_memory_)
-        {
-            vkFreeMemory(device_, vobj_atlas_memory_, nullptr);
             vobj_atlas_memory_ = VK_NULL_HANDLE;
         }
 
@@ -119,7 +114,7 @@ namespace patch
             {
                 if (vobj_metadata_mapped_[i])
                 {
-                    vkUnmapMemory(device_, vobj_metadata_buffer_[i].memory);
+                    gpu_allocator_.unmap(vobj_metadata_buffer_[i].allocation);
                     vobj_metadata_mapped_[i] = nullptr;
                 }
                 destroy_buffer(&vobj_metadata_buffer_[i]);
@@ -130,7 +125,7 @@ namespace patch
         {
             if (vobj_staging_mapped_)
             {
-                vkUnmapMemory(device_, vobj_staging_buffer_.memory);
+                gpu_allocator_.unmap(vobj_staging_buffer_.allocation);
                 vobj_staging_mapped_ = nullptr;
             }
             destroy_buffer(&vobj_staging_buffer_);
@@ -140,7 +135,7 @@ namespace patch
         {
             if (spatial_grid_mapped_)
             {
-                vkUnmapMemory(device_, spatial_grid_buffer_.memory);
+                gpu_allocator_.unmap(spatial_grid_buffer_.allocation);
                 spatial_grid_mapped_ = nullptr;
             }
             destroy_buffer(&spatial_grid_buffer_);
@@ -180,27 +175,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &vobj_atlas_image_) != VK_SUCCESS)
+        vobj_atlas_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &vobj_atlas_memory_);
+        if (vobj_atlas_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create voxel object atlas image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, vobj_atlas_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &vobj_atlas_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate voxel object atlas memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, vobj_atlas_image_, vobj_atlas_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -242,7 +222,7 @@ namespace patch
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &vobj_metadata_buffer_[i]);
 
-            vkMapMemory(device_, vobj_metadata_buffer_[i].memory, 0, metadata_size, 0, &vobj_metadata_mapped_[i]);
+            vobj_metadata_mapped_[i] = gpu_allocator_.map(vobj_metadata_buffer_[i].allocation);
         }
 
         constexpr int32_t VOBJ_MAX_UPLOADS_PER_FRAME = 8;
@@ -252,7 +232,7 @@ namespace patch
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       &vobj_staging_buffer_);
 
-        vkMapMemory(device_, vobj_staging_buffer_.memory, 0, staging_size, 0, &vobj_staging_mapped_);
+        vobj_staging_mapped_ = gpu_allocator_.map(vobj_staging_buffer_.allocation);
 
         VkDeviceSize grid_buffer_size = sizeof(GPUSpatialGridBuffer);
         create_buffer(grid_buffer_size,
@@ -260,7 +240,7 @@ namespace patch
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       &spatial_grid_buffer_);
 
-        vkMapMemory(device_, spatial_grid_buffer_.memory, 0, grid_buffer_size, 0, &spatial_grid_mapped_);
+        spatial_grid_mapped_ = gpu_allocator_.map(spatial_grid_buffer_.allocation);
 
         memset(&spatial_grid_data_, 0, sizeof(spatial_grid_data_));
         spatial_grid_data_.params.cell_size = GPU_GRID_CELL_SIZE;
@@ -442,7 +422,7 @@ namespace patch
         rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -599,22 +579,8 @@ namespace patch
             dst[i] = obj->voxels[i].material;
         }
 
-        /* Use reusable upload command buffer if available, else allocate */
-        VkCommandBuffer cmd;
-        if (upload_cmd_ != VK_NULL_HANDLE)
-        {
-            cmd = upload_cmd_;
-            vkResetCommandBuffer(cmd, 0);
-        }
-        else
-        {
-            VkCommandBufferAllocateInfo cmd_alloc{};
-            cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-            cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            cmd_alloc.commandPool = command_pool_;
-            cmd_alloc.commandBufferCount = 1;
-            vkAllocateCommandBuffers(device_, &cmd_alloc, &cmd);
-        }
+        VkCommandBuffer cmd = vobj_upload_cmd_[current_frame_];
+        vkResetCommandBuffer(cmd, 0);
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -734,6 +700,9 @@ namespace patch
             /* Skip invisible objects - only upload visible ones */
             if (!visible)
                 continue;
+
+            if (visible_idx >= static_cast<int32_t>(VOBJ_ATLAS_MAX_OBJECTS))
+                break;
 
             VoxelObjectGPU *gpu = &gpu_data[visible_idx];
 
@@ -996,17 +965,7 @@ namespace patch
                 clear_vobj_dirty(obj_idx);
             }
 
-            VkCommandBuffer cmd = upload_cmd_;
-            if (cmd == VK_NULL_HANDLE)
-            {
-                VkCommandBufferAllocateInfo cmd_alloc{};
-                cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-                cmd_alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-                cmd_alloc.commandPool = command_pool_;
-                cmd_alloc.commandBufferCount = 1;
-                vkAllocateCommandBuffers(device_, &cmd_alloc, &cmd);
-                upload_cmd_ = cmd;
-            }
+            VkCommandBuffer cmd = vobj_upload_cmd_[current_frame_];
             vkResetCommandBuffer(cmd, 0);
 
             VkCommandBufferBeginInfo begin_info{};
@@ -1091,7 +1050,8 @@ namespace patch
             float far_plane;
             int32_t debug_mode;
             int32_t lod_quality;
-            int32_t pad2[2];
+            int32_t is_orthographic;
+            float camera_forward[3];
         } pc;
 
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
@@ -1102,11 +1062,14 @@ namespace patch
         pc.pad1 = 0.0f;
         pc.object_count = vobj_visible_count_;
         pc.atlas_dim = static_cast<int32_t>(VOBJ_GRID_DIM);
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.debug_mode = terrain_debug_mode_;
         pc.lod_quality = lod_quality_;
-        pc.pad2[0] = pc.pad2[1] = 0;
+        pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
+        pc.camera_forward[0] = -view_matrix_.m[2];
+        pc.camera_forward[1] = -view_matrix_.m[6];
+        pc.camera_forward[2] = -view_matrix_.m[10];
 
         vkCmdPushConstants(command_buffers_[current_frame_], vobj_pipeline_layout_,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

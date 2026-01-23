@@ -45,8 +45,8 @@ layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
 /* Set 1: output */
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
 
-const float HISTORY_BLEND_MAX = 0.92;  /* Higher = smoother but more lag */
-const float HISTORY_BLEND_MIN = 0.4;   /* Lower = faster response during motion */
+const float HISTORY_BLEND_MAX = 0.86;  /* Higher = smoother but more lag */
+const float HISTORY_BLEND_MIN = 0.25;  /* Lower = faster response during motion */
 const float VARIANCE_CLAMP_GAMMA = 1.8; /* Neighborhood clamping strength */
 
 void main()

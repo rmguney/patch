@@ -29,5 +29,5 @@ const SceneDescriptor g_scenes[SCENE_MAX_COUNT] = {
 
 const int32_t g_scene_count = SCENE_TYPE_COUNT;
 
-_Static_assert(SCENE_TYPE_COUNT == 2, "Scene count changed - update g_scenes array");
-_Static_assert(SCENE_TYPE_COUNT <= SCENE_MAX_COUNT, "Too many scene types");
+static_assert(SCENE_TYPE_COUNT == 2, "Scene count changed - update g_scenes array");
+static_assert(SCENE_TYPE_COUNT <= SCENE_MAX_COUNT, "Too many scene types");

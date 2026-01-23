@@ -119,7 +119,7 @@ namespace patch
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &voxel_temporal_ubo_[i]);
-            vkMapMemory(device_, voxel_temporal_ubo_[i].memory, 0, temporal_ubo_size, 0, &voxel_temporal_ubo_mapped_[i]);
+            voxel_temporal_ubo_mapped_[i] = gpu_allocator_.map(voxel_temporal_ubo_[i].allocation);
         }
 
         /* Create persistent staging buffers for chunk uploads (avoids per-frame allocation) */
@@ -137,8 +137,8 @@ namespace patch
                       &staging_headers_buffer_);
 
         /* Persistently map staging buffers */
-        vkMapMemory(device_, staging_voxels_buffer_.memory, 0, staging_voxel_size, 0, &staging_voxels_mapped_);
-        vkMapMemory(device_, staging_headers_buffer_.memory, 0, staging_header_size, 0, &staging_headers_mapped_);
+        staging_voxels_mapped_ = gpu_allocator_.map(staging_voxels_buffer_.allocation);
+        staging_headers_mapped_ = gpu_allocator_.map(staging_headers_buffer_.allocation);
 
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
@@ -260,7 +260,7 @@ namespace patch
                 {
                     if (voxel_temporal_ubo_mapped_[i])
                     {
-                        vkUnmapMemory(device_, voxel_temporal_ubo_[i].memory);
+                        gpu_allocator_.unmap(voxel_temporal_ubo_[i].allocation);
                         voxel_temporal_ubo_mapped_[i] = nullptr;
                     }
                     destroy_buffer(&voxel_temporal_ubo_[i]);
@@ -336,12 +336,11 @@ namespace patch
             }
         }
 
-        void *mapped = nullptr;
         int32_t upload_count = material_count_ > 0 ? material_count_ : 1;
         VkDeviceSize palette_upload_size = static_cast<VkDeviceSize>(upload_count) * sizeof(GPUMaterialColor);
-        vkMapMemory(device_, voxel_material_buffer_.memory, 0, palette_upload_size, 0, &mapped);
+        void *mapped = gpu_allocator_.map(voxel_material_buffer_.allocation);
         memcpy(mapped, &palette, palette_upload_size);
-        vkUnmapMemory(device_, voxel_material_buffer_.memory);
+        gpu_allocator_.unmap(voxel_material_buffer_.allocation);
 
         VkDeviceSize voxel_data_size = static_cast<VkDeviceSize>(vol->total_chunks) * GPU_CHUNK_DATA_SIZE;
         VkDeviceSize headers_size = static_cast<VkDeviceSize>(vol->total_chunks) * sizeof(GPUChunkHeader);
@@ -358,8 +357,7 @@ namespace patch
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       &staging_headers);
 
-        uint8_t *voxel_mapped = nullptr;
-        vkMapMemory(device_, staging_voxels.memory, 0, voxel_data_size, 0, reinterpret_cast<void **>(&voxel_mapped));
+        uint8_t *voxel_mapped = static_cast<uint8_t *>(gpu_allocator_.map(staging_voxels.allocation));
         int32_t total_solid = 0;
         for (int32_t ci = 0; ci < vol->total_chunks; ci++)
         {
@@ -375,10 +373,9 @@ namespace patch
         printf("  DEBUG: First 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n",
                voxel_mapped[0], voxel_mapped[1], voxel_mapped[2], voxel_mapped[3],
                voxel_mapped[4], voxel_mapped[5], voxel_mapped[6], voxel_mapped[7]);
-        vkUnmapMemory(device_, staging_voxels.memory);
+        gpu_allocator_.unmap(staging_voxels.allocation);
 
-        GPUChunkHeader *headers_mapped = nullptr;
-        vkMapMemory(device_, staging_headers.memory, 0, headers_size, 0, reinterpret_cast<void **>(&headers_mapped));
+        GPUChunkHeader *headers_mapped = static_cast<GPUChunkHeader *>(gpu_allocator_.map(staging_headers.allocation));
         for (int32_t ci = 0; ci < vol->total_chunks; ci++)
         {
             headers_mapped[ci] = gpu_chunk_header_from_chunk(&vol->chunks[ci]);
@@ -388,7 +385,7 @@ namespace patch
                headers_mapped[0].level0_lo, headers_mapped[0].level0_hi, headers_mapped[0].packed);
         printf("  DEBUG: Chunk 0 has_any=%d solid_count=%d\n",
                (headers_mapped[0].packed & 0xFF), (headers_mapped[0].packed >> 16));
-        vkUnmapMemory(device_, staging_headers.memory);
+        gpu_allocator_.unmap(staging_headers.allocation);
 
         VkCommandBufferAllocateInfo alloc_info{};
         alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -477,11 +474,14 @@ namespace patch
                 destroy_shadow_volume_resources();
                 create_shadow_volume_resources(w0, h0, d0);
                 update_shadow_volume_descriptor();
+                update_ao_volume_descriptor();
             }
 
             upload_shadow_volume(mip0.data(), w0, h0, d0,
                                  mip1.data(), w1, h1, d1,
                                  mip2.data(), w2, h2, d2);
+            /* Wait for initial upload to complete before first frame renders */
+            cleanup_all_shadow_uploads();
 
             shadow_volume_last_frame_ = vol->current_frame;
         }
@@ -532,7 +532,8 @@ namespace patch
         size_t size2 = static_cast<size_t>(w2) * h2 * d2;
 
         bool objects_present = (objects && objects->object_count > 0);
-        bool particles_present = (particles && particles->count > 0);
+        int32_t active_particle_count = 0;
+        bool particles_active = false;
 
         int32_t dirty_chunks[VOLUME_SHADOW_DIRTY_MAX];
         int32_t dirty_count = volume_get_shadow_dirty_chunks(vol, dirty_chunks, VOLUME_SHADOW_DIRTY_MAX);
@@ -549,7 +550,10 @@ namespace patch
         bool new_objects_added = false;
 
         /* Track mip regions for incremental updates (old+new AABB per moved object) */
-        struct MipRegion { int32_t min[3], max[3]; };
+        struct MipRegion
+        {
+            int32_t min[3], max[3];
+        };
         MipRegion mip_regions[SHADOW_STAMP_BUDGET];
         int32_t mip_region_count = 0;
 
@@ -628,6 +632,112 @@ namespace patch
             }
         }
 
+        int32_t particle_min[3] = {INT32_MAX, INT32_MAX, INT32_MAX};
+        int32_t particle_max[3] = {INT32_MIN, INT32_MIN, INT32_MIN};
+
+        if (particles && particles->count > 0)
+        {
+            for (int32_t i = 0; i < particles->count; i++)
+            {
+                const Particle *p = &particles->particles[i];
+                if (!p->active)
+                    continue;
+
+                float interp_x = p->prev_position.x + interp_alpha_ * (p->position.x - p->prev_position.x);
+                float interp_y = p->prev_position.y + interp_alpha_ * (p->position.y - p->prev_position.y);
+                float interp_z = p->prev_position.z + interp_alpha_ * (p->position.z - p->prev_position.z);
+
+                float rel_x = interp_x - vol->bounds.min_x;
+                float rel_y = interp_y - vol->bounds.min_y;
+                float rel_z = interp_z - vol->bounds.min_z;
+
+                int32_t min_vx = (int32_t)((rel_x - p->radius) / vol->voxel_size);
+                int32_t min_vy = (int32_t)((rel_y - p->radius) / vol->voxel_size);
+                int32_t min_vz = (int32_t)((rel_z - p->radius) / vol->voxel_size);
+                int32_t max_vx = (int32_t)((rel_x + p->radius) / vol->voxel_size);
+                int32_t max_vy = (int32_t)((rel_y + p->radius) / vol->voxel_size);
+                int32_t max_vz = (int32_t)((rel_z + p->radius) / vol->voxel_size);
+
+                if (min_vx < 0)
+                    min_vx = 0;
+                if (min_vy < 0)
+                    min_vy = 0;
+                if (min_vz < 0)
+                    min_vz = 0;
+                if (max_vx >= voxels_x)
+                    max_vx = voxels_x - 1;
+                if (max_vy >= voxels_y)
+                    max_vy = voxels_y - 1;
+                if (max_vz >= voxels_z)
+                    max_vz = voxels_z - 1;
+
+                if (min_vx > max_vx || min_vy > max_vy || min_vz > max_vz)
+                    continue;
+
+                if (min_vx < particle_min[0])
+                    particle_min[0] = min_vx;
+                if (min_vy < particle_min[1])
+                    particle_min[1] = min_vy;
+                if (min_vz < particle_min[2])
+                    particle_min[2] = min_vz;
+                if (max_vx > particle_max[0])
+                    particle_max[0] = max_vx;
+                if (max_vy > particle_max[1])
+                    particle_max[1] = max_vy;
+                if (max_vz > particle_max[2])
+                    particle_max[2] = max_vz;
+
+                active_particle_count++;
+            }
+        }
+
+        if (active_particle_count > 0)
+            particles_active = true;
+
+        bool particle_region_valid = false;
+        int32_t particle_region_min[3] = {0, 0, 0};
+        int32_t particle_region_max[3] = {0, 0, 0};
+
+        if (particles_active)
+        {
+            particle_region_min[0] = particle_min[0];
+            particle_region_min[1] = particle_min[1];
+            particle_region_min[2] = particle_min[2];
+            particle_region_max[0] = particle_max[0];
+            particle_region_max[1] = particle_max[1];
+            particle_region_max[2] = particle_max[2];
+            particle_region_valid = true;
+        }
+
+        if (shadow_particle_aabb_valid_)
+        {
+            if (!particle_region_valid)
+            {
+                particle_region_min[0] = shadow_particle_aabb_min_[0];
+                particle_region_min[1] = shadow_particle_aabb_min_[1];
+                particle_region_min[2] = shadow_particle_aabb_min_[2];
+                particle_region_max[0] = shadow_particle_aabb_max_[0];
+                particle_region_max[1] = shadow_particle_aabb_max_[1];
+                particle_region_max[2] = shadow_particle_aabb_max_[2];
+                particle_region_valid = true;
+            }
+            else
+            {
+                if (shadow_particle_aabb_min_[0] < particle_region_min[0])
+                    particle_region_min[0] = shadow_particle_aabb_min_[0];
+                if (shadow_particle_aabb_min_[1] < particle_region_min[1])
+                    particle_region_min[1] = shadow_particle_aabb_min_[1];
+                if (shadow_particle_aabb_min_[2] < particle_region_min[2])
+                    particle_region_min[2] = shadow_particle_aabb_min_[2];
+                if (shadow_particle_aabb_max_[0] > particle_region_max[0])
+                    particle_region_max[0] = shadow_particle_aabb_max_[0];
+                if (shadow_particle_aabb_max_[1] > particle_region_max[1])
+                    particle_region_max[1] = shadow_particle_aabb_max_[1];
+                if (shadow_particle_aabb_max_[2] > particle_region_max[2])
+                    particle_region_max[2] = shadow_particle_aabb_max_[2];
+            }
+        }
+
         /* Determine rebuild strategy
          * volume_resized = buffers changed size, must do full rebuild
          * shadow_needs_full_rebuild = dirty chunk array overflowed, can use bitmap iteration */
@@ -643,9 +753,10 @@ namespace patch
 
         bool needs_terrain_repack = needs_full_rebuild || terrain_dirty;
         bool needs_object_stamp = needs_full_rebuild || moved_count > 0 || new_objects_added;
-        bool needs_mip_regen = needs_terrain_repack || needs_object_stamp;
+        bool needs_particle_update = particles_active || shadow_particle_aabb_valid_;
+        bool needs_mip_regen = needs_terrain_repack || needs_object_stamp || needs_particle_update;
 
-        if (!needs_terrain_repack && !needs_object_stamp)
+        if (!needs_terrain_repack && !needs_object_stamp && !needs_particle_update)
         {
             return; /* Nothing changed, skip update */
         }
@@ -765,25 +876,39 @@ namespace patch
                     unified_volume_compute_object_shadow_aabb(obj, vol, state->aabb_min, state->aabb_max);
 
                     /* Expand mip region to include new AABB */
-                    if (state->aabb_min[0] < mip_regions[i].min[0]) mip_regions[i].min[0] = state->aabb_min[0];
-                    if (state->aabb_min[1] < mip_regions[i].min[1]) mip_regions[i].min[1] = state->aabb_min[1];
-                    if (state->aabb_min[2] < mip_regions[i].min[2]) mip_regions[i].min[2] = state->aabb_min[2];
-                    if (state->aabb_max[0] > mip_regions[i].max[0]) mip_regions[i].max[0] = state->aabb_max[0];
-                    if (state->aabb_max[1] > mip_regions[i].max[1]) mip_regions[i].max[1] = state->aabb_max[1];
-                    if (state->aabb_max[2] > mip_regions[i].max[2]) mip_regions[i].max[2] = state->aabb_max[2];
+                    if (state->aabb_min[0] < mip_regions[i].min[0])
+                        mip_regions[i].min[0] = state->aabb_min[0];
+                    if (state->aabb_min[1] < mip_regions[i].min[1])
+                        mip_regions[i].min[1] = state->aabb_min[1];
+                    if (state->aabb_min[2] < mip_regions[i].min[2])
+                        mip_regions[i].min[2] = state->aabb_min[2];
+                    if (state->aabb_max[0] > mip_regions[i].max[0])
+                        mip_regions[i].max[0] = state->aabb_max[0];
+                    if (state->aabb_max[1] > mip_regions[i].max[1])
+                        mip_regions[i].max[1] = state->aabb_max[1];
+                    if (state->aabb_max[2] > mip_regions[i].max[2])
+                        mip_regions[i].max[2] = state->aabb_max[2];
                 }
             }
             mip_region_count = moved_count;
         }
 
         /* Particle stamping: clear previous footprint, then re-stamp */
-        if (particles && particles->count > 0)
+        if (particles_active)
         {
             if (shadow_particle_count_ > 0 && particle_shadow_mask_.size() == shadow_mip0_.size())
             {
                 for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
                 {
                     shadow_mip0_[i] &= ~particle_shadow_mask_[i];
+                }
+                if (shadow_particle_aabb_valid_)
+                {
+                    volume_restore_shadow_region(vol, shadow_mip0_.data(), w0, h0, d0,
+                                                shadow_particle_aabb_min_[0], shadow_particle_aabb_min_[1],
+                                                shadow_particle_aabb_min_[2],
+                                                shadow_particle_aabb_max_[0], shadow_particle_aabb_max_[1],
+                                                shadow_particle_aabb_max_[2]);
                 }
             }
 
@@ -797,15 +922,29 @@ namespace patch
             /* Stamp particles to both shadow volume and mask */
             unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
             unified_volume_stamp_particles_to_shadow(particle_shadow_mask_.data(), w0, h0, d0, vol, particles, interp_alpha_);
+
+            shadow_particle_aabb_min_[0] = particle_min[0];
+            shadow_particle_aabb_min_[1] = particle_min[1];
+            shadow_particle_aabb_min_[2] = particle_min[2];
+            shadow_particle_aabb_max_[0] = particle_max[0];
+            shadow_particle_aabb_max_[1] = particle_max[1];
+            shadow_particle_aabb_max_[2] = particle_max[2];
+            shadow_particle_aabb_valid_ = true;
         }
-        else if (shadow_particle_count_ > 0 && particle_shadow_mask_.size() > 0)
+        else if (shadow_particle_aabb_valid_ && particle_shadow_mask_.size() > 0)
         {
             /* Clear particle shadows when no particles remain */
             for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
             {
                 shadow_mip0_[i] &= ~particle_shadow_mask_[i];
             }
+            volume_restore_shadow_region(vol, shadow_mip0_.data(), w0, h0, d0,
+                                        shadow_particle_aabb_min_[0], shadow_particle_aabb_min_[1],
+                                        shadow_particle_aabb_min_[2],
+                                        shadow_particle_aabb_max_[0], shadow_particle_aabb_max_[1],
+                                        shadow_particle_aabb_max_[2]);
             std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
+            shadow_particle_aabb_valid_ = false;
         }
         PROFILE_END(PROFILE_SHADOW_OBJECT_STAMP);
 
@@ -819,56 +958,81 @@ namespace patch
                 volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
                                             shadow_mip1_.data(), shadow_mip2_.data());
             }
-            else if (dirty_count > 0)
+            else
             {
-                /* Region-based mip update: compute bounding box of all dirty chunks
-                 * and regenerate mips for that region only (avoids per-chunk overhead) */
-                int32_t min_cx = INT32_MAX, min_cy = INT32_MAX, min_cz = INT32_MAX;
-                int32_t max_cx = INT32_MIN, max_cy = INT32_MIN, max_cz = INT32_MIN;
-
-                for (int32_t i = 0; i < dirty_count; i++)
+                /* Incremental mip updates: terrain and object regions are independent */
+                if (dirty_count > 0)
                 {
-                    int32_t chunk_idx = dirty_chunks[i];
-                    int32_t cx = chunk_idx % vol->chunks_x;
-                    int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
-                    int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
+                    /* Region-based mip update for dirty terrain chunks */
+                    int32_t min_cx = INT32_MAX, min_cy = INT32_MAX, min_cz = INT32_MAX;
+                    int32_t max_cx = INT32_MIN, max_cy = INT32_MIN, max_cz = INT32_MIN;
 
-                    if (cx < min_cx) min_cx = cx;
-                    if (cy < min_cy) min_cy = cy;
-                    if (cz < min_cz) min_cz = cz;
-                    if (cx > max_cx) max_cx = cx;
-                    if (cy > max_cy) max_cy = cy;
-                    if (cz > max_cz) max_cz = cz;
+                    for (int32_t i = 0; i < dirty_count; i++)
+                    {
+                        int32_t chunk_idx = dirty_chunks[i];
+                        int32_t cx = chunk_idx % vol->chunks_x;
+                        int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
+                        int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
+
+                        if (cx < min_cx)
+                            min_cx = cx;
+                        if (cy < min_cy)
+                            min_cy = cy;
+                        if (cz < min_cz)
+                            min_cz = cz;
+                        if (cx > max_cx)
+                            max_cx = cx;
+                        if (cy > max_cy)
+                            max_cy = cy;
+                        if (cz > max_cz)
+                            max_cz = cz;
+                    }
+
+                    /* Convert chunk bounds to mip0 coordinates (shadow mip0 is half-res) */
+                    int32_t min_vx = min_cx * CHUNK_SIZE;
+                    int32_t min_vy = min_cy * CHUNK_SIZE;
+                    int32_t min_vz = min_cz * CHUNK_SIZE;
+                    int32_t max_vx = (max_cx + 1) * CHUNK_SIZE - 1;
+                    int32_t max_vy = (max_cy + 1) * CHUNK_SIZE - 1;
+                    int32_t max_vz = (max_cz + 1) * CHUNK_SIZE - 1;
+
+                    volume_generate_shadow_mips_for_region(
+                        min_vx >> 1, min_vy >> 1, min_vz >> 1,
+                        max_vx >> 1, max_vy >> 1, max_vz >> 1,
+                        shadow_mip0_.data(), w0, h0, d0,
+                        shadow_mip1_.data(), w1, h1, d1,
+                        shadow_mip2_.data(), w2, h2, d2);
                 }
 
-                /* Convert chunk bounds to voxel coordinates */
-                volume_generate_shadow_mips_for_region(
-                    min_cx * CHUNK_SIZE, min_cy * CHUNK_SIZE, min_cz * CHUNK_SIZE,
-                    (max_cx + 1) * CHUNK_SIZE - 1, (max_cy + 1) * CHUNK_SIZE - 1, (max_cz + 1) * CHUNK_SIZE - 1,
-                    shadow_mip0_.data(), w0, h0, d0,
-                    shadow_mip1_.data(), w1, h1, d1,
-                    shadow_mip2_.data(), w2, h2, d2);
-            }
-            else if (mip_region_count > 0)
-            {
-                /* Objects moved but no terrain dirty - regenerate mips only for affected regions
-                 * mip_regions contains union of old+new AABB for each moved object */
-                for (int32_t i = 0; i < mip_region_count; i++)
+                if (mip_region_count > 0)
                 {
-                    volume_generate_shadow_mips_for_region(mip_regions[i].min[0], mip_regions[i].min[1], mip_regions[i].min[2],
-                                                           mip_regions[i].max[0], mip_regions[i].max[1], mip_regions[i].max[2],
+                    /* Regenerate mips for moved/new object regions
+                     * mip_regions contains union of old+new AABB for each moved object */
+                    for (int32_t i = 0; i < mip_region_count; i++)
+                    {
+                        volume_generate_shadow_mips_for_region(mip_regions[i].min[0] >> 1, mip_regions[i].min[1] >> 1, mip_regions[i].min[2] >> 1,
+                                                               mip_regions[i].max[0] >> 1, mip_regions[i].max[1] >> 1, mip_regions[i].max[2] >> 1,
+                                                               shadow_mip0_.data(), w0, h0, d0,
+                                                               shadow_mip1_.data(), w1, h1, d1,
+                                                               shadow_mip2_.data(), w2, h2, d2);
+                    }
+                }
+
+                if (particle_region_valid)
+                {
+                    volume_generate_shadow_mips_for_region(particle_region_min[0] >> 1, particle_region_min[1] >> 1, particle_region_min[2] >> 1,
+                                                           particle_region_max[0] >> 1, particle_region_max[1] >> 1, particle_region_max[2] >> 1,
                                                            shadow_mip0_.data(), w0, h0, d0,
                                                            shadow_mip1_.data(), w1, h1, d1,
                                                            shadow_mip2_.data(), w2, h2, d2);
                 }
             }
-            /* Note: no fallback full mip regen - if no regions tracked, no mip update needed */
         }
         PROFILE_END(PROFILE_SHADOW_MIP_REGEN);
 
         shadow_volume_initialized_ = true;
         shadow_object_count_ = objects_present ? objects->object_count : 0;
-        shadow_particle_count_ = particles_present ? particles->count : 0;
+        shadow_particle_count_ = active_particle_count;
 
         volume_clear_shadow_dirty(vol);
 
@@ -880,6 +1044,7 @@ namespace patch
 
         /* Update shadow compute descriptor with new shadow volume texture */
         update_shadow_volume_descriptor();
+        update_ao_volume_descriptor();
     }
 
     int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)
@@ -983,26 +1148,27 @@ namespace patch
 
         /* No unmap needed - persistent buffers stay mapped */
 
-        vkResetCommandBuffer(upload_cmd_, 0);
+        VkCommandBuffer upload_cmd = upload_cmd_[current_frame_];
+        vkResetCommandBuffer(upload_cmd, 0);
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(upload_cmd_, &begin_info);
+        vkBeginCommandBuffer(upload_cmd, &begin_info);
 
         if (!voxel_copies.empty())
         {
-            vkCmdCopyBuffer(upload_cmd_, staging_voxels_buffer_.buffer, voxel_data_buffer_.buffer,
+            vkCmdCopyBuffer(upload_cmd, staging_voxels_buffer_.buffer, voxel_data_buffer_.buffer,
                             static_cast<uint32_t>(voxel_copies.size()), voxel_copies.data());
         }
 
         if (!header_copies.empty())
         {
-            vkCmdCopyBuffer(upload_cmd_, staging_headers_buffer_.buffer, voxel_headers_buffer_.buffer,
+            vkCmdCopyBuffer(upload_cmd, staging_headers_buffer_.buffer, voxel_headers_buffer_.buffer,
                             static_cast<uint32_t>(header_copies.size()), header_copies.data());
         }
 
-        vkEndCommandBuffer(upload_cmd_);
+        vkEndCommandBuffer(upload_cmd);
 
         uint64_t signal_value = ++upload_timeline_value_;
 
@@ -1015,7 +1181,7 @@ namespace patch
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.pNext = &timeline_submit;
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &upload_cmd_;
+        submit_info.pCommandBuffers = &upload_cmd;
         submit_info.signalSemaphoreCount = 1;
         submit_info.pSignalSemaphores = &upload_timeline_semaphore_;
 
@@ -1055,6 +1221,13 @@ namespace patch
         shadow_object_count_ = 0;
         shadow_particle_count_ = 0;
         shadow_needs_terrain_update_ = false;
+        shadow_particle_aabb_valid_ = false;
+        shadow_particle_aabb_min_[0] = 0;
+        shadow_particle_aabb_min_[1] = 0;
+        shadow_particle_aabb_min_[2] = 0;
+        shadow_particle_aabb_max_[0] = 0;
+        shadow_particle_aabb_max_[1] = 0;
+        shadow_particle_aabb_max_[2] = 0;
 
         /* Reset voxel object tracking */
         vobj_last_world_ = nullptr;

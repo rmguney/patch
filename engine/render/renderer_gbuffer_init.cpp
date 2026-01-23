@@ -370,6 +370,12 @@ namespace patch
         if (voxel_data_buffer_.buffer == VK_NULL_HANDLE)
             return true;
 
+        if (gbuffer_descriptor_pool_ != VK_NULL_HANDLE)
+        {
+            vkDestroyDescriptorPool(device_, gbuffer_descriptor_pool_, nullptr);
+            gbuffer_descriptor_pool_ = VK_NULL_HANDLE;
+        }
+
         VkDescriptorPoolSize pool_sizes[4]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
@@ -478,6 +484,12 @@ namespace patch
 
     bool Renderer::create_deferred_lighting_descriptor_sets()
     {
+        if (deferred_lighting_descriptor_pool_ != VK_NULL_HANDLE)
+        {
+            vkDestroyDescriptorPool(device_, deferred_lighting_descriptor_pool_, nullptr);
+            deferred_lighting_descriptor_pool_ = VK_NULL_HANDLE;
+        }
+
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8; /* gbuffer(5) + shadow + blue_noise + ao */
@@ -701,7 +713,7 @@ namespace patch
         VkPushConstantRange push_range{};
         push_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         push_range.offset = 0;
-        push_range.size = 8; /* near_plane (4) + far_plane (4) */
+        push_range.size = 12; /* near_plane (4) + far_plane (4) + is_orthographic (4) */
 
         /* Create pipeline layout */
         VkPipelineLayoutCreateInfo pipe_layout_info{};
@@ -968,12 +980,12 @@ namespace patch
         vkCmdBindDescriptorSets(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 depth_prime_layout_, 0, 1, &depth_prime_descriptor_sets_[current_frame_], 0, nullptr);
 
-        /* Push near/far planes - must match hardcoded values used elsewhere */
         struct
         {
             float near_plane;
             float far_plane;
-        } pc = {0.1f, 1000.0f};
+            int32_t is_orthographic;
+        } pc = {perspective_near_, perspective_far_, (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0};
 
         vkCmdPushConstants(command_buffers_[current_frame_], depth_prime_layout_,
                            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

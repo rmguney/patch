@@ -69,6 +69,12 @@ layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
 const int BASE_SHADOW_STEPS = 128;  /* Base step count for far surfaces */
 const float SHADOW_MAX_DIST = 50.0;
+const float SHADOW_DIST_VERY_FAR = 100.0;
+const float SHADOW_DIST_FAR = 60.0;
+const int SHADOW_STEPS_VERY_FAR = 64;
+const int SHADOW_STEPS_FAR = 96;
+const float SHADOW_SAMPLE_DIST_FAR = 80.0;
+const float SHADOW_SAMPLE_DIST_MID = 40.0;
 
 /* Sun direction */
 const vec3 SUN_DIR = normalize(vec3(-0.6, 0.9, 0.35));
@@ -174,16 +180,20 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
         }
 
         if (mip2_empty) {
-            /* Skip to mip2 boundary (8x8x8 voxels) instead of stepping one voxel */
+            /* Skip to mip2 boundary along the DDA exit axis */
             ivec3 mip2_min = current_mip2 << 3;
             ivec3 mip2_max = mip2_min + 7;
-            ivec3 exit_pos = mix(mip2_min - 1, mip2_max + 1, greaterThan(step_dir, ivec3(0)));
-            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
-            steps_to_exit = max(steps_to_exit, vec3(1.0));
-            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
-            map_pos += step_dir * skip;
-            side_dist += vec3(skip) * delta_dist;
-            i += skip - 1;
+            ivec3 cells_to_exit;
+            cells_to_exit.x = (step_dir.x > 0) ? (mip2_max.x - map_pos.x + 1) : (map_pos.x - mip2_min.x + 1);
+            cells_to_exit.y = (step_dir.y > 0) ? (mip2_max.y - map_pos.y + 1) : (map_pos.y - mip2_min.y + 1);
+            cells_to_exit.z = (step_dir.z > 0) ? (mip2_max.z - map_pos.z + 1) : (map_pos.z - mip2_min.z + 1);
+            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
+            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
+            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
+            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
+            map_pos += ivec3(mask) * step_dir * cells_to_exit;
+            side_dist += vec3(skip_per_axis) * delta_dist;
+            i += max(skip - 1, 0);
             continue;
         }
 
@@ -195,16 +205,20 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
         }
 
         if (mip1_empty) {
-            /* Skip to mip1 boundary (4x4x4 voxels) instead of stepping one voxel */
+            /* Skip to mip1 boundary along the DDA exit axis */
             ivec3 mip1_min = current_mip1 << 2;
             ivec3 mip1_max = mip1_min + 3;
-            ivec3 exit_pos = mix(mip1_min - 1, mip1_max + 1, greaterThan(step_dir, ivec3(0)));
-            vec3 steps_to_exit = vec3(exit_pos - map_pos) / vec3(step_dir);
-            steps_to_exit = max(steps_to_exit, vec3(1.0));
-            int skip = int(min(min(steps_to_exit.x, steps_to_exit.y), steps_to_exit.z));
-            map_pos += step_dir * skip;
-            side_dist += vec3(skip) * delta_dist;
-            i += skip - 1;
+            ivec3 cells_to_exit;
+            cells_to_exit.x = (step_dir.x > 0) ? (mip1_max.x - map_pos.x + 1) : (map_pos.x - mip1_min.x + 1);
+            cells_to_exit.y = (step_dir.y > 0) ? (mip1_max.y - map_pos.y + 1) : (map_pos.y - mip1_min.y + 1);
+            cells_to_exit.z = (step_dir.z > 0) ? (mip1_max.z - map_pos.z + 1) : (map_pos.z - mip1_min.z + 1);
+            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
+            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
+            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
+            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
+            map_pos += ivec3(mask) * step_dir * cells_to_exit;
+            side_dist += vec3(skip_per_axis) * delta_dist;
+            i += max(skip - 1, 0);
             continue;
         }
 
@@ -262,12 +276,18 @@ void main() {
     /* Distance-based step reduction for FAR surfaces only.
        Close surfaces keep full steps for shadow accuracy.
        Far surfaces can use fewer steps - artifacts less visible at distance. */
-    float surface_dist = length(g.world_pos - pc.camera_pos);
+    float surface_dist;
+    if (pc.is_orthographic != 0) {
+        vec3 cam_fwd = -normalize(vec3(pc.inv_view[0][2], pc.inv_view[1][2], pc.inv_view[2][2]));
+        surface_dist = abs(dot(g.world_pos - pc.camera_pos, cam_fwd));
+    } else {
+        surface_dist = length(g.world_pos - pc.camera_pos);
+    }
     int shadow_steps = BASE_SHADOW_STEPS;
-    if (surface_dist > 100.0) {
-        shadow_steps = 64;   /* Very far: half steps */
-    } else if (surface_dist > 60.0) {
-        shadow_steps = 96;   /* Far: 75% steps */
+    if (surface_dist > SHADOW_DIST_VERY_FAR) {
+        shadow_steps = SHADOW_STEPS_VERY_FAR;   /* Very far: half steps */
+    } else if (surface_dist > SHADOW_DIST_FAR) {
+        shadow_steps = SHADOW_STEPS_FAR;   /* Far: 75% steps */
     }
     /* Close/mid (<60m): keep full 128 steps */
 
@@ -292,9 +312,9 @@ void main() {
         /* Sample count: quality-based with reduction for far surfaces */
         int base_samples = 3 + pc.shadow_quality;
         int num_samples = base_samples;
-        if (surface_dist > 80.0) {
+        if (surface_dist > SHADOW_SAMPLE_DIST_FAR) {
             num_samples = max(2, base_samples - 2);  /* Far: fewer samples */
-        } else if (surface_dist > 40.0) {
+        } else if (surface_dist > SHADOW_SAMPLE_DIST_MID) {
             num_samples = max(3, base_samples - 1);  /* Mid: slight reduction */
         }
         float shadow_sum = 0.0;

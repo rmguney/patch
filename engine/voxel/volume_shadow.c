@@ -370,6 +370,60 @@ void volume_generate_shadow_mips_for_chunk(int32_t chunk_idx,
     }
 }
 
+void volume_restore_shadow_region(const VoxelVolume *vol, uint8_t *mip0,
+                                  uint32_t w0, uint32_t h0, uint32_t d0,
+                                  int32_t min_vx, int32_t min_vy, int32_t min_vz,
+                                  int32_t max_vx, int32_t max_vy, int32_t max_vz)
+{
+    if (!vol || !mip0)
+        return;
+
+    int32_t total_vx = vol->chunks_x * CHUNK_SIZE;
+    int32_t total_vy = vol->chunks_y * CHUNK_SIZE;
+    int32_t total_vz = vol->chunks_z * CHUNK_SIZE;
+
+    if (min_vx < 0) min_vx = 0;
+    if (min_vy < 0) min_vy = 0;
+    if (min_vz < 0) min_vz = 0;
+    if (max_vx >= total_vx) max_vx = total_vx - 1;
+    if (max_vy >= total_vy) max_vy = total_vy - 1;
+    if (max_vz >= total_vz) max_vz = total_vz - 1;
+
+    for (int32_t vz = min_vz; vz <= max_vz; vz++)
+    {
+        int32_t cz = vz / CHUNK_SIZE;
+        int32_t lz = vz % CHUNK_SIZE;
+        for (int32_t vy = min_vy; vy <= max_vy; vy++)
+        {
+            int32_t cy = vy / CHUNK_SIZE;
+            int32_t ly = vy % CHUNK_SIZE;
+            for (int32_t vx = min_vx; vx <= max_vx; vx++)
+            {
+                int32_t cx = vx / CHUNK_SIZE;
+                int32_t lx = vx % CHUNK_SIZE;
+
+                int32_t chunk_idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                const Chunk *chunk = &vol->chunks[chunk_idx];
+                if (!chunk->occupancy.has_any)
+                    continue;
+
+                int32_t voxel_idx = chunk_voxel_index(lx, ly, lz);
+                if (chunk->voxels[voxel_idx].material == MATERIAL_EMPTY)
+                    continue;
+
+                int32_t bit_idx = (vx & 1) + ((vy & 1) << 1) + ((vz & 1) << 2);
+                int32_t px = vx >> 1;
+                int32_t py = vy >> 1;
+                int32_t pz = vz >> 1;
+                if ((uint32_t)px >= w0 || (uint32_t)py >= h0 || (uint32_t)pz >= d0)
+                    continue;
+                size_t packed_idx = (size_t)px + (size_t)py * w0 + (size_t)pz * w0 * h0;
+                mip0[packed_idx] |= (uint8_t)(1 << bit_idx);
+            }
+        }
+    }
+}
+
 void volume_generate_shadow_mips_for_region(int32_t min_x, int32_t min_y, int32_t min_z,
                                             int32_t max_x, int32_t max_y, int32_t max_z,
                                             const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,

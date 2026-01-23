@@ -15,6 +15,7 @@ layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
 layout(push_constant) uniform Constants {
     float near_plane;
     float far_plane;
+    int is_orthographic;
 } pc;
 
 void main() {
@@ -26,6 +27,5 @@ void main() {
         return;
     }
 
-    /* Clamp to valid range like terrain fragment shader does */
-    gl_FragDepth = clamp(camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane), 0.0, 1.0);
+    gl_FragDepth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
 }

@@ -1,7 +1,6 @@
 #include "renderer.h"
 #include "voxel_push_constants.h"
 #include "engine/core/profile.h"
-#include <cstring>
 #include <cstdio>
 
 namespace patch
@@ -44,27 +43,12 @@ namespace patch
             image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
             image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-            if (vkCreateImage(device_, &image_info, nullptr, &gbuffer_images_[i]) != VK_SUCCESS)
+            gbuffer_images_[i] = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &gbuffer_memory_[i]);
+            if (gbuffer_images_[i] == VK_NULL_HANDLE)
             {
                 fprintf(stderr, "Failed to create G-buffer image %u\n", i);
                 return false;
             }
-
-            VkMemoryRequirements mem_reqs;
-            vkGetImageMemoryRequirements(device_, gbuffer_images_[i], &mem_reqs);
-
-            VkMemoryAllocateInfo alloc_info{};
-            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = mem_reqs.size;
-            alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-            if (vkAllocateMemory(device_, &alloc_info, nullptr, &gbuffer_memory_[i]) != VK_SUCCESS)
-            {
-                fprintf(stderr, "Failed to allocate G-buffer memory %u\n", i);
-                return false;
-            }
-
-            vkBindImageMemory(device_, gbuffer_images_[i], gbuffer_memory_[i], 0);
 
             VkImageViewCreateInfo view_info{};
             view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -322,12 +306,8 @@ namespace patch
             }
             if (gbuffer_images_[i])
             {
-                vkDestroyImage(device_, gbuffer_images_[i], nullptr);
+                gpu_allocator_.destroy_image(gbuffer_images_[i], gbuffer_memory_[i]);
                 gbuffer_images_[i] = VK_NULL_HANDLE;
-            }
-            if (gbuffer_memory_[i])
-            {
-                vkFreeMemory(device_, gbuffer_memory_[i], nullptr);
                 gbuffer_memory_[i] = VK_NULL_HANDLE;
             }
         }
@@ -342,6 +322,12 @@ namespace patch
         {
             vkDestroyPipelineLayout(device_, gbuffer_pipeline_layout_, nullptr);
             gbuffer_pipeline_layout_ = VK_NULL_HANDLE;
+        }
+
+        if (gbuffer_descriptor_pool_)
+        {
+            vkDestroyDescriptorPool(device_, gbuffer_descriptor_pool_, nullptr);
+            gbuffer_descriptor_pool_ = VK_NULL_HANDLE;
         }
 
         if (gbuffer_descriptor_layout_)
@@ -360,6 +346,12 @@ namespace patch
         {
             vkDestroyPipelineLayout(device_, deferred_lighting_layout_, nullptr);
             deferred_lighting_layout_ = VK_NULL_HANDLE;
+        }
+
+        if (deferred_lighting_descriptor_pool_)
+        {
+            vkDestroyDescriptorPool(device_, deferred_lighting_descriptor_pool_, nullptr);
+            deferred_lighting_descriptor_pool_ = VK_NULL_HANDLE;
         }
 
         if (deferred_lighting_descriptor_layout_)
@@ -541,9 +533,9 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = 512;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.object_count = 0;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
@@ -601,8 +593,8 @@ namespace patch
         VoxelPushConstants pc{};
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.bounds_min[0] = deferred_bounds_min_[0];
         pc.bounds_min[1] = deferred_bounds_min_[1];
         pc.bounds_min[2] = deferred_bounds_min_[2];
@@ -626,7 +618,7 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = 512;
+        pc.max_steps = RAYMARCH_MAX_STEPS;
         pc.object_count = 0;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;

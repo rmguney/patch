@@ -30,11 +30,7 @@ typedef struct
     uint8_t pad[3];   /* Padding for 16-byte alignment (3 bytes) */
 } VoxelInstance;
 
-#ifdef __cplusplus
 static_assert(sizeof(VoxelInstance) == 16, "VoxelInstance must be 16 bytes for GPU alignment");
-#else
-_Static_assert(sizeof(VoxelInstance) == 16, "VoxelInstance must be 16 bytes for GPU alignment");
-#endif
 
 /*
  * GPUChunk: per-chunk GPU representation.

@@ -18,6 +18,18 @@
 #include <cstring>
 #include <cmath>
 
+static constexpr uint64_t DEFAULT_RNG_SEED = 12345;
+static constexpr float DEFAULT_FOV = 60.0f;
+static constexpr float DEFAULT_NEAR = 0.1f;
+static constexpr float DEFAULT_FAR = 200.0f;
+static constexpr float DEFAULT_ORTHO_WIDTH = 16.0f;
+static constexpr float DEFAULT_ORTHO_HEIGHT = 16.0f;
+static constexpr float MAX_FRAME_DT = 0.1f;
+static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
+static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
+static constexpr float FREE_CAM_MOVE_SPEED = 20.0f;
+static constexpr int TERRAIN_DEBUG_MODE_COUNT = 14;
+
 static BallPitParams params_from_settings(const AppSettings *s)
 {
     BallPitParams p;
@@ -96,7 +108,7 @@ int patch_main(int argc, char *argv[])
 
     printf("Patch\n\n");
 
-    uint64_t rng_seed_value = 12345;
+    uint64_t rng_seed_value = DEFAULT_RNG_SEED;
     const char *seed_env = getenv("PATCH_RNG_SEED");
     if (seed_env)
     {
@@ -228,7 +240,7 @@ int patch_main(int argc, char *argv[])
         test_camera_pos = test_camera_start;
         test_camera_active = true;
         test_camera_approach = true;
-        renderer.set_perspective(60.0f, 0.1f, 200.0f);
+        renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
         printf("Test mode: camera approach (%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) over %d frames\n",
                camera_start[0], camera_start[1], camera_start[2],
                camera_end[0], camera_end[1], camera_end[2], test_frames);
@@ -237,12 +249,12 @@ int patch_main(int argc, char *argv[])
     {
         test_camera_pos = vec3_create(camera_pos_x, camera_pos_y, camera_pos_z);
         test_camera_active = true;
-        renderer.set_perspective(60.0f, 0.1f, 200.0f);
+        renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
         printf("Test mode: camera at (%.1f, %.1f, %.1f)\n", camera_pos_x, camera_pos_y, camera_pos_z);
     }
     else
     {
-        renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+        renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
         renderer.set_view_angle(45.0f, 26.0f);
     }
 
@@ -277,8 +289,8 @@ int patch_main(int argc, char *argv[])
         last_time = current_time;
 
         float dt = raw_dt;
-        if (dt > 0.1f)
-            dt = 0.1f;
+        if (dt > MAX_FRAME_DT)
+            dt = MAX_FRAME_DT;
 
         PROFILE_BEGIN(PROFILE_SIM_COLLISION);
         window.poll_events();
@@ -303,11 +315,11 @@ int patch_main(int argc, char *argv[])
             if (free_camera_active)
             {
                 free_camera_pos = renderer.get_camera_position();
-                renderer.set_perspective(60.0f, 0.1f, 200.0f);
+                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
             }
             else
             {
-                renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+                renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
                 window.set_mouse_capture(false);
                 window.set_cursor_visible(true);
                 free_camera_mouse_captured = false;
@@ -352,14 +364,14 @@ int patch_main(int argc, char *argv[])
         bool f3_pressed = f3_down && !f3_was_down;
         f3_was_down = f3_down;
 
-        /* F4: Terrain debug mode next (0-15, 16 total modes) */
+        /* F4: Terrain debug mode next */
         bool f4_down = window.keys().f4;
         bool f4_pressed = f4_down && !f4_was_down;
         f4_was_down = f4_down;
         if (f4_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % 14);
+            renderer.DEBUG_set_terrain_debug_mode((mode + 1) % TERRAIN_DEBUG_MODE_COUNT);
         }
 
         /* F5: Terrain debug mode previous */
@@ -369,7 +381,7 @@ int patch_main(int argc, char *argv[])
         if (f5_pressed)
         {
             int mode = renderer.DEBUG_get_terrain_debug_mode();
-            renderer.DEBUG_set_terrain_debug_mode((mode + 13) % 14);
+            renderer.DEBUG_set_terrain_debug_mode((mode + TERRAIN_DEBUG_MODE_COUNT - 1) % TERRAIN_DEBUG_MODE_COUNT);
         }
 
         /* Mouse click detection */
@@ -396,6 +408,7 @@ int patch_main(int argc, char *argv[])
         {
             if (active_scene)
             {
+                renderer.prepare_for_scene_switch();
                 scene_destroy(active_scene);
             }
             const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
@@ -408,7 +421,9 @@ int patch_main(int argc, char *argv[])
             current_scene = ActiveScene::BallPit;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
-            renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
+            if (free_camera_active)
+                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
 
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             if (terrain)
@@ -425,6 +440,7 @@ int patch_main(int argc, char *argv[])
         {
             if (active_scene)
             {
+                renderer.prepare_for_scene_switch();
                 scene_destroy(active_scene);
             }
             const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_ROAM);
@@ -435,6 +451,8 @@ int patch_main(int argc, char *argv[])
             app_state = AppState::Playing;
             app_ui_hide(&ui);
             renderer.set_orthographic(24.0f, 24.0f, 200.0f);
+            if (free_camera_active)
+                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
 
             VoxelVolume *terrain = roam_get_terrain(active_scene);
             if (terrain)
@@ -493,13 +511,16 @@ int patch_main(int argc, char *argv[])
         case APP_ACTION_MAIN_MENU:
             if (active_scene)
             {
+                renderer.prepare_for_scene_switch();
                 scene_destroy(active_scene);
                 active_scene = nullptr;
                 current_scene = ActiveScene::None;
             }
             app_state = AppState::Menu;
             app_ui_show_screen(&ui, APP_SCREEN_MAIN_MENU);
-            renderer.set_orthographic(16.0f, 16.0f, 200.0f);
+            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
+            if (free_camera_active)
+                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
             break;
 
         case APP_ACTION_QUIT:
@@ -558,14 +579,13 @@ int patch_main(int argc, char *argv[])
                 last_mouse_x = window.mouse().x;
                 last_mouse_y = window.mouse().y;
 
-                const float sensitivity = 0.2f;
-                free_camera_yaw -= dx * sensitivity;
-                free_camera_pitch -= dy * sensitivity;
+                free_camera_yaw -= dx * FREE_CAM_SENSITIVITY;
+                free_camera_pitch -= dy * FREE_CAM_SENSITIVITY;
 
-                if (free_camera_pitch > 89.0f)
-                    free_camera_pitch = 89.0f;
-                if (free_camera_pitch < -89.0f)
-                    free_camera_pitch = -89.0f;
+                if (free_camera_pitch > FREE_CAM_PITCH_LIMIT)
+                    free_camera_pitch = FREE_CAM_PITCH_LIMIT;
+                if (free_camera_pitch < -FREE_CAM_PITCH_LIMIT)
+                    free_camera_pitch = -FREE_CAM_PITCH_LIMIT;
             }
 
             float yaw_rad = free_camera_yaw * 3.14159f / 180.0f;
@@ -579,7 +599,7 @@ int patch_main(int argc, char *argv[])
             Vec3 right = vec3_cross(forward, vec3_create(0.0f, 1.0f, 0.0f));
             right = vec3_normalize(right);
 
-            const float move_speed = 20.0f * dt;
+            const float move_speed = FREE_CAM_MOVE_SPEED * dt;
             if (window.keys().w)
                 free_camera_pos = vec3_add(free_camera_pos, vec3_scale(forward, move_speed));
             if (window.keys().s)
@@ -607,7 +627,8 @@ int patch_main(int argc, char *argv[])
             if (test_camera_approach && test_frames > 0)
             {
                 float t = static_cast<float>(frames_elapsed) / static_cast<float>(test_frames);
-                if (t > 1.0f) t = 1.0f;
+                if (t > 1.0f)
+                    t = 1.0f;
                 /* Linear interpolation between start and end camera positions */
                 test_camera_pos.x = test_camera_start.x + (test_camera_end.x - test_camera_start.x) * t;
                 test_camera_pos.y = test_camera_start.y + (test_camera_end.y - test_camera_start.y) * t;
@@ -689,6 +710,16 @@ int patch_main(int argc, char *argv[])
             bool has_objects_or_particles = (objects && objects->object_count > 0) ||
                                             (particles && particles->count > 0);
 
+            if (particles)
+            {
+                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
+                if (interp_alpha < 0.0f)
+                    interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f)
+                    interp_alpha = 1.0f;
+                renderer.set_interp_alpha(interp_alpha);
+            }
+
             if (terrain)
             {
                 PROFILE_BEGIN(PROFILE_RENDER_VOLUME_BEGIN);
@@ -739,12 +770,6 @@ int patch_main(int argc, char *argv[])
 
             if (particles)
             {
-                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f)
-                    interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f)
-                    interp_alpha = 1.0f;
-                renderer.set_interp_alpha(interp_alpha);
                 renderer.render_particles_raymarched(particles);
             }
 
@@ -762,6 +787,16 @@ int patch_main(int argc, char *argv[])
             bool has_objects_or_particles = (objects && objects->object_count > 0) ||
                                             (particles && particles->count > 0);
 
+            if (particles)
+            {
+                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
+                if (interp_alpha < 0.0f)
+                    interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f)
+                    interp_alpha = 1.0f;
+                renderer.set_interp_alpha(interp_alpha);
+            }
+
             if (terrain)
             {
                 PROFILE_BEGIN(PROFILE_RENDER_VOLUME_BEGIN);
@@ -812,12 +847,6 @@ int patch_main(int argc, char *argv[])
 
             if (particles)
             {
-                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f)
-                    interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f)
-                    interp_alpha = 1.0f;
-                renderer.set_interp_alpha(interp_alpha);
                 renderer.render_particles_raymarched(particles);
             }
 

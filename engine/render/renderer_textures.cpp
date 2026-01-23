@@ -27,27 +27,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &shadow_volume_image_) != VK_SUCCESS)
+        shadow_volume_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &shadow_volume_memory_);
+        if (shadow_volume_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create shadow volume image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, shadow_volume_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &shadow_volume_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate shadow volume memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, shadow_volume_image_, shadow_volume_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -116,12 +101,8 @@ namespace patch
         }
         if (shadow_volume_image_)
         {
-            vkDestroyImage(device_, shadow_volume_image_, nullptr);
+            gpu_allocator_.destroy_image(shadow_volume_image_, shadow_volume_memory_);
             shadow_volume_image_ = VK_NULL_HANDLE;
-        }
-        if (shadow_volume_memory_)
-        {
-            vkFreeMemory(device_, shadow_volume_memory_, nullptr);
             shadow_volume_memory_ = VK_NULL_HANDLE;
         }
     }
@@ -183,7 +164,7 @@ namespace patch
                           &shadow_staging_buffers_[i]);
 
             /* Persistently map the buffer */
-            vkMapMemory(device_, shadow_staging_buffers_[i].memory, 0, size, 0, &shadow_staging_mapped_[i]);
+            shadow_staging_mapped_[i] = gpu_allocator_.map(shadow_staging_buffers_[i].allocation);
         }
     }
 
@@ -193,7 +174,7 @@ namespace patch
         {
             if (shadow_staging_mapped_[i] != nullptr)
             {
-                vkUnmapMemory(device_, shadow_staging_buffers_[i].memory);
+                gpu_allocator_.unmap(shadow_staging_buffers_[i].allocation);
                 shadow_staging_mapped_[i] = nullptr;
             }
             if (shadow_staging_buffers_[i].buffer != VK_NULL_HANDLE)
@@ -312,7 +293,7 @@ namespace patch
 
         vkCmdPipelineBarrier(shadow_upload_cmds_[idx],
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
 
         vkEndCommandBuffer(shadow_upload_cmds_[idx]);
@@ -357,27 +338,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &blue_noise_image_) != VK_SUCCESS)
+        blue_noise_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &blue_noise_memory_);
+        if (blue_noise_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create blue noise image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, blue_noise_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &blue_noise_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate blue noise memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, blue_noise_image_, blue_noise_memory_, 0);
 
         VulkanBuffer staging{};
         VkDeviceSize data_size = NOISE_SIZE * NOISE_SIZE;
@@ -386,10 +352,9 @@ namespace patch
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       &staging);
 
-        void *mapped = nullptr;
-        vkMapMemory(device_, staging.memory, 0, data_size, 0, &mapped);
+        void *mapped = gpu_allocator_.map(staging.allocation);
         memcpy(mapped, noise.data(), data_size);
-        vkUnmapMemory(device_, staging.memory);
+        gpu_allocator_.unmap(staging.allocation);
 
         VkCommandBufferAllocateInfo cmd_alloc{};
         cmd_alloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -504,12 +469,8 @@ namespace patch
         }
         if (blue_noise_image_)
         {
-            vkDestroyImage(device_, blue_noise_image_, nullptr);
+            gpu_allocator_.destroy_image(blue_noise_image_, blue_noise_memory_);
             blue_noise_image_ = VK_NULL_HANDLE;
-        }
-        if (blue_noise_memory_)
-        {
-            vkFreeMemory(device_, blue_noise_memory_, nullptr);
             blue_noise_memory_ = VK_NULL_HANDLE;
         }
     }
@@ -530,27 +491,12 @@ namespace patch
         image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
 
-        if (vkCreateImage(device_, &image_info, nullptr, &motion_vector_image_) != VK_SUCCESS)
+        motion_vector_image_ = gpu_allocator_.create_image(image_info, VMA_MEMORY_USAGE_AUTO, &motion_vector_memory_);
+        if (motion_vector_image_ == VK_NULL_HANDLE)
         {
             fprintf(stderr, "Failed to create motion vector image\n");
             return false;
         }
-
-        VkMemoryRequirements mem_reqs;
-        vkGetImageMemoryRequirements(device_, motion_vector_image_, &mem_reqs);
-
-        VkMemoryAllocateInfo alloc_info{};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = mem_reqs.size;
-        alloc_info.memoryTypeIndex = find_memory_type(mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(device_, &alloc_info, nullptr, &motion_vector_memory_) != VK_SUCCESS)
-        {
-            fprintf(stderr, "Failed to allocate motion vector memory\n");
-            return false;
-        }
-
-        vkBindImageMemory(device_, motion_vector_image_, motion_vector_memory_, 0);
 
         VkImageViewCreateInfo view_info{};
         view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -582,12 +528,8 @@ namespace patch
         }
         if (motion_vector_image_)
         {
-            vkDestroyImage(device_, motion_vector_image_, nullptr);
+            gpu_allocator_.destroy_image(motion_vector_image_, motion_vector_memory_);
             motion_vector_image_ = VK_NULL_HANDLE;
-        }
-        if (motion_vector_memory_)
-        {
-            vkFreeMemory(device_, motion_vector_memory_, nullptr);
             motion_vector_memory_ = VK_NULL_HANDLE;
         }
     }

@@ -31,9 +31,9 @@ namespace patch
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];
 
-        /* Transition G-buffer images to GENERAL for compute write */
-        VkImageMemoryBarrier barriers[5]{};
-        for (int i = 0; i < 4; i++)
+        /* Transition all G-buffer images + motion vectors to GENERAL for compute write */
+        VkImageMemoryBarrier barriers[GBUFFER_COUNT + 1]{};
+        for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
             barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -50,24 +50,24 @@ namespace patch
             barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         }
         /* Motion vector image barrier */
-        barriers[4].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barriers[4].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barriers[4].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barriers[4].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[4].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barriers[4].image = motion_vector_image_;
-        barriers[4].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barriers[4].subresourceRange.baseMipLevel = 0;
-        barriers[4].subresourceRange.levelCount = 1;
-        barriers[4].subresourceRange.baseArrayLayer = 0;
-        barriers[4].subresourceRange.layerCount = 1;
-        barriers[4].srcAccessMask = 0;
-        barriers[4].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barriers[GBUFFER_COUNT].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[GBUFFER_COUNT].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[GBUFFER_COUNT].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[GBUFFER_COUNT].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[GBUFFER_COUNT].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[GBUFFER_COUNT].image = motion_vector_image_;
+        barriers[GBUFFER_COUNT].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[GBUFFER_COUNT].subresourceRange.baseMipLevel = 0;
+        barriers[GBUFFER_COUNT].subresourceRange.levelCount = 1;
+        barriers[GBUFFER_COUNT].subresourceRange.baseArrayLayer = 0;
+        barriers[GBUFFER_COUNT].subresourceRange.layerCount = 1;
+        barriers[GBUFFER_COUNT].srcAccessMask = 0;
+        barriers[GBUFFER_COUNT].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 5, barriers);
+                             0, 0, nullptr, 0, nullptr, GBUFFER_COUNT + 1, barriers);
 
         /* Bind pipeline and descriptor sets */
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gbuffer_compute_pipeline_);
@@ -110,9 +110,9 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = 512;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.object_count = object_count;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
@@ -128,7 +128,7 @@ namespace patch
         vkCmdDispatch(cmd, group_x, group_y, 1);
 
         /* Transition G-buffer images to COLOR_ATTACHMENT for voxel objects render pass */
-        for (int i = 0; i < 4; i++)
+        for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
             barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
             barriers[i].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -136,15 +136,15 @@ namespace patch
             barriers[i].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         }
         /* Motion vector image transition */
-        barriers[4].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        barriers[4].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barriers[4].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barriers[4].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barriers[GBUFFER_COUNT].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[GBUFFER_COUNT].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[GBUFFER_COUNT].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barriers[GBUFFER_COUNT].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 5, barriers);
+                             0, 0, nullptr, 0, nullptr, GBUFFER_COUNT + 1, barriers);
 
         gbuffer_compute_dispatched_ = true;
     }
@@ -164,7 +164,13 @@ namespace patch
                                 timestamp_query_pool_, query_offset + 0);
         }
 
-        /* Transition shadow output to GENERAL for compute write */
+        /* Transition shadow output to GENERAL for compute write.
+           Wait for both G-buffer compute AND render pass to finish before reading G-buffer. */
+        VkMemoryBarrier mem_barrier{};
+        mem_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mem_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        mem_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -181,9 +187,9 @@ namespace patch
         barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
         vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, /* G-buffer compute precedes shadow */
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+                             0, 1, &mem_barrier, 0, nullptr, 1, &barrier);
 
         /* Bind pipeline and descriptor sets */
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shadow_compute_pipeline_);
@@ -226,9 +232,9 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = 512;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.object_count = 0;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
@@ -337,8 +343,8 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;
@@ -439,9 +445,9 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = 512;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.object_count = 0;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
@@ -544,8 +550,8 @@ namespace patch
         pc._pad0 = 0;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;
@@ -736,12 +742,8 @@ namespace patch
         }
         if (shadow_output_image_)
         {
-            vkDestroyImage(device_, shadow_output_image_, nullptr);
+            gpu_allocator_.destroy_image(shadow_output_image_, shadow_output_memory_);
             shadow_output_image_ = VK_NULL_HANDLE;
-        }
-        if (shadow_output_memory_)
-        {
-            vkFreeMemory(device_, shadow_output_memory_, nullptr);
             shadow_output_memory_ = VK_NULL_HANDLE;
         }
 
@@ -866,8 +868,8 @@ namespace patch
         VoxelPushConstants pc{};
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
-        pc.near_plane = 0.1f;
-        pc.far_plane = 1000.0f;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
         pc.debug_mode = 0;
 

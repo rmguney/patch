@@ -43,8 +43,8 @@ layout(SET_BINDING(0, 2)) uniform sampler2D motion_vectors;
 /* Set 1: output */
 layout(rgba8, SET_BINDING(1, 0)) writeonly uniform image2D out_resolved;
 
-const float HISTORY_BLEND_MAX = 0.9;   /* Higher = smoother edges but more ghosting */
-const float HISTORY_BLEND_MIN = 0.2;   /* Lower = faster response during motion */
+const float HISTORY_BLEND_MAX = 0.85;   /* Higher = smoother edges but more ghosting */
+const float HISTORY_BLEND_MIN = 0.12;   /* Lower = faster response during motion */
 const float VARIANCE_CLAMP_GAMMA = 1.0; /* Tighter clamping for color to reduce ghosting */
 
 /* RGB to YCoCg for better clamping */

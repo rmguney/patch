@@ -3,6 +3,10 @@
 #include "engine/core/profile.h"
 #include <math.h>
 
+#define DDA_DIR_EPSILON  0.0001f
+#define DDA_LARGE_DIST   1e10f
+#define VOLUME_RAYCAST_MISS -1.0f
+
 float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist,
                      Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material)
 {
@@ -32,21 +36,21 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
     int32_t step_z = (dir.z >= 0) ? 1 : -1;
 
     /* Delta t for moving one voxel in each axis */
-    float delta_x = (fabsf(dir.x) > 0.0001f) ? fabsf(1.0f / dir.x) : 1e10f;
-    float delta_y = (fabsf(dir.y) > 0.0001f) ? fabsf(1.0f / dir.y) : 1e10f;
-    float delta_z = (fabsf(dir.z) > 0.0001f) ? fabsf(1.0f / dir.z) : 1e10f;
+    float delta_x = (fabsf(dir.x) > DDA_DIR_EPSILON) ? fabsf(1.0f / dir.x) : DDA_LARGE_DIST;
+    float delta_y = (fabsf(dir.y) > DDA_DIR_EPSILON) ? fabsf(1.0f / dir.y) : DDA_LARGE_DIST;
+    float delta_z = (fabsf(dir.z) > DDA_DIR_EPSILON) ? fabsf(1.0f / dir.z) : DDA_LARGE_DIST;
 
     /* Initial t to next voxel boundary */
     float t_max_x = ((step_x > 0 ? (float)(vx + 1) : (float)vx) - pos.x) / dir.x;
     float t_max_y = ((step_y > 0 ? (float)(vy + 1) : (float)vy) - pos.y) / dir.y;
     float t_max_z = ((step_z > 0 ? (float)(vz + 1) : (float)vz) - pos.z) / dir.z;
 
-    if (fabsf(dir.x) < 0.0001f)
-        t_max_x = 1e10f;
-    if (fabsf(dir.y) < 0.0001f)
-        t_max_y = 1e10f;
-    if (fabsf(dir.z) < 0.0001f)
-        t_max_z = 1e10f;
+    if (fabsf(dir.x) < DDA_DIR_EPSILON)
+        t_max_x = DDA_LARGE_DIST;
+    if (fabsf(dir.y) < DDA_DIR_EPSILON)
+        t_max_y = DDA_LARGE_DIST;
+    if (fabsf(dir.z) < DDA_DIR_EPSILON)
+        t_max_z = DDA_LARGE_DIST;
 
     float t = 0.0f;
     float max_t = max_dist * inv_voxel;
@@ -162,7 +166,7 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
     }
 
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
-    return -1.0f;
+    return VOLUME_RAYCAST_MISS;
 }
 
 bool volume_ray_hits_any_occupancy(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist)
@@ -189,21 +193,21 @@ bool volume_ray_hits_any_occupancy(const VoxelVolume *vol, Vec3 origin, Vec3 dir
     int32_t step_z = (dir.z >= 0) ? 1 : -1;
 
     /* Delta t for moving one chunk in each axis */
-    float delta_x = (fabsf(dir.x) > 0.0001f) ? fabsf(chunk_world_size / dir.x) : 1e10f;
-    float delta_y = (fabsf(dir.y) > 0.0001f) ? fabsf(chunk_world_size / dir.y) : 1e10f;
-    float delta_z = (fabsf(dir.z) > 0.0001f) ? fabsf(chunk_world_size / dir.z) : 1e10f;
+    float delta_x = (fabsf(dir.x) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.x) : DDA_LARGE_DIST;
+    float delta_y = (fabsf(dir.y) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.y) : DDA_LARGE_DIST;
+    float delta_z = (fabsf(dir.z) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.z) : DDA_LARGE_DIST;
 
     /* Initial t to next chunk boundary */
     float t_max_x = ((step_x > 0 ? (float)(cx + 1) : (float)cx) - pos_x) * chunk_world_size / dir.x;
     float t_max_y = ((step_y > 0 ? (float)(cy + 1) : (float)cy) - pos_y) * chunk_world_size / dir.y;
     float t_max_z = ((step_z > 0 ? (float)(cz + 1) : (float)cz) - pos_z) * chunk_world_size / dir.z;
 
-    if (fabsf(dir.x) < 0.0001f)
-        t_max_x = 1e10f;
-    if (fabsf(dir.y) < 0.0001f)
-        t_max_y = 1e10f;
-    if (fabsf(dir.z) < 0.0001f)
-        t_max_z = 1e10f;
+    if (fabsf(dir.x) < DDA_DIR_EPSILON)
+        t_max_x = DDA_LARGE_DIST;
+    if (fabsf(dir.y) < DDA_DIR_EPSILON)
+        t_max_y = DDA_LARGE_DIST;
+    if (fabsf(dir.z) < DDA_DIR_EPSILON)
+        t_max_z = DDA_LARGE_DIST;
 
     float t = 0.0f;
 

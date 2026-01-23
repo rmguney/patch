@@ -71,13 +71,8 @@ extern "C"
 #define TOOL_TIER_DIAMOND 4
 
     /* Static assertion for descriptor size (includes liquid properties) */
-#ifdef __cplusplus
-    static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
-                  "MaterialDescriptor size unexpected");
-#else
-_Static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
-               "MaterialDescriptor size unexpected");
-#endif
+static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
+              "MaterialDescriptor size unexpected");
 
     /*
      * Global material table - explicit registration via pointer array.
