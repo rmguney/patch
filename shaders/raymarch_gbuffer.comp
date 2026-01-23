@@ -293,7 +293,31 @@ void main() {
         int candidate_count;
         grid_collect_candidates(ray_origin, ray_dir, terrain_t, candidates, candidate_count);
 
-        for (int c = 0; c < candidate_count && objects_marched < 16; c++) {
+        /* Sort candidates by distance (nearest first) for early depth rejection */
+        float candidate_dists[GRID_MAX_CANDIDATES];
+        for (int c = 0; c < candidate_count; c++) {
+            int idx = candidates[c];
+            if (idx >= 0 && idx < pc.object_count) {
+                vec3 op = vobj_get_world_position(idx);
+                candidate_dists[c] = dot(op - ray_origin, ray_dir);
+            } else {
+                candidate_dists[c] = 1e10;
+            }
+        }
+        for (int c = 1; c < candidate_count; c++) {
+            int key_idx = candidates[c];
+            float key_dist = candidate_dists[c];
+            int j = c - 1;
+            while (j >= 0 && candidate_dists[j] > key_dist) {
+                candidates[j + 1] = candidates[j];
+                candidate_dists[j + 1] = candidate_dists[j];
+                j--;
+            }
+            candidates[j + 1] = key_idx;
+            candidate_dists[j + 1] = key_dist;
+        }
+
+        for (int c = 0; c < candidate_count; c++) {
             int i = candidates[c];
 
             /* Skip invalid indices */
@@ -321,23 +345,13 @@ void main() {
                 continue;
             }
 
-            /* Progressive step reduction: after testing many objects, use fewer steps */
-            int step_budget = VOBJ_BASE_STEPS;
-            if (objects_marched >= 8) {
-                step_budget = VOBJ_BASE_STEPS / 2;
-            } else if (objects_marched >= 4) {
-                step_budget = (VOBJ_BASE_STEPS * 3) / 4;
-            }
-
             /* Calculate screen coverage for LOD */
             float half_extent = vobj_get_half_extent(i);
             float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
 
-            /* Combined LOD: distance + screen coverage, capped by progressive budget */
-            int max_steps = min(vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, step_budget), step_budget);
+            int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, VOBJ_BASE_STEPS);
 
-            HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps);
-            objects_marched++;
+            HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps, best_hit.t);
 
             if (obj_hit.hit && obj_hit.t < best_hit.t) {
                 best_hit = obj_hit;

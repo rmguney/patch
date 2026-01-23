@@ -199,7 +199,7 @@ void particle_system_update(ParticleSystem* sys, float dt) {
     }
     sys->update_cursor = cursor;
 
-    /* Spatial hash collision: O(n) average */
+    /* Spatial hash collision: O(n) average, bounded by pair budget */
     if (sys->enable_particle_collision) {
         spatial_hash_clear(&sys->collision_grid);
 
@@ -210,8 +210,9 @@ void particle_system_update(ParticleSystem* sys, float dt) {
                                sys->particles[i].position, sys->particles[i].radius);
         }
 
-        /* Check collisions using spatial hash */
-        for (int32_t i = 0; i < sys->count; i++) {
+        /* Check collisions using spatial hash (capped to prevent frame spikes) */
+        int32_t pair_budget = PARTICLE_MAX_COLLISION_PAIRS;
+        for (int32_t i = 0; i < sys->count && pair_budget > 0; i++) {
             if (!sys->particles[i].active || sys->particles[i].settled) continue;
 
             int32_t nearby[SPATIAL_HASH_MAX_PER_CELL];
@@ -219,12 +220,13 @@ void particle_system_update(ParticleSystem* sys, float dt) {
                 sys->particles[i].position, sys->particles[i].radius * 2.0f,
                 nearby, SPATIAL_HASH_MAX_PER_CELL);
 
-            for (int32_t n = 0; n < nearby_count; n++) {
+            for (int32_t n = 0; n < nearby_count && pair_budget > 0; n++) {
                 int32_t j = nearby[n];
-                if (j <= i) continue;  /* Only process each pair once */
+                if (j <= i) continue;
                 if (!sys->particles[j].active || sys->particles[j].settled) continue;
 
                 resolve_particle_collision(&sys->particles[i], &sys->particles[j], sys->restitution);
+                pair_budget--;
             }
         }
     }

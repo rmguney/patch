@@ -19,12 +19,7 @@ layout(location = 3) out float out_linear_depth;
 layout(location = 4) out vec4 out_world_pos;
 layout(location = 5) out vec2 out_motion_vector;
 
-/*
- * NOTE: We cannot use depth_greater here because when the camera is close to
- * or inside the expanded bounding cube, the actual voxel hit depth may be LESS
- * than the interpolated cube back-face depth. This would violate the constraint
- * and cause undefined behavior / fragment rejection.
- */
+layout(depth_greater) out float gl_FragDepth;
 
 struct VoxelObjectGPU {
     mat4 world_to_local;
@@ -96,7 +91,7 @@ void main() {
         VOBJ_BASE_STEPS
     );
 
-    HitInfo hit = vobj_march_object(in_object_index, ray_origin, world_ray_dir, max_steps);
+    HitInfo hit = vobj_march_object(in_object_index, ray_origin, world_ray_dir, max_steps, pc.far_plane);
 
     if (!hit.hit) {
         discard;
@@ -130,5 +125,6 @@ void main() {
     vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
     out_motion_vector = prev_uv - curr_uv;
 
-    gl_FragDepth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
+    float ndc_depth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
+    gl_FragDepth = max(ndc_depth, gl_FragCoord.z);
 }
