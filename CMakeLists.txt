@@ -235,7 +235,7 @@ target_link_libraries(engine_render PUBLIC
     ${Vulkan_LIBRARIES}
 )
 target_include_directories(engine_render PUBLIC ${Vulkan_INCLUDE_DIRS})
-target_include_directories(engine_render PUBLIC ${CMAKE_SOURCE_DIR}/third_party/vma)
+target_include_directories(engine_render PUBLIC ${CMAKE_SOURCE_DIR}/third_party/vma/include)
 set_property(TARGET engine_render PROPERTY CXX_STANDARD 23)
 set_property(TARGET engine_render PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET engine_render PROPERTY CXX_EXTENSIONS OFF)
