@@ -22,7 +22,7 @@ layout(push_constant) uniform Constants {
     int total_chunks;
     ivec3 chunks_dim;
     int frame_count;
-    int _pad0;
+    int object_shadow_quality;
     int debug_mode;
     int is_orthographic;
     int max_steps;
@@ -55,7 +55,34 @@ layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
 /* Shadow volume texture (set 0, binding 2) - R8_UINT with 3 mip levels */
 layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
 
+/* Material palette (set 0, binding 3) - needed for data_voxobj.glsl material functions */
+layout(std140, SET_BINDING(0, 3)) uniform MaterialPalette {
+    vec4 materials[512];
+};
+
+#include "include/materials.glsl"
 #include "include/data_terrain.glsl"
+
+/* Voxel object data bindings (set 3) - direct object tracing for accurate rotated shadows */
+struct VoxelObjectGPU {
+    mat4 world_to_local;
+    mat4 local_to_world;
+    vec4 bounds_min;    /* xyz: min, w: voxel_size */
+    vec4 bounds_max;    /* xyz: max, w: grid_size */
+    vec4 position;      /* xyz: world pos, w: active flag */
+    uint atlas_slice;
+    uint material_base;
+    uint flags;
+    uint occupancy_mask;
+};
+
+layout(SET_BINDING(3, 0)) uniform usampler3D vobj_atlas;
+
+layout(std430, SET_BINDING(3, 1)) readonly buffer ObjectMetadata {
+    VoxelObjectGPU objects[];
+};
+
+#include "include/data_voxobj.glsl"
 
 /* G-buffer inputs (set 1) */
 layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
@@ -84,9 +111,9 @@ vec3 world_to_grid(vec3 world_pos) {
 }
 
 /* Shadow volume dimensions computed from grid_size (avoids per-sample textureSize calls) */
-ivec3 shadow_dim0;  /* mip0: half-res */
-ivec3 shadow_dim1;  /* mip1: quarter-res */
-ivec3 shadow_dim2;  /* mip2: eighth-res */
+ivec3 shadow_dim0;  /* terrain mip0: half-res */
+ivec3 shadow_dim1;  /* terrain mip1: quarter-res */
+ivec3 shadow_dim2;  /* terrain mip2: eighth-res */
 
 /* Sample shadow volume occupancy at voxel position
    Shadow volume is half-resolution: 2x2x2 voxels packed per texel
@@ -136,8 +163,25 @@ bool sample_shadow_mip2(ivec3 voxel_pos) {
     return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
 }
 
-/* Trace shadow ray, returns hit distance (max_dist if no hit) */
-float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps) {
+/* Direct object shadow tracing - traces actual object voxels for accurate rotated shadows.
+   Uses the same vobj_march_object as G-buffer pass for identical transform math. */
+float trace_object_shadow(vec3 origin, vec3 dir, float max_t) {
+    const int SHADOW_OBJ_STEPS = 24;
+
+    for (int i = 0; i < pc.object_count; i++) {
+        if (!vobj_is_active(i)) continue;
+        if (!vobj_ray_could_hit(origin, dir, i)) continue;
+
+        HitInfo hit = vobj_march_object(i, origin, dir, SHADOW_OBJ_STEPS, max_t);
+        if (hit.hit) {
+            max_t = min(max_t, hit.t);
+        }
+    }
+    return max_t;
+}
+
+/* Trace shadow ray through terrain volume, returns hit distance (max_dist if no hit) */
+float trace_terrain_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_steps) {
     vec2 box_hit = hdda_intersect_aabb(origin, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
         return max_dist;
@@ -171,7 +215,7 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
             return max_dist;
         }
 
-        /* Level 2: mip2 occupancy (8x8x8 voxels) */
+        /* Level 2: mip2 occupancy (8x8x8 voxels) - terrain only */
         ivec3 current_mip2 = map_pos >> 3;
         if (current_mip2 != last_mip2_pos) {
             last_mip2_pos = current_mip2;
@@ -197,7 +241,7 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
             continue;
         }
 
-        /* Level 1: mip1 occupancy (4x4x4 voxels) */
+        /* Level 1: mip1 occupancy (4x4x4 voxels) - terrain only */
         ivec3 current_mip1 = map_pos >> 2;
         if (current_mip1 != last_mip1_pos) {
             last_mip1_pos = current_mip1;
@@ -222,7 +266,7 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
             continue;
         }
 
-        /* Level 0: Per-voxel check against shadow volume */
+        /* Level 0: Per-voxel check - terrain shadow volume only */
         if (sample_shadow_volume(map_pos)) {
             /* Compute actual world distance to hit voxel center */
             vec3 hit_grid = vec3(map_pos) + 0.5;
@@ -238,6 +282,21 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
     return max_dist;
 }
 
+/* Trace shadow ray, returns hit distance (max_dist if no hit)
+   Traces both terrain shadow volume and object voxels directly */
+float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps) {
+    /* Trace terrain shadow volume (fast hierarchical skip) */
+    float terrain_t = trace_terrain_shadow_hdda(origin, rd, max_dist, max_steps);
+
+    /* Trace objects directly via vobj_march_object (accurate rotated geometry) */
+    if (pc.object_count > 0) {
+        float object_t = trace_object_shadow(origin, rd, terrain_t);
+        return min(terrain_t, object_t);
+    }
+
+    return terrain_t;
+}
+
 /* Original interface for compatibility */
 float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_steps) {
     return trace_shadow_hdda_dist(origin, rd, max_dist, max_steps) < max_dist ? 0.0 : 1.0;
@@ -250,9 +309,9 @@ void main() {
     pc_total_chunks = pc.total_chunks;
 
     /* Cache shadow volume dimensions (computed from grid_size, avoids textureSize calls) */
-    shadow_dim0 = (pc.grid_size + 1) >> 1;  /* mip0: half-res */
-    shadow_dim1 = (pc.grid_size + 3) >> 2;  /* mip1: quarter-res */
-    shadow_dim2 = (pc.grid_size + 7) >> 3;  /* mip2: eighth-res */
+    shadow_dim0 = (pc.grid_size + 1) >> 1;  /* terrain mip0: half-res */
+    shadow_dim1 = (pc.grid_size + 3) >> 2;  /* terrain mip1: quarter-res */
+    shadow_dim2 = (pc.grid_size + 7) >> 3;  /* terrain mip2: eighth-res */
 
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screen_size = imageSize(out_shadow);

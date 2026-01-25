@@ -21,6 +21,11 @@ extern "C"
 #define PHYS_SLEEP_LINEAR_THRESHOLD 0.05f
 #define PHYS_SLEEP_ANGULAR_THRESHOLD 0.1f
 #define PHYS_SLEEP_FRAMES 30
+#define PHYS_GROUND_LINEAR_DAMPING 0.85f
+#define PHYS_GROUND_ANGULAR_DAMPING 0.80f
+#define PHYS_SETTLE_LINEAR_THRESHOLD 0.3f
+#define PHYS_SETTLE_ANGULAR_THRESHOLD 0.4f
+#define PHYS_GROUND_PERSIST_FRAMES 5
 #define PHYS_DEFAULT_RESTITUTION 0.3f
 #define PHYS_DEFAULT_FRICTION 0.5f
 #define PHYS_VOXEL_DENSITY 1.0f
@@ -47,6 +52,7 @@ extern "C"
         float restitution;
         float friction;
         uint8_t sleep_frames;
+        uint8_t ground_frames;
         uint8_t flags;
         int16_t next_free;
     } RigidBody;

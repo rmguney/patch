@@ -480,6 +480,7 @@ namespace patch
             upload_shadow_volume(mip0.data(), w0, h0, d0,
                                  mip1.data(), w1, h1, d1,
                                  mip2.data(), w2, h2, d2);
+
             /* Wait for initial upload to complete before first frame renders */
             cleanup_all_shadow_uploads();
 
@@ -544,18 +545,9 @@ namespace patch
         /* Check if terrain needs update (dirty chunks or full rebuild flag) */
         bool terrain_dirty = volume_shadow_needs_full_rebuild(vol) || dirty_count > 0;
 
-        /* Detect which objects have actually moved (budgeted check) */
-        int32_t moved_objects[SHADOW_STAMP_BUDGET];
-        int32_t moved_count = 0;
+        /* Detect if any objects moved (we re-stamp ALL objects if any moved) */
+        bool any_object_moved = false;
         bool new_objects_added = false;
-
-        /* Track mip regions for incremental updates (old+new AABB per moved object) */
-        struct MipRegion
-        {
-            int32_t min[3], max[3];
-        };
-        MipRegion mip_regions[SHADOW_STAMP_BUDGET];
-        int32_t mip_region_count = 0;
 
         if (objects_present)
         {
@@ -569,20 +561,19 @@ namespace patch
                 new_objects_added = true;
             }
 
-            /* Check each object for movement */
-            for (int32_t i = 0; i < obj_count && moved_count < SHADOW_STAMP_BUDGET; i++)
+            /* Check each object for movement - stop at first moved object since we re-stamp all anyway */
+            for (int32_t i = 0; i < obj_count && !any_object_moved; i++)
             {
                 const VoxelObject *obj = &objects->objects[i];
                 if (!obj->active)
                     continue;
 
                 ShadowObjectState *state = &shadow_object_states_[i];
-                bool needs_stamp = false;
 
                 if (!state->valid)
                 {
-                    /* New object, needs initial stamp */
-                    needs_stamp = true;
+                    /* New object, needs stamp */
+                    any_object_moved = true;
                 }
                 else
                 {
@@ -602,33 +593,9 @@ namespace patch
                     if (dist_sq > SHADOW_POSITION_THRESHOLD * SHADOW_POSITION_THRESHOLD ||
                         orient_diff > 0.0001f)
                     {
-                        needs_stamp = true;
+                        any_object_moved = true;
                     }
                 }
-
-                if (needs_stamp)
-                {
-                    moved_objects[moved_count++] = i;
-                }
-            }
-
-            /* Handle round-robin for remaining objects when over budget in previous frame */
-            if (moved_count == 0 && shadow_stamp_cursor_ > 0 && shadow_stamp_cursor_ < obj_count)
-            {
-                /* Continue from where we left off */
-                for (int32_t i = shadow_stamp_cursor_; i < obj_count && moved_count < SHADOW_STAMP_BUDGET; i++)
-                {
-                    const VoxelObject *obj = &objects->objects[i];
-                    if (!obj->active)
-                        continue;
-
-                    ShadowObjectState *state = &shadow_object_states_[i];
-                    if (!state->valid)
-                    {
-                        moved_objects[moved_count++] = i;
-                    }
-                }
-                shadow_stamp_cursor_ = (moved_count > 0) ? shadow_stamp_cursor_ + moved_count : 0;
             }
         }
 
@@ -752,9 +719,8 @@ namespace patch
         }
 
         bool needs_terrain_repack = needs_full_rebuild || terrain_dirty;
-        bool needs_object_stamp = needs_full_rebuild || moved_count > 0 || new_objects_added;
+        bool needs_object_stamp = needs_full_rebuild || any_object_moved || new_objects_added;
         bool needs_particle_update = particles_active || shadow_particle_aabb_valid_;
-        bool needs_mip_regen = needs_terrain_repack || needs_object_stamp || needs_particle_update;
 
         if (!needs_terrain_repack && !needs_object_stamp && !needs_particle_update)
         {
@@ -777,13 +743,6 @@ namespace patch
             shadow_mip_dims_[2][0] = w2;
             shadow_mip_dims_[2][1] = h2;
             shadow_mip_dims_[2][2] = d2;
-
-            /* Reset object tracking on resize */
-            for (uint32_t i = 0; i < MAX_SHADOW_OBJECTS; i++)
-            {
-                shadow_object_states_[i].valid = false;
-            }
-            shadow_stamp_cursor_ = 0;
         }
 
         /* Terrain update: either full repack or incremental chunk updates */
@@ -803,246 +762,88 @@ namespace patch
         }
         PROFILE_END(PROFILE_SHADOW_TERRAIN_PACK);
 
-        /* Object stamping: either full or incremental */
-        PROFILE_BEGIN(PROFILE_SHADOW_OBJECT_STAMP);
-        if (needs_full_rebuild && objects && objects->object_count > 0)
-        {
-            unified_volume_stamp_objects_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, objects);
+        /* NOTE: Object shadow stamping removed - objects now traced directly in shadow shader */
+        (void)any_object_moved;
+        (void)new_objects_added;
 
-            /* Update all object states after full stamp */
-            for (int32_t i = 0; i < objects->object_count && i < static_cast<int32_t>(MAX_SHADOW_OBJECTS); i++)
-            {
-                const VoxelObject *obj = &objects->objects[i];
-                if (obj->active)
-                {
-                    shadow_object_states_[i].position = obj->position;
-                    shadow_object_states_[i].orientation = obj->orientation;
-                    shadow_object_states_[i].valid = true;
-                    unified_volume_compute_object_shadow_aabb(obj, vol,
-                                                              shadow_object_states_[i].aabb_min,
-                                                              shadow_object_states_[i].aabb_max);
-                }
-            }
-            shadow_stamp_cursor_ = 0;
-        }
-        else if (moved_count > 0 && objects)
-        {
-            /* Clear old AABBs before stamping at new positions, save for mip update */
-            for (int32_t i = 0; i < moved_count; i++)
-            {
-                int32_t obj_idx = moved_objects[i];
-                ShadowObjectState *state = &shadow_object_states_[obj_idx];
-                if (state->valid)
-                {
-                    /* Save old AABB as starting region */
-                    mip_regions[i].min[0] = state->aabb_min[0];
-                    mip_regions[i].min[1] = state->aabb_min[1];
-                    mip_regions[i].min[2] = state->aabb_min[2];
-                    mip_regions[i].max[0] = state->aabb_max[0];
-                    mip_regions[i].max[1] = state->aabb_max[1];
-                    mip_regions[i].max[2] = state->aabb_max[2];
+        /* Particle shadows: now traced via G-buffer surface data, no separate stamping needed */
+        (void)particles_active;
 
-                    unified_volume_clear_shadow_aabb(shadow_mip0_.data(), w0, h0, d0,
-                                                     state->aabb_min[0], state->aabb_min[1], state->aabb_min[2],
-                                                     state->aabb_max[0], state->aabb_max[1], state->aabb_max[2]);
-                }
-                else
-                {
-                    /* New object - no old region, will be set from new AABB below */
-                    mip_regions[i].min[0] = INT32_MAX;
-                    mip_regions[i].min[1] = INT32_MAX;
-                    mip_regions[i].min[2] = INT32_MAX;
-                    mip_regions[i].max[0] = INT32_MIN;
-                    mip_regions[i].max[1] = INT32_MIN;
-                    mip_regions[i].max[2] = INT32_MIN;
-                }
-            }
-
-            /* Incremental stamp: only stamp moved objects */
-            unified_volume_stamp_objects_incremental(shadow_mip0_.data(), w0, h0, d0,
-                                                     vol, objects, moved_objects, moved_count);
-
-            /* Update state for moved objects and expand mip regions to include new AABBs */
-            for (int32_t i = 0; i < moved_count; i++)
-            {
-                int32_t obj_idx = moved_objects[i];
-                const VoxelObject *obj = &objects->objects[obj_idx];
-                if (obj->active)
-                {
-                    ShadowObjectState *state = &shadow_object_states_[obj_idx];
-                    state->position = obj->position;
-                    state->orientation = obj->orientation;
-                    state->valid = true;
-                    unified_volume_compute_object_shadow_aabb(obj, vol, state->aabb_min, state->aabb_max);
-
-                    /* Expand mip region to include new AABB */
-                    if (state->aabb_min[0] < mip_regions[i].min[0])
-                        mip_regions[i].min[0] = state->aabb_min[0];
-                    if (state->aabb_min[1] < mip_regions[i].min[1])
-                        mip_regions[i].min[1] = state->aabb_min[1];
-                    if (state->aabb_min[2] < mip_regions[i].min[2])
-                        mip_regions[i].min[2] = state->aabb_min[2];
-                    if (state->aabb_max[0] > mip_regions[i].max[0])
-                        mip_regions[i].max[0] = state->aabb_max[0];
-                    if (state->aabb_max[1] > mip_regions[i].max[1])
-                        mip_regions[i].max[1] = state->aabb_max[1];
-                    if (state->aabb_max[2] > mip_regions[i].max[2])
-                        mip_regions[i].max[2] = state->aabb_max[2];
-                }
-            }
-            mip_region_count = moved_count;
-        }
-
-        /* Particle stamping: clear previous footprint, then re-stamp */
-        if (particles_active)
-        {
-            if (shadow_particle_count_ > 0 && particle_shadow_mask_.size() == shadow_mip0_.size())
-            {
-                for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
-                {
-                    shadow_mip0_[i] &= ~particle_shadow_mask_[i];
-                }
-                if (shadow_particle_aabb_valid_)
-                {
-                    volume_restore_shadow_region(vol, shadow_mip0_.data(), w0, h0, d0,
-                                                shadow_particle_aabb_min_[0], shadow_particle_aabb_min_[1],
-                                                shadow_particle_aabb_min_[2],
-                                                shadow_particle_aabb_max_[0], shadow_particle_aabb_max_[1],
-                                                shadow_particle_aabb_max_[2]);
-                }
-            }
-
-            /* Resize mask if needed */
-            if (particle_shadow_mask_.size() != shadow_mip0_.size())
-            {
-                particle_shadow_mask_.resize(shadow_mip0_.size());
-            }
-            std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
-
-            /* Stamp particles to both shadow volume and mask */
-            unified_volume_stamp_particles_to_shadow(shadow_mip0_.data(), w0, h0, d0, vol, particles, interp_alpha_);
-            unified_volume_stamp_particles_to_shadow(particle_shadow_mask_.data(), w0, h0, d0, vol, particles, interp_alpha_);
-
-            shadow_particle_aabb_min_[0] = particle_min[0];
-            shadow_particle_aabb_min_[1] = particle_min[1];
-            shadow_particle_aabb_min_[2] = particle_min[2];
-            shadow_particle_aabb_max_[0] = particle_max[0];
-            shadow_particle_aabb_max_[1] = particle_max[1];
-            shadow_particle_aabb_max_[2] = particle_max[2];
-            shadow_particle_aabb_valid_ = true;
-        }
-        else if (shadow_particle_aabb_valid_ && particle_shadow_mask_.size() > 0)
-        {
-            /* Clear particle shadows when no particles remain */
-            for (size_t i = 0; i < particle_shadow_mask_.size(); i++)
-            {
-                shadow_mip0_[i] &= ~particle_shadow_mask_[i];
-            }
-            volume_restore_shadow_region(vol, shadow_mip0_.data(), w0, h0, d0,
-                                        shadow_particle_aabb_min_[0], shadow_particle_aabb_min_[1],
-                                        shadow_particle_aabb_min_[2],
-                                        shadow_particle_aabb_max_[0], shadow_particle_aabb_max_[1],
-                                        shadow_particle_aabb_max_[2]);
-            std::memset(particle_shadow_mask_.data(), 0, particle_shadow_mask_.size());
-            shadow_particle_aabb_valid_ = false;
-        }
-        PROFILE_END(PROFILE_SHADOW_OBJECT_STAMP);
-
-        /* Mip generation: prefer incremental updates when possible to avoid O(n³) full regen */
+        /* Mip generation: separate for terrain and object volumes */
         PROFILE_BEGIN(PROFILE_SHADOW_MIP_REGEN);
-        if (needs_mip_regen)
+
+        /* Terrain mip generation */
+        bool needs_terrain_mip_update = needs_terrain_repack;
+        if (needs_terrain_mip_update)
         {
             if (needs_full_rebuild)
             {
-                /* Volume resized - must do full mip regeneration */
+                /* Volume resized - must do full mip regeneration for terrain */
                 volume_generate_shadow_mips(shadow_mip0_.data(), w0, h0, d0,
                                             shadow_mip1_.data(), shadow_mip2_.data());
             }
-            else
+            else if (dirty_count > 0)
             {
-                /* Incremental mip updates: terrain and object regions are independent */
-                if (dirty_count > 0)
+                /* Region-based mip update for dirty terrain chunks */
+                int32_t min_cx = INT32_MAX, min_cy = INT32_MAX, min_cz = INT32_MAX;
+                int32_t max_cx = INT32_MIN, max_cy = INT32_MIN, max_cz = INT32_MIN;
+
+                for (int32_t i = 0; i < dirty_count; i++)
                 {
-                    /* Region-based mip update for dirty terrain chunks */
-                    int32_t min_cx = INT32_MAX, min_cy = INT32_MAX, min_cz = INT32_MAX;
-                    int32_t max_cx = INT32_MIN, max_cy = INT32_MIN, max_cz = INT32_MIN;
+                    int32_t chunk_idx = dirty_chunks[i];
+                    int32_t cx = chunk_idx % vol->chunks_x;
+                    int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
+                    int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
 
-                    for (int32_t i = 0; i < dirty_count; i++)
-                    {
-                        int32_t chunk_idx = dirty_chunks[i];
-                        int32_t cx = chunk_idx % vol->chunks_x;
-                        int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
-                        int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
-
-                        if (cx < min_cx)
-                            min_cx = cx;
-                        if (cy < min_cy)
-                            min_cy = cy;
-                        if (cz < min_cz)
-                            min_cz = cz;
-                        if (cx > max_cx)
-                            max_cx = cx;
-                        if (cy > max_cy)
-                            max_cy = cy;
-                        if (cz > max_cz)
-                            max_cz = cz;
-                    }
-
-                    /* Convert chunk bounds to mip0 coordinates (shadow mip0 is half-res) */
-                    int32_t min_vx = min_cx * CHUNK_SIZE;
-                    int32_t min_vy = min_cy * CHUNK_SIZE;
-                    int32_t min_vz = min_cz * CHUNK_SIZE;
-                    int32_t max_vx = (max_cx + 1) * CHUNK_SIZE - 1;
-                    int32_t max_vy = (max_cy + 1) * CHUNK_SIZE - 1;
-                    int32_t max_vz = (max_cz + 1) * CHUNK_SIZE - 1;
-
-                    volume_generate_shadow_mips_for_region(
-                        min_vx >> 1, min_vy >> 1, min_vz >> 1,
-                        max_vx >> 1, max_vy >> 1, max_vz >> 1,
-                        shadow_mip0_.data(), w0, h0, d0,
-                        shadow_mip1_.data(), w1, h1, d1,
-                        shadow_mip2_.data(), w2, h2, d2);
+                    if (cx < min_cx)
+                        min_cx = cx;
+                    if (cy < min_cy)
+                        min_cy = cy;
+                    if (cz < min_cz)
+                        min_cz = cz;
+                    if (cx > max_cx)
+                        max_cx = cx;
+                    if (cy > max_cy)
+                        max_cy = cy;
+                    if (cz > max_cz)
+                        max_cz = cz;
                 }
 
-                if (mip_region_count > 0)
-                {
-                    /* Regenerate mips for moved/new object regions
-                     * mip_regions contains union of old+new AABB for each moved object */
-                    for (int32_t i = 0; i < mip_region_count; i++)
-                    {
-                        volume_generate_shadow_mips_for_region(mip_regions[i].min[0] >> 1, mip_regions[i].min[1] >> 1, mip_regions[i].min[2] >> 1,
-                                                               mip_regions[i].max[0] >> 1, mip_regions[i].max[1] >> 1, mip_regions[i].max[2] >> 1,
-                                                               shadow_mip0_.data(), w0, h0, d0,
-                                                               shadow_mip1_.data(), w1, h1, d1,
-                                                               shadow_mip2_.data(), w2, h2, d2);
-                    }
-                }
+                /* Convert chunk bounds to mip0 coordinates (shadow mip0 is half-res) */
+                int32_t min_vx = min_cx * CHUNK_SIZE;
+                int32_t min_vy = min_cy * CHUNK_SIZE;
+                int32_t min_vz = min_cz * CHUNK_SIZE;
+                int32_t max_vx = (max_cx + 1) * CHUNK_SIZE - 1;
+                int32_t max_vy = (max_cy + 1) * CHUNK_SIZE - 1;
+                int32_t max_vz = (max_cz + 1) * CHUNK_SIZE - 1;
 
-                if (particle_region_valid)
-                {
-                    volume_generate_shadow_mips_for_region(particle_region_min[0] >> 1, particle_region_min[1] >> 1, particle_region_min[2] >> 1,
-                                                           particle_region_max[0] >> 1, particle_region_max[1] >> 1, particle_region_max[2] >> 1,
-                                                           shadow_mip0_.data(), w0, h0, d0,
-                                                           shadow_mip1_.data(), w1, h1, d1,
-                                                           shadow_mip2_.data(), w2, h2, d2);
-                }
+                volume_generate_shadow_mips_for_region(
+                    min_vx >> 1, min_vy >> 1, min_vz >> 1,
+                    max_vx >> 1, max_vy >> 1, max_vz >> 1,
+                    shadow_mip0_.data(), w0, h0, d0,
+                    shadow_mip1_.data(), w1, h1, d1,
+                    shadow_mip2_.data(), w2, h2, d2);
             }
         }
+
         PROFILE_END(PROFILE_SHADOW_MIP_REGEN);
 
         shadow_volume_initialized_ = true;
-        shadow_object_count_ = objects_present ? objects->object_count : 0;
         shadow_particle_count_ = active_particle_count;
 
         volume_clear_shadow_dirty(vol);
 
         PROFILE_BEGIN(PROFILE_SHADOW_UPLOAD);
-        upload_shadow_volume(shadow_mip0_.data(), w0, h0, d0,
-                             shadow_mip1_.data(), w1, h1, d1,
-                             shadow_mip2_.data(), w2, h2, d2);
+        /* Upload terrain shadow volume */
+        if (needs_terrain_mip_update || needs_full_rebuild)
+        {
+            upload_shadow_volume(shadow_mip0_.data(), w0, h0, d0,
+                                 shadow_mip1_.data(), w1, h1, d1,
+                                 shadow_mip2_.data(), w2, h2, d2);
+        }
         PROFILE_END(PROFILE_SHADOW_UPLOAD);
 
-        /* Update shadow compute descriptor with new shadow volume texture */
+        /* Update shadow compute descriptors with new shadow volume textures */
         update_shadow_volume_descriptor();
         update_ao_volume_descriptor();
     }

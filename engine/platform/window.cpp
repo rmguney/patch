@@ -14,20 +14,9 @@ namespace patch
         return g_window->handle_message(hwnd, msg, wparam, lparam);
     }
 
-    Window::Window(int32_t, int32_t, const char *title)
+    Window::Window(int32_t, int32_t, const char *title, bool headless)
         : hwnd_(nullptr), hinstance_(GetModuleHandleA(nullptr)), width_(0), height_(0), resized_(false), should_close_(false), focused_(false), mouse_{0.0f, 0.0f, 0.0f, false, false}, keys_{false, false, false, false, false, false, false, false, false, false, false, false, false}
     {
-
-        POINT origin{0, 0};
-        HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO info{};
-        info.cbSize = sizeof(MONITORINFO);
-        GetMonitorInfoA(monitor, &info);
-        int screen_width = info.rcMonitor.right - info.rcMonitor.left;
-        int screen_height = info.rcMonitor.bottom - info.rcMonitor.top;
-        width_ = screen_width;
-        height_ = screen_height;
-
         WNDCLASSEXA wc{};
         wc.cbSize = sizeof(WNDCLASSEXA);
         wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -39,19 +28,56 @@ namespace patch
 
         RegisterClassExA(&wc);
 
-        hwnd_ = CreateWindowExA(
-            WS_EX_APPWINDOW,
-            "PatchWindowClass",
-            title,
-            WS_POPUP,
-            info.rcMonitor.left,
-            info.rcMonitor.top,
-            screen_width,
-            screen_height,
-            nullptr,
-            nullptr,
-            hinstance_,
-            nullptr);
+        if (headless)
+        {
+            /* Headless mode: use full resolution for accurate benchmarks, but off-screen */
+            POINT origin{0, 0};
+            HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+            MONITORINFO info{};
+            info.cbSize = sizeof(MONITORINFO);
+            GetMonitorInfoA(monitor, &info);
+            width_ = info.rcMonitor.right - info.rcMonitor.left;
+            height_ = info.rcMonitor.bottom - info.rcMonitor.top;
+            hwnd_ = CreateWindowExA(
+                0,
+                "PatchWindowClass",
+                title,
+                WS_OVERLAPPED,
+                -2000, -2000, /* Off-screen position */
+                width_,
+                height_,
+                nullptr,
+                nullptr,
+                hinstance_,
+                nullptr);
+        }
+        else
+        {
+            /* Normal mode: fullscreen popup */
+            POINT origin{0, 0};
+            HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+            MONITORINFO info{};
+            info.cbSize = sizeof(MONITORINFO);
+            GetMonitorInfoA(monitor, &info);
+            int screen_width = info.rcMonitor.right - info.rcMonitor.left;
+            int screen_height = info.rcMonitor.bottom - info.rcMonitor.top;
+            width_ = screen_width;
+            height_ = screen_height;
+
+            hwnd_ = CreateWindowExA(
+                WS_EX_APPWINDOW,
+                "PatchWindowClass",
+                title,
+                WS_POPUP,
+                info.rcMonitor.left,
+                info.rcMonitor.top,
+                screen_width,
+                screen_height,
+                nullptr,
+                nullptr,
+                hinstance_,
+                nullptr);
+        }
 
         g_window = this;
     }

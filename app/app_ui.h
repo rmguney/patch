@@ -31,13 +31,10 @@ extern "C"
         APP_ACTION_GRAPHICS,
         APP_ACTION_BACK,
         APP_ACTION_RUN_STRESS_TEST,
-        APP_ACTION_SETTING_INITIAL_SPAWNS = 100,
-        APP_ACTION_SETTING_SPAWN_INTERVAL,
-        APP_ACTION_SETTING_SPAWN_BATCH,
-        APP_ACTION_SETTING_MAX_SPAWNS,
-        APP_ACTION_SETTING_VOXEL_SIZE,
+        APP_ACTION_SETTING_VOXEL_SIZE = 100,
         APP_ACTION_SETTING_ADAPTIVE,
         APP_ACTION_SETTING_SHADOW_QUALITY,
+        APP_ACTION_SETTING_OBJECT_SHADOW_QUALITY,
         APP_ACTION_SETTING_SHADOW_CONTACT,
         APP_ACTION_SETTING_AO_QUALITY,
         APP_ACTION_SETTING_LOD_QUALITY,
@@ -48,19 +45,21 @@ extern "C"
 
     typedef struct
     {
-        int32_t initial_spawns;
-        int32_t spawn_interval_ms;
-        int32_t spawn_batch;
-        int32_t max_spawns;
         int32_t voxel_size_mm;
         int32_t master_preset;            /* 0=Default, 1=Fair, 2=Good, 3=High, 4=Custom */
         int32_t adaptive_quality;         /* 0=Off, 1=On (default) */
         int32_t shadow_quality;           /* 0=None, 1=Fair, 2=Good, 3=High */
+        int32_t object_shadow_quality;    /* 0=None, 1=Fair, 2=Good, 3=High */
         int32_t shadow_contact_hardening; /* 0=Off, 1=On */
         int32_t ao_quality;               /* 0=None, 1=Fair, 2=Good, 3=High */
         int32_t lod_quality;              /* 0=Fair, 1=Good, 2=High */
         int32_t denoise_quality;          /* 0=Off, 1=On */
         int32_t taa_quality;              /* 0=Off, 1=On */
+        /* Ball pit spawn settings */
+        int32_t initial_spawns;           /* Number of balls to spawn initially */
+        int32_t spawn_interval_ms;        /* Milliseconds between spawns */
+        int32_t spawn_batch;              /* Number of balls per spawn */
+        int32_t max_spawns;               /* Maximum total balls */
     } AppSettings;
 
     typedef struct

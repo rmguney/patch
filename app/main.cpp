@@ -116,7 +116,8 @@ int patch_main(int argc, char *argv[])
         rng_seed_value = static_cast<uint64_t>(strtoull(seed_env, nullptr, 10));
     }
 
-    Window window(1280, 720, "Patch");
+    bool headless = (test_frames > 0);
+    Window window(1280, 720, "Patch", headless);
     Renderer renderer(window);
     if (!renderer.init())
     {
@@ -769,6 +770,7 @@ int patch_main(int argc, char *argv[])
             else
             {
                 renderer.set_shadow_quality(settings->shadow_quality);
+                renderer.set_object_shadow_quality(settings->object_shadow_quality);
                 renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
                 renderer.set_ao_quality(settings->ao_quality);
                 renderer.set_lod_quality(settings->lod_quality);

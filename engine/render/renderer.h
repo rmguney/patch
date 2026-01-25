@@ -189,10 +189,12 @@ namespace patch
         bool is_rt_supported() const { return rt_supported_; }
 
         void set_shadow_quality(int level);
+        void set_object_shadow_quality(int level);
         void set_shadow_contact_hardening(bool enabled);
         void set_ao_quality(int level);
         void set_lod_quality(int level);
         int get_shadow_quality() const { return shadow_quality_; }
+        int get_object_shadow_quality() const { return object_shadow_quality_; }
         bool get_shadow_contact_hardening() const { return shadow_contact_hardening_; }
         int get_ao_quality() const { return ao_quality_; }
         int get_lod_quality() const { return lod_quality_; }
@@ -398,6 +400,7 @@ namespace patch
         int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
         int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
         int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
+        int object_shadow_quality_ = QUALITY_DEFAULT_SHADOW;
         bool shadow_contact_hardening_ = QUALITY_DEFAULT_SHADOW_CONTACT;
         int ao_quality_ = QUALITY_DEFAULT_AO;
         int lod_quality_ = QUALITY_DEFAULT_LOD;

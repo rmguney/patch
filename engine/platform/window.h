@@ -45,7 +45,7 @@ namespace patch
     class Window
     {
     public:
-        Window(int32_t width, int32_t height, const char *title);
+        Window(int32_t width, int32_t height, const char *title, bool headless = false);
         ~Window();
 
         Window(const Window &) = delete;

@@ -54,6 +54,53 @@ namespace patch
 
         memset(vobj_dirty_mask_, 0, sizeof(vobj_dirty_mask_));
         vobj_resources_initialized_ = true;
+
+        /* Update gbuffer compute vobj descriptors with actual vobj resources (for shadow tracing) */
+        if (gbuffer_compute_descriptor_pool_ && vobj_atlas_view_ && vobj_atlas_sampler_)
+        {
+            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                VkDescriptorImageInfo atlas_info{};
+                atlas_info.sampler = vobj_atlas_sampler_;
+                atlas_info.imageView = vobj_atlas_view_;
+                atlas_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                VkDescriptorBufferInfo vobj_meta_info{};
+                vobj_meta_info.buffer = vobj_metadata_buffer_[i].buffer;
+                vobj_meta_info.offset = 0;
+                vobj_meta_info.range = VK_WHOLE_SIZE;
+
+                VkDescriptorBufferInfo spatial_grid_info{};
+                spatial_grid_info.buffer = spatial_grid_buffer_.buffer;
+                spatial_grid_info.offset = 0;
+                spatial_grid_info.range = sizeof(GPUSpatialGridBuffer);
+
+                VkWriteDescriptorSet vobj_writes[3]{};
+                vobj_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                vobj_writes[0].dstSet = gbuffer_compute_vobj_sets_[i];
+                vobj_writes[0].dstBinding = 0;
+                vobj_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                vobj_writes[0].descriptorCount = 1;
+                vobj_writes[0].pImageInfo = &atlas_info;
+
+                vobj_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                vobj_writes[1].dstSet = gbuffer_compute_vobj_sets_[i];
+                vobj_writes[1].dstBinding = 1;
+                vobj_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                vobj_writes[1].descriptorCount = 1;
+                vobj_writes[1].pBufferInfo = &vobj_meta_info;
+
+                vobj_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                vobj_writes[2].dstSet = gbuffer_compute_vobj_sets_[i];
+                vobj_writes[2].dstBinding = 2;
+                vobj_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                vobj_writes[2].descriptorCount = 1;
+                vobj_writes[2].pBufferInfo = &spatial_grid_info;
+
+                vkUpdateDescriptorSets(device_, 3, vobj_writes, 0, nullptr);
+            }
+        }
+
         printf("  Voxel object resources initialized: %u max objects\n", max_objects);
         return true;
     }

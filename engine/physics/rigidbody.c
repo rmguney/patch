@@ -100,6 +100,7 @@ int32_t physics_world_add_body(PhysicsWorld *world, int32_t vobj_index)
     body->restitution = PHYS_DEFAULT_RESTITUTION;
     body->friction = PHYS_DEFAULT_FRICTION;
     body->sleep_frames = 0;
+    body->ground_frames = 0;
     body->flags = PHYS_FLAG_ACTIVE;
     body->next_free = -1;
 
@@ -141,6 +142,7 @@ int32_t physics_world_add_body_with_mass(PhysicsWorld *world, int32_t vobj_index
     body->restitution = PHYS_DEFAULT_RESTITUTION;
     body->friction = PHYS_DEFAULT_FRICTION;
     body->sleep_frames = 0;
+    body->ground_frames = 0;
     body->flags = PHYS_FLAG_ACTIVE;
     body->next_free = -1;
 
@@ -232,6 +234,10 @@ void physics_body_apply_impulse(PhysicsWorld *world, int32_t body_index, Vec3 im
     if (!body || body->inv_mass == 0.0f)
         return;
 
+    float impulse_mag = vec3_length(impulse);
+    if (impulse_mag < 0.001f)
+        return;
+
     VoxelObject *obj = &world->objects->objects[body->vobj_index];
     Vec3 r = vec3_sub(world_point, obj->position);
 
@@ -259,7 +265,8 @@ void physics_body_apply_impulse(PhysicsWorld *world, int32_t body_index, Vec3 im
 
     body->angular_velocity = vec3_add(body->angular_velocity, world_delta);
 
-    physics_body_wake(world, body_index);
+    if (impulse_mag > 0.1f)
+        physics_body_wake(world, body_index);
 }
 
 void physics_body_apply_force(PhysicsWorld *world, int32_t body_index, Vec3 force)
@@ -364,6 +371,20 @@ static Vec3 get_point_velocity(RigidBody *body, VoxelObject *obj, Vec3 world_poi
     return vec3_add(body->velocity, vec3_cross(body->angular_velocity, r));
 }
 
+static float estimate_penetration_depth(VoxelVolume *terrain, Vec3 point, Vec3 normal, float voxel_size)
+{
+    float max_probe = voxel_size * 2.0f;
+    float step = voxel_size * 0.25f;
+
+    for (float d = 0.0f; d < max_probe; d += step)
+    {
+        Vec3 probe = vec3_add(point, vec3_scale(normal, d));
+        if (volume_get_at(terrain, probe) == 0)
+            return d;
+    }
+    return max_probe;
+}
+
 static void solve_terrain_collision(PhysicsWorld *world, int32_t body_index, float dt)
 {
     RigidBody *body = &world->bodies[body_index];
@@ -375,7 +396,23 @@ static void solve_terrain_collision(PhysicsWorld *world, int32_t body_index, flo
     float voxel_size = world->terrain->voxel_size;
     float probe_dist = voxel_size * 0.5f;
 
-    body->flags &= ~PHYS_FLAG_GROUNDED;
+    float lin_speed = vec3_length(body->velocity);
+    float ang_speed = vec3_length(body->angular_velocity);
+    bool at_rest = (body->flags & PHYS_FLAG_GROUNDED) &&
+                   body->ground_frames >= PHYS_GROUND_PERSIST_FRAMES &&
+                   lin_speed < PHYS_SETTLE_LINEAR_THRESHOLD &&
+                   ang_speed < PHYS_SETTLE_ANGULAR_THRESHOLD;
+
+    if (at_rest)
+    {
+        body->velocity = vec3_zero();
+        body->angular_velocity = vec3_zero();
+        return;
+    }
+
+    int32_t ground_contacts = 0;
+    int32_t any_contacts = 0;
+    Vec3 total_correction = vec3_zero();
 
     for (int32_t i = 0; i < PHYS_TERRAIN_SAMPLE_POINTS; i++)
     {
@@ -385,50 +422,103 @@ static void solve_terrain_collision(PhysicsWorld *world, int32_t body_index, flo
         if (mat == 0)
             continue;
 
+        any_contacts++;
         Vec3 normal = estimate_terrain_normal(world->terrain, point, probe_dist);
 
         if (normal.y > 0.7f)
-            body->flags |= PHYS_FLAG_GROUNDED;
+            ground_contacts++;
 
-        float penetration = voxel_size * 0.5f;
+        float penetration = estimate_penetration_depth(world->terrain, point, normal, voxel_size);
+        if (penetration < PHYS_SLOP)
+            continue;
 
         Vec3 r = vec3_sub(point, obj->position);
         Vec3 point_vel = get_point_velocity(body, obj, point);
         float v_n = vec3_dot(point_vel, normal);
 
-        if (v_n > 0.0f)
-            continue;
-
         float eff_mass = compute_effective_mass(body, obj, r, normal);
         if (eff_mass < K_EPSILON)
             continue;
 
-        float bias = -PHYS_BAUMGARTE_FACTOR * (1.0f / dt) * maxf(0.0f, penetration - PHYS_SLOP);
-        float j_n = (-(1.0f + body->restitution) * v_n + bias) / eff_mass;
-        if (j_n < 0.0f)
-            j_n = 0.0f;
-
-        Vec3 impulse_n = vec3_scale(normal, j_n);
-        physics_body_apply_impulse(world, body_index, impulse_n, point);
-
-        Vec3 tangent = vec3_sub(point_vel, vec3_scale(normal, v_n));
-        float tangent_len = vec3_length(tangent);
-        if (tangent_len > K_EPSILON)
+        if (v_n < -0.01f)
         {
-            tangent = vec3_scale(tangent, 1.0f / tangent_len);
-            float v_t = tangent_len;
-            float j_t = -v_t / eff_mass;
-            float max_friction = body->friction * j_n;
-            if (j_t < -max_friction)
-                j_t = -max_friction;
-            if (j_t > max_friction)
-                j_t = max_friction;
+            float effective_restitution = body->restitution;
+            if (fabsf(v_n) < 0.5f)
+                effective_restitution = 0.0f;
 
-            Vec3 impulse_t = vec3_scale(tangent, j_t);
-            physics_body_apply_impulse(world, body_index, impulse_t, point);
+            float bias = -PHYS_BAUMGARTE_FACTOR * (1.0f / dt) * maxf(0.0f, penetration - PHYS_SLOP);
+            float j_n = (-(1.0f + effective_restitution) * v_n + bias) / eff_mass;
+            if (j_n < 0.0f)
+                j_n = 0.0f;
+
+            Vec3 impulse_n = vec3_scale(normal, j_n);
+            physics_body_apply_impulse(world, body_index, impulse_n, point);
+
+            Vec3 tangent = vec3_sub(point_vel, vec3_scale(normal, v_n));
+            float tangent_len = vec3_length(tangent);
+            if (tangent_len > K_EPSILON)
+            {
+                tangent = vec3_scale(tangent, 1.0f / tangent_len);
+                float v_t = tangent_len;
+                float j_t = -v_t / eff_mass;
+                float max_friction = body->friction * j_n;
+                j_t = clampf(j_t, -max_friction, max_friction);
+
+                Vec3 impulse_t = vec3_scale(tangent, j_t);
+                physics_body_apply_impulse(world, body_index, impulse_t, point);
+            }
         }
 
-        obj->position = vec3_add(obj->position, vec3_scale(normal, penetration * 0.5f));
+        total_correction = vec3_add(total_correction, vec3_scale(normal, penetration));
+    }
+
+    if (ground_contacts >= 1)
+    {
+        body->ground_frames = PHYS_GROUND_PERSIST_FRAMES;
+        body->flags |= PHYS_FLAG_GROUNDED;
+    }
+    else if (body->ground_frames > 0)
+    {
+        body->ground_frames--;
+        if (body->ground_frames == 0)
+            body->flags &= ~PHYS_FLAG_GROUNDED;
+    }
+    else
+    {
+        body->flags &= ~PHYS_FLAG_GROUNDED;
+    }
+
+    if (vec3_length(total_correction) > K_EPSILON)
+    {
+        float corr_len = vec3_length(total_correction);
+        float max_corr = voxel_size * 1.5f;
+        if (corr_len > max_corr)
+            total_correction = vec3_scale(total_correction, max_corr / corr_len);
+
+        obj->position = vec3_add(obj->position, vec3_scale(total_correction, 0.8f));
+    }
+
+    if (body->flags & PHYS_FLAG_GROUNDED)
+    {
+        float vel_y = body->velocity.y;
+        if (vel_y < 0.0f && vel_y > -1.0f)
+            body->velocity.y = 0.0f;
+
+        float lin_speed = vec3_length(body->velocity);
+        float ang_speed = vec3_length(body->angular_velocity);
+
+        if (lin_speed < PHYS_SETTLE_LINEAR_THRESHOLD)
+            body->velocity = vec3_zero();
+        if (ang_speed < PHYS_SETTLE_ANGULAR_THRESHOLD)
+            body->angular_velocity = vec3_zero();
+
+        if (body->ground_frames >= PHYS_GROUND_PERSIST_FRAMES &&
+            lin_speed < PHYS_SETTLE_LINEAR_THRESHOLD * 2.0f &&
+            ang_speed < PHYS_SETTLE_ANGULAR_THRESHOLD * 2.0f)
+        {
+            body->velocity = vec3_zero();
+            body->angular_velocity = vec3_zero();
+        }
     }
 }
 
@@ -448,9 +538,18 @@ static void integrate_body(PhysicsWorld *world, int32_t body_index, float dt)
         return;
     }
 
-    body->velocity = vec3_add(body->velocity, vec3_scale(world->gravity, dt));
-    body->velocity = vec3_scale(body->velocity, PHYS_LINEAR_DAMPING);
-    body->angular_velocity = vec3_scale(body->angular_velocity, PHYS_ANGULAR_DAMPING);
+    bool grounded = (body->flags & PHYS_FLAG_GROUNDED) != 0;
+
+    if (!grounded)
+    {
+        body->velocity = vec3_add(body->velocity, vec3_scale(world->gravity, dt));
+    }
+
+    float linear_damp = grounded ? PHYS_GROUND_LINEAR_DAMPING : PHYS_LINEAR_DAMPING;
+    float angular_damp = grounded ? PHYS_GROUND_ANGULAR_DAMPING : PHYS_ANGULAR_DAMPING;
+
+    body->velocity = vec3_scale(body->velocity, linear_damp);
+    body->angular_velocity = vec3_scale(body->angular_velocity, angular_damp);
 
     body->velocity = vec3_clamp_length(body->velocity, PHYS_MAX_LINEAR_VELOCITY);
     body->angular_velocity = vec3_clamp_length(body->angular_velocity, PHYS_MAX_ANGULAR_VELOCITY);

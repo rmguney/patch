@@ -104,6 +104,11 @@ namespace patch
         shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
+    void Renderer::set_object_shadow_quality(int level)
+    {
+        object_shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+    }
+
     void Renderer::set_shadow_contact_hardening(bool enabled)
     {
         shadow_contact_hardening_ = enabled;
@@ -149,6 +154,7 @@ namespace patch
         if (preset < 0 || preset > QUALITY_PRESET_HIGH)
             return;
         shadow_quality_ = QUALITY_PRESETS[preset].shadow;
+        object_shadow_quality_ = QUALITY_PRESETS[preset].shadow;
         shadow_contact_hardening_ = QUALITY_PRESETS[preset].shadow_contact != 0;
         ao_quality_ = QUALITY_PRESETS[preset].ao;
         lod_quality_ = QUALITY_PRESETS[preset].lod;

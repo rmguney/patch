@@ -13,6 +13,7 @@ static void apply_preset_to_settings(AppSettings *s, int32_t preset)
     if (preset >= 0 && preset < QUALITY_PRESET_CUSTOM)
     {
         s->shadow_quality = QUALITY_PRESETS[preset].shadow;
+        s->object_shadow_quality = QUALITY_PRESETS[preset].shadow;
         s->shadow_contact_hardening = QUALITY_PRESETS[preset].shadow_contact;
         s->ao_quality = QUALITY_PRESETS[preset].ao;
         s->lod_quality = QUALITY_PRESETS[preset].lod;
@@ -51,14 +52,6 @@ static void init_scene_menu(UIMenu *menu)
 static void init_settings_menu(UIMenu *menu, const AppSettings *s)
 {
     ui_menu_clear(menu, "OPTIONS");
-    ui_menu_add_slider(menu, "INITIAL SPAWNS", APP_ACTION_SETTING_INITIAL_SPAWNS,
-                       s->initial_spawns, 1, 100, 5);
-    ui_menu_add_slider(menu, "SPAWN INTERVAL MS", APP_ACTION_SETTING_SPAWN_INTERVAL,
-                       s->spawn_interval_ms, 100, 2000, 100);
-    ui_menu_add_slider(menu, "SPAWN BATCH", APP_ACTION_SETTING_SPAWN_BATCH,
-                       s->spawn_batch, 1, 10, 1);
-    ui_menu_add_slider(menu, "MAX SPAWNS", APP_ACTION_SETTING_MAX_SPAWNS,
-                       s->max_spawns, 50, 1024, 50);
     ui_menu_add_slider(menu, "VOXEL SIZE (MM)", APP_ACTION_SETTING_VOXEL_SIZE,
                        s->voxel_size_mm, 50, 200, 10);
     ui_menu_add_label(menu, NULL);
@@ -81,8 +74,11 @@ static void init_graphics_menu(UIMenu *menu, const AppSettings *s)
                                s->adaptive_quality, 0, 1, TOGGLE_LABELS, 2);
 
     ui_menu_add_label(menu, "--- SHADOWS ---");
-    ui_menu_add_slider_labeled(menu, "QUALITY", APP_ACTION_SETTING_SHADOW_QUALITY,
+    ui_menu_add_slider_labeled(menu, "TERRAIN SHADOWS", APP_ACTION_SETTING_SHADOW_QUALITY,
                                s->shadow_quality, 0, 3, QUALITY_4, 4);
+    menu->items[menu->item_count - 1].enabled = !using_preset;
+    ui_menu_add_slider_labeled(menu, "OBJECT SHADOWS", APP_ACTION_SETTING_OBJECT_SHADOW_QUALITY,
+                               s->object_shadow_quality, 0, 3, QUALITY_4, 4);
     menu->items[menu->item_count - 1].enabled = !using_preset;
     ui_menu_add_slider_labeled(menu, "CONTACT HARDENING", APP_ACTION_SETTING_SHADOW_CONTACT,
                                s->shadow_contact_hardening, 0, 1, TOGGLE_LABELS, 2);
@@ -134,6 +130,10 @@ static void sync_graphics_menu_from_settings(AppUI *ui)
             item->slider_value = s->shadow_quality;
             item->enabled = !using_preset;
             break;
+        case APP_ACTION_SETTING_OBJECT_SHADOW_QUALITY:
+            item->slider_value = s->object_shadow_quality;
+            item->enabled = !using_preset;
+            break;
         case APP_ACTION_SETTING_SHADOW_CONTACT:
             item->slider_value = s->shadow_contact_hardening;
             item->enabled = !using_preset;
@@ -166,14 +166,16 @@ void app_ui_init(AppUI *ui)
     ui->current_screen = APP_SCREEN_MAIN_MENU;
     ui->previous_screen = APP_SCREEN_NONE;
 
-    ui->settings.initial_spawns = 10;
-    ui->settings.spawn_interval_ms = 500;
-    ui->settings.spawn_batch = 3;
-    ui->settings.max_spawns = 1024;
     ui->settings.voxel_size_mm = 100;
     ui->settings.master_preset = QUALITY_PRESET_FAIR;
     ui->settings.adaptive_quality = 0;
     apply_preset_to_settings(&ui->settings, QUALITY_PRESET_FAIR);
+
+    /* Ball pit defaults (match ball_pit_default_params) */
+    ui->settings.initial_spawns = 0;
+    ui->settings.spawn_interval_ms = 1000;
+    ui->settings.spawn_batch = 1;
+    ui->settings.max_spawns = 0;
 
     init_main_menu(&ui->main_menu);
     init_pause_menu(&ui->pause_menu);
@@ -221,18 +223,6 @@ static void sync_settings_from_menu(AppUI *ui)
 
         switch (item->action_id)
         {
-        case APP_ACTION_SETTING_INITIAL_SPAWNS:
-            ui->settings.initial_spawns = item->slider_value;
-            break;
-        case APP_ACTION_SETTING_SPAWN_INTERVAL:
-            ui->settings.spawn_interval_ms = item->slider_value;
-            break;
-        case APP_ACTION_SETTING_SPAWN_BATCH:
-            ui->settings.spawn_batch = item->slider_value;
-            break;
-        case APP_ACTION_SETTING_MAX_SPAWNS:
-            ui->settings.max_spawns = item->slider_value;
-            break;
         case APP_ACTION_SETTING_VOXEL_SIZE:
             ui->settings.voxel_size_mm = item->slider_value;
             break;
@@ -279,6 +269,13 @@ static void sync_graphics_from_menu(AppUI *ui)
             if (allow_individual && ui->settings.shadow_quality != item->slider_value)
             {
                 ui->settings.shadow_quality = item->slider_value;
+                individual_changed = true;
+            }
+            break;
+        case APP_ACTION_SETTING_OBJECT_SHADOW_QUALITY:
+            if (allow_individual && ui->settings.object_shadow_quality != item->slider_value)
+            {
+                ui->settings.object_shadow_quality = item->slider_value;
                 individual_changed = true;
             }
             break;

@@ -262,8 +262,8 @@ namespace patch
 
     bool Renderer::create_shadow_compute_pipeline()
     {
-        /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers, shadow volume) */
-        VkDescriptorSetLayoutBinding input_bindings[3]{};
+        /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers, shadow volume, material palette) */
+        VkDescriptorSetLayoutBinding input_bindings[4]{};
         input_bindings[0].binding = 0;
         input_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         input_bindings[0].descriptorCount = 1;
@@ -279,9 +279,14 @@ namespace patch
         input_bindings[2].descriptorCount = 1;
         input_bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+        input_bindings[3].binding = 3;
+        input_bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        input_bindings[3].descriptorCount = 1;
+        input_bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
         VkDescriptorSetLayoutCreateInfo input_layout_info{};
         input_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        input_layout_info.bindingCount = 3;
+        input_layout_info.bindingCount = 4;
         input_layout_info.pBindings = input_bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &input_layout_info, nullptr, &shadow_compute_input_layout_) != VK_SUCCESS)
@@ -341,11 +346,13 @@ namespace patch
             return false;
         }
 
-        /* Pipeline layout */
-        VkDescriptorSetLayout set_layouts[3] = {
+        /* Pipeline layout with 4 descriptor sets
+         * Set 3 reuses gbuffer_compute_vobj_layout_ since bindings are identical */
+        VkDescriptorSetLayout set_layouts[4] = {
             shadow_compute_input_layout_,
             shadow_compute_gbuffer_layout_,
-            shadow_compute_output_layout_};
+            shadow_compute_output_layout_,
+            gbuffer_compute_vobj_layout_};
 
         VkPushConstantRange push_range{};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -354,7 +361,7 @@ namespace patch
 
         VkPipelineLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layout_info.setLayoutCount = 3;
+        layout_info.setLayoutCount = 4;
         layout_info.pSetLayouts = set_layouts;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = &push_range;
@@ -501,48 +508,66 @@ namespace patch
 
             vkUpdateDescriptorSets(device_, 4, terrain_writes, 0, nullptr);
 
-            /* Set 1: Voxel objects + spatial grid */
+            /* Set 1: Voxel objects + spatial grid
+             * Must always write valid descriptors (shadow shader binds this set unconditionally).
+             * Use fallback resources when vobj isn't ready - shader uses object_count=0 to skip tracing. */
+            VkDescriptorImageInfo atlas_info{};
+            VkDescriptorBufferInfo vobj_meta_info{};
+            VkDescriptorBufferInfo spatial_grid_info{};
+
             if (vobj_atlas_view_ && vobj_atlas_sampler_)
             {
-                VkDescriptorImageInfo atlas_info{};
                 atlas_info.sampler = vobj_atlas_sampler_;
                 atlas_info.imageView = vobj_atlas_view_;
                 atlas_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-                VkDescriptorBufferInfo vobj_meta_info{};
                 vobj_meta_info.buffer = vobj_metadata_buffer_[i].buffer;
                 vobj_meta_info.offset = 0;
                 vobj_meta_info.range = VK_WHOLE_SIZE;
 
-                VkDescriptorBufferInfo spatial_grid_info{};
                 spatial_grid_info.buffer = spatial_grid_buffer_.buffer;
                 spatial_grid_info.offset = 0;
                 spatial_grid_info.range = sizeof(GPUSpatialGridBuffer);
-
-                VkWriteDescriptorSet vobj_writes[3]{};
-                vobj_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                vobj_writes[0].dstSet = gbuffer_compute_vobj_sets_[i];
-                vobj_writes[0].dstBinding = 0;
-                vobj_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                vobj_writes[0].descriptorCount = 1;
-                vobj_writes[0].pImageInfo = &atlas_info;
-
-                vobj_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                vobj_writes[1].dstSet = gbuffer_compute_vobj_sets_[i];
-                vobj_writes[1].dstBinding = 1;
-                vobj_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                vobj_writes[1].descriptorCount = 1;
-                vobj_writes[1].pBufferInfo = &vobj_meta_info;
-
-                vobj_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                vobj_writes[2].dstSet = gbuffer_compute_vobj_sets_[i];
-                vobj_writes[2].dstBinding = 2;
-                vobj_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                vobj_writes[2].descriptorCount = 1;
-                vobj_writes[2].pBufferInfo = &spatial_grid_info;
-
-                vkUpdateDescriptorSets(device_, 3, vobj_writes, 0, nullptr);
             }
+            else
+            {
+                /* Fallback: use shadow volume texture and voxel data buffer as dummy bindings */
+                atlas_info.sampler = shadow_volume_sampler_ ? shadow_volume_sampler_ : gbuffer_sampler_;
+                atlas_info.imageView = shadow_volume_view_ ? shadow_volume_view_ : gbuffer_views_[0];
+                atlas_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+                vobj_meta_info.buffer = voxel_data_buffer_.buffer;
+                vobj_meta_info.offset = 0;
+                vobj_meta_info.range = VK_WHOLE_SIZE;
+
+                spatial_grid_info.buffer = voxel_data_buffer_.buffer;
+                spatial_grid_info.offset = 0;
+                spatial_grid_info.range = VK_WHOLE_SIZE;
+            }
+
+            VkWriteDescriptorSet vobj_writes[3]{};
+            vobj_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            vobj_writes[0].dstSet = gbuffer_compute_vobj_sets_[i];
+            vobj_writes[0].dstBinding = 0;
+            vobj_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            vobj_writes[0].descriptorCount = 1;
+            vobj_writes[0].pImageInfo = &atlas_info;
+
+            vobj_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            vobj_writes[1].dstSet = gbuffer_compute_vobj_sets_[i];
+            vobj_writes[1].dstBinding = 1;
+            vobj_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            vobj_writes[1].descriptorCount = 1;
+            vobj_writes[1].pBufferInfo = &vobj_meta_info;
+
+            vobj_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            vobj_writes[2].dstSet = gbuffer_compute_vobj_sets_[i];
+            vobj_writes[2].dstBinding = 2;
+            vobj_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            vobj_writes[2].descriptorCount = 1;
+            vobj_writes[2].pBufferInfo = &spatial_grid_info;
+
+            vkUpdateDescriptorSets(device_, 3, vobj_writes, 0, nullptr);
 
             /* Set 2: G-buffer output images (albedo, normal, material, depth, world_pos, motion_vector) */
             VkDescriptorImageInfo gbuffer_infos[6]{};
@@ -577,20 +602,22 @@ namespace patch
         if (!compute_resources_initialized_ || voxel_data_buffer_.buffer == VK_NULL_HANDLE)
             return true;
 
-        /* Create descriptor pool */
-        VkDescriptorPoolSize pool_sizes[3]{};
+        /* Create descriptor pool - includes vobj data for direct object shadow tracing */
+        VkDescriptorPoolSize pool_sizes[4]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2; /* voxel_data + chunk_headers */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3; /* voxel_data, chunk_headers, vobj metadata */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 5; /* depth, normal, world_pos, blue noise, shadow_volume */
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 6; /* depth, normal, world_pos, blue noise, shadow_volume, vobj_atlas */
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1;
+        pool_sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_sizes[3].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1; /* material palette */
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.poolSizeCount = 3;
+        pool_info.poolSizeCount = 4;
         pool_info.pPoolSizes = pool_sizes;
-        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 3;
+        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 4; /* 4 sets per frame: input, gbuffer, output, vobj */
 
         if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &shadow_compute_descriptor_pool_) != VK_SUCCESS)
         {
@@ -639,7 +666,7 @@ namespace patch
         /* Update descriptor sets */
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
-            /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers) */
+            /* Set 0: Terrain data for HDDA (voxel buffer, chunk headers, shadow volume, material palette) */
             VkDescriptorBufferInfo voxel_data_info{};
             voxel_data_info.buffer = voxel_data_buffer_.buffer;
             voxel_data_info.offset = 0;
@@ -655,7 +682,12 @@ namespace patch
             shadow_vol_info.imageView = shadow_volume_view_;
             shadow_vol_info.sampler = shadow_volume_sampler_;
 
-            VkWriteDescriptorSet input_writes[3]{};
+            VkDescriptorBufferInfo material_info{};
+            material_info.buffer = voxel_material_buffer_.buffer;
+            material_info.offset = 0;
+            material_info.range = VK_WHOLE_SIZE;
+
+            VkWriteDescriptorSet input_writes[4]{};
             input_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             input_writes[0].dstSet = shadow_compute_input_sets_[i];
             input_writes[0].dstBinding = 0;
@@ -677,7 +709,14 @@ namespace patch
             input_writes[2].descriptorCount = 1;
             input_writes[2].pImageInfo = &shadow_vol_info;
 
-            vkUpdateDescriptorSets(device_, shadow_volume_view_ ? 3 : 2, input_writes, 0, nullptr);
+            input_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            input_writes[3].dstSet = shadow_compute_input_sets_[i];
+            input_writes[3].dstBinding = 3;
+            input_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            input_writes[3].descriptorCount = 1;
+            input_writes[3].pBufferInfo = &material_info;
+
+            vkUpdateDescriptorSets(device_, shadow_volume_view_ ? 4 : 2, input_writes, 0, nullptr);
 
             /* Set 1: G-buffer samplers (depth, normal, world_pos, blue noise) */
             VkDescriptorImageInfo depth_info{};

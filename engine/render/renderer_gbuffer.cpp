@@ -451,6 +451,7 @@ namespace patch
         if (!gbuffer_initialized_ || !vol || !voxel_resources_initialized_)
             return;
 
+
         /* Dispatch compute terrain + objects if enabled (must be called before begin_gbuffer_pass) */
         if (compute_raymarching_enabled_ && compute_resources_initialized_ && gbuffer_compute_pipeline_)
         {
@@ -530,7 +531,7 @@ namespace patch
         pc.chunks_dim[1] = vol->chunks_y;
         pc.chunks_dim[2] = vol->chunks_z;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = RAYMARCH_MAX_STEPS;
@@ -615,7 +616,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = RAYMARCH_MAX_STEPS;

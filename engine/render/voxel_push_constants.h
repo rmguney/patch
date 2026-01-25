@@ -75,7 +75,7 @@ namespace patch
         int32_t total_chunks;
         int32_t chunks_dim[3];
         int32_t frame_count;
-        int32_t _pad0;
+        int32_t object_shadow_quality;
         int32_t debug_mode;
         int32_t is_orthographic;
         int32_t max_steps;

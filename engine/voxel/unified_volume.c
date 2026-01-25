@@ -338,109 +338,16 @@ static void stamp_voxel_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, 
     shadow_mip0[packed_idx] |= (uint8_t)(1 << bit_idx);
 }
 
-void unified_volume_stamp_objects_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
-                                            const VoxelVolume *terrain, const VoxelObjectWorld *objects)
+static void stamp_voxel_to_shadow_fullres(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
+                                          int32_t vx, int32_t vy, int32_t vz)
 {
-    if (!shadow_mip0 || !terrain || !objects)
+    if (vx < 0 || vx >= (int32_t)w ||
+        vy < 0 || vy >= (int32_t)h ||
+        vz < 0 || vz >= (int32_t)d)
         return;
 
-    for (int32_t i = 0; i < objects->object_count; i++)
-    {
-        const VoxelObject *obj = &objects->objects[i];
-        if (!obj->active)
-            continue;
-
-        float half_grid = (VOBJ_GRID_SIZE * obj->voxel_size) * 0.5f;
-
-        for (int32_t oz = 0; oz < VOBJ_GRID_SIZE; oz++)
-        {
-            for (int32_t oy = 0; oy < VOBJ_GRID_SIZE; oy++)
-            {
-                for (int32_t ox = 0; ox < VOBJ_GRID_SIZE; ox++)
-                {
-                    int32_t local_idx = vobj_index(ox, oy, oz);
-                    uint8_t mat = obj->voxels[local_idx].material;
-                    if (mat == 0)
-                        continue;
-
-                    float local_x = (ox + 0.5f) * obj->voxel_size - half_grid;
-                    float local_y = (oy + 0.5f) * obj->voxel_size - half_grid;
-                    float local_z = (oz + 0.5f) * obj->voxel_size - half_grid;
-
-                    Vec3 local_pos = {local_x, local_y, local_z};
-                    Vec3 world_pos = quat_rotate_vec3(obj->orientation, local_pos);
-                    world_pos.x += obj->position.x;
-                    world_pos.y += obj->position.y;
-                    world_pos.z += obj->position.z;
-
-                    float rel_x = world_pos.x - terrain->bounds.min_x;
-                    float rel_y = world_pos.y - terrain->bounds.min_y;
-                    float rel_z = world_pos.z - terrain->bounds.min_z;
-
-                    int32_t vx = (int32_t)(rel_x / terrain->voxel_size);
-                    int32_t vy = (int32_t)(rel_y / terrain->voxel_size);
-                    int32_t vz = (int32_t)(rel_z / terrain->voxel_size);
-
-                    stamp_voxel_to_shadow(shadow_mip0, w, h, d, vx, vy, vz);
-                }
-            }
-        }
-    }
-}
-
-void unified_volume_stamp_objects_incremental(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
-                                              const VoxelVolume *terrain, const VoxelObjectWorld *objects,
-                                              const int32_t *object_indices, int32_t count)
-{
-    if (!shadow_mip0 || !terrain || !objects || !object_indices || count <= 0)
-        return;
-
-    for (int32_t idx = 0; idx < count; idx++)
-    {
-        int32_t i = object_indices[idx];
-        if (i < 0 || i >= objects->object_count)
-            continue;
-
-        const VoxelObject *obj = &objects->objects[i];
-        if (!obj->active)
-            continue;
-
-        float half_grid = (VOBJ_GRID_SIZE * obj->voxel_size) * 0.5f;
-
-        for (int32_t oz = 0; oz < VOBJ_GRID_SIZE; oz++)
-        {
-            for (int32_t oy = 0; oy < VOBJ_GRID_SIZE; oy++)
-            {
-                for (int32_t ox = 0; ox < VOBJ_GRID_SIZE; ox++)
-                {
-                    int32_t local_idx = vobj_index(ox, oy, oz);
-                    uint8_t mat = obj->voxels[local_idx].material;
-                    if (mat == 0)
-                        continue;
-
-                    float local_x = (ox + 0.5f) * obj->voxel_size - half_grid;
-                    float local_y = (oy + 0.5f) * obj->voxel_size - half_grid;
-                    float local_z = (oz + 0.5f) * obj->voxel_size - half_grid;
-
-                    Vec3 local_pos = {local_x, local_y, local_z};
-                    Vec3 world_pos = quat_rotate_vec3(obj->orientation, local_pos);
-                    world_pos.x += obj->position.x;
-                    world_pos.y += obj->position.y;
-                    world_pos.z += obj->position.z;
-
-                    float rel_x = world_pos.x - terrain->bounds.min_x;
-                    float rel_y = world_pos.y - terrain->bounds.min_y;
-                    float rel_z = world_pos.z - terrain->bounds.min_z;
-
-                    int32_t vx = (int32_t)(rel_x / terrain->voxel_size);
-                    int32_t vy = (int32_t)(rel_y / terrain->voxel_size);
-                    int32_t vz = (int32_t)(rel_z / terrain->voxel_size);
-
-                    stamp_voxel_to_shadow(shadow_mip0, w, h, d, vx, vy, vz);
-                }
-            }
-        }
-    }
+    size_t idx = (size_t)vx + (size_t)vy * w + (size_t)vz * w * h;
+    shadow_mip0[idx] = 255;
 }
 
 void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
@@ -488,63 +395,43 @@ void unified_volume_stamp_particles_to_shadow(uint8_t *shadow_mip0, uint32_t w, 
     }
 }
 
-void unified_volume_clear_shadow_aabb(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
-                                      int32_t min_x, int32_t min_y, int32_t min_z,
-                                      int32_t max_x, int32_t max_y, int32_t max_z)
+void unified_volume_stamp_particles_to_shadow_fullres(uint8_t *shadow_mip0, uint32_t w, uint32_t h, uint32_t d,
+                                                      const VoxelVolume *terrain, const ParticleSystem *particles,
+                                                      float interp_alpha)
 {
-    if (!shadow_mip0)
+    if (!shadow_mip0 || !terrain || !particles)
         return;
 
-    int32_t px_min = min_x >> 1;
-    int32_t py_min = min_y >> 1;
-    int32_t pz_min = min_z >> 1;
-    int32_t px_max = max_x >> 1;
-    int32_t py_max = max_y >> 1;
-    int32_t pz_max = max_z >> 1;
-
-    if (px_min < 0)
-        px_min = 0;
-    if (py_min < 0)
-        py_min = 0;
-    if (pz_min < 0)
-        pz_min = 0;
-    if (px_max >= (int32_t)w)
-        px_max = (int32_t)w - 1;
-    if (py_max >= (int32_t)h)
-        py_max = (int32_t)h - 1;
-    if (pz_max >= (int32_t)d)
-        pz_max = (int32_t)d - 1;
-
-    for (int32_t pz = pz_min; pz <= pz_max; pz++)
+    for (int32_t i = 0; i < particles->count; i++)
     {
-        for (int32_t py = py_min; py <= py_max; py++)
+        const Particle *p = &particles->particles[i];
+        if (!p->active)
+            continue;
+
+        float interp_x = p->prev_position.x + interp_alpha * (p->position.x - p->prev_position.x);
+        float interp_y = p->prev_position.y + interp_alpha * (p->position.y - p->prev_position.y);
+        float interp_z = p->prev_position.z + interp_alpha * (p->position.z - p->prev_position.z);
+
+        float rel_x = interp_x - terrain->bounds.min_x;
+        float rel_y = interp_y - terrain->bounds.min_y;
+        float rel_z = interp_z - terrain->bounds.min_z;
+
+        int32_t min_vx = (int32_t)((rel_x - p->radius) / terrain->voxel_size);
+        int32_t min_vy = (int32_t)((rel_y - p->radius) / terrain->voxel_size);
+        int32_t min_vz = (int32_t)((rel_z - p->radius) / terrain->voxel_size);
+        int32_t max_vx = (int32_t)((rel_x + p->radius) / terrain->voxel_size);
+        int32_t max_vy = (int32_t)((rel_y + p->radius) / terrain->voxel_size);
+        int32_t max_vz = (int32_t)((rel_z + p->radius) / terrain->voxel_size);
+
+        for (int32_t vz = min_vz; vz <= max_vz; vz++)
         {
-            for (int32_t px = px_min; px <= px_max; px++)
+            for (int32_t vy = min_vy; vy <= max_vy; vy++)
             {
-                size_t packed_idx = (size_t)px + (size_t)py * w + (size_t)pz * w * h;
-                shadow_mip0[packed_idx] = 0;
+                for (int32_t vx = min_vx; vx <= max_vx; vx++)
+                {
+                    stamp_voxel_to_shadow_fullres(shadow_mip0, w, h, d, vx, vy, vz);
+                }
             }
         }
     }
-}
-
-void unified_volume_compute_object_shadow_aabb(const VoxelObject *obj, const VoxelVolume *terrain,
-                                               int32_t *out_min, int32_t *out_max)
-{
-    if (!obj || !terrain || !out_min || !out_max)
-        return;
-
-    float half_grid = (VOBJ_GRID_SIZE * obj->voxel_size) * 0.5f;
-    float world_radius = half_grid * 1.5f;
-
-    float rel_x = obj->position.x - terrain->bounds.min_x;
-    float rel_y = obj->position.y - terrain->bounds.min_y;
-    float rel_z = obj->position.z - terrain->bounds.min_z;
-
-    out_min[0] = (int32_t)((rel_x - world_radius) / terrain->voxel_size);
-    out_min[1] = (int32_t)((rel_y - world_radius) / terrain->voxel_size);
-    out_min[2] = (int32_t)((rel_z - world_radius) / terrain->voxel_size);
-    out_max[0] = (int32_t)((rel_x + world_radius) / terrain->voxel_size) + 1;
-    out_max[1] = (int32_t)((rel_y + world_radius) / terrain->voxel_size) + 1;
-    out_max[2] = (int32_t)((rel_z + world_radius) / terrain->voxel_size) + 1;
 }

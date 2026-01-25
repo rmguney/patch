@@ -86,6 +86,63 @@ static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngStat
     free(remapped);
 }
 
+static void throw_random_shape(BallPitData *data, Scene *scene, Vec3 target)
+{
+    if (g_voxel_shape_count <= 0 || !data->objects || !data->physics)
+        return;
+
+    int32_t shape_idx = (int32_t)rng_range_u32(&scene->rng, (uint32_t)g_voxel_shape_count);
+    const VoxelShape *shape = voxel_shape_get(shape_idx);
+    if (!shape)
+        return;
+
+    uint8_t pastel_mat = pick_pastel_material(&scene->rng);
+
+    int32_t total = shape->size_x * shape->size_y * shape->size_z;
+    uint8_t *remapped = (uint8_t *)malloc((size_t)total);
+    if (!remapped)
+        return;
+
+    for (int32_t i = 0; i < total; i++)
+    {
+        remapped[i] = shape->voxels[i] ? pastel_mat : 0;
+    }
+
+    Vec3 spawn_pos = vec3_add(data->ray_origin, vec3_scale(data->ray_dir, 0.5f));
+    int32_t obj_idx = voxel_object_world_add_from_voxels(data->objects, remapped,
+                                                          shape->size_x, shape->size_y, shape->size_z,
+                                                          spawn_pos, data->objects->voxel_size);
+    free(remapped);
+
+    if (obj_idx < 0)
+        return;
+
+    physics_world_sync_objects(data->physics);
+
+    int32_t body_idx = physics_world_find_body_for_object(data->physics, obj_idx);
+    if (body_idx >= 0)
+    {
+        Vec3 throw_dir = vec3_sub(target, spawn_pos);
+        float dist = vec3_length(throw_dir);
+        if (dist > 0.001f)
+            throw_dir = vec3_scale(throw_dir, 1.0f / dist);
+        else
+            throw_dir = data->ray_dir;
+
+        float throw_speed = 15.0f;
+        Vec3 velocity = vec3_scale(throw_dir, throw_speed);
+        physics_body_set_velocity(data->physics, body_idx, velocity);
+
+        Vec3 spin = vec3_create(
+            (rng_float(&scene->rng) - 0.5f) * 10.0f,
+            (rng_float(&scene->rng) - 0.5f) * 10.0f,
+            (rng_float(&scene->rng) - 0.5f) * 10.0f);
+        physics_body_set_angular_velocity(data->physics, body_idx, spin);
+    }
+
+    data->stats.spawn_count++;
+}
+
 static void create_terrain_floor(VoxelVolume *vol, float floor_thickness)
 {
     Vec3 min_corner = vec3_create(vol->bounds.min_x, vol->bounds.min_y,
@@ -260,7 +317,28 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     BallPitData *data = (BallPitData *)scene->user_data;
     (void)mouse_x;
     (void)mouse_y;
-    (void)right_down;
+
+    static bool right_was_down = false;
+    if (right_down && !right_was_down)
+    {
+        Vec3 target = vec3_add(data->ray_origin, vec3_scale(data->ray_dir, 20.0f));
+
+        float terrain_dist = -1.0f;
+        Vec3 terrain_hit_pos = vec3_zero();
+        Vec3 terrain_hit_normal = vec3_zero();
+        uint8_t terrain_mat = 0;
+
+        if (data->terrain)
+        {
+            terrain_dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir,
+                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat);
+            if (terrain_dist >= 0.0f && terrain_mat != 0)
+                target = terrain_hit_pos;
+        }
+
+        throw_random_shape(data, scene, target);
+    }
+    right_was_down = right_down;
 
     if (left_down)
     {
@@ -432,7 +510,7 @@ BallPitParams ball_pit_default_params(void)
     p.initial_spawns = 0;
     p.spawn_interval = 1.0f;
     p.spawn_batch = 1;
-    p.max_spawns = 1024;
+    p.max_spawns = 0; /* Automatic spawning disabled - use right-click to throw objects */
     return p;
 }
 

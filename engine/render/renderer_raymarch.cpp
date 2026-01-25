@@ -107,7 +107,7 @@ namespace patch
         pc.chunks_dim[1] = vol->chunks_y;
         pc.chunks_dim[2] = vol->chunks_z;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = RAYMARCH_MAX_STEPS;
@@ -191,16 +191,17 @@ namespace patch
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 1, &mem_barrier, 0, nullptr, 1, &barrier);
 
-        /* Bind pipeline and descriptor sets */
+        /* Bind pipeline and descriptor sets (set 3 = vobj data for direct object shadow tracing) */
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shadow_compute_pipeline_);
 
-        VkDescriptorSet sets[3] = {
+        VkDescriptorSet sets[4] = {
             shadow_compute_input_sets_[current_frame_],
             shadow_compute_gbuffer_sets_[current_frame_],
-            shadow_compute_output_sets_[current_frame_]};
+            shadow_compute_output_sets_[current_frame_],
+            gbuffer_compute_vobj_sets_[current_frame_]};
 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                shadow_compute_layout_, 0, 3, sets, 0, nullptr);
+                                shadow_compute_layout_, 0, 4, sets, 0, nullptr);
 
         /* Push constants - same as gbuffer for consistency */
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
@@ -229,13 +230,13 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = RAYMARCH_MAX_STEPS;
         pc.near_plane = perspective_near_;
         pc.far_plane = perspective_far_;
-        pc.object_count = 0;
+        pc.object_count = vobj_visible_count_; /* Use visible count since metadata buffer is compacted */
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;
@@ -340,7 +341,7 @@ namespace patch
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = perspective_near_;
@@ -442,7 +443,7 @@ namespace patch
         pc.chunks_dim[1] = deferred_chunks_dim_[1];
         pc.chunks_dim[2] = deferred_chunks_dim_[2];
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.max_steps = RAYMARCH_MAX_STEPS;
@@ -547,7 +548,7 @@ namespace patch
         pc.inv_view = inv_view;
         pc.inv_projection = inv_proj;
         pc.frame_count = static_cast<int32_t>(total_frame_count_);
-        pc._pad0 = 0;
+        pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
         pc.near_plane = perspective_near_;

@@ -308,6 +308,8 @@ namespace patch
         shadow_upload_pending_[idx] = true;
     }
 
+    /* NOTE: Object shadow volume functions removed - objects now traced directly in shadow shader */
+
     bool Renderer::create_blue_noise_texture()
     {
         constexpr uint32_t NOISE_SIZE = 128;

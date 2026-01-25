@@ -22,7 +22,7 @@ layout(push_constant) uniform Constants {
     int total_chunks;
     ivec3 chunks_dim;
     int frame_count;
-    int _pad0;
+    int object_shadow_quality;
     int debug_mode;
     int is_orthographic;
     int max_steps;
