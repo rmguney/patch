@@ -19,12 +19,40 @@ int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world)
     return world->object_count++;
 }
 
+static bool voxel_has_empty_neighbor(const VoxelObject *obj, int32_t x, int32_t y, int32_t z)
+{
+    static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
+    static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
+    static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
+
+    for (int32_t i = 0; i < 6; i++)
+    {
+        int32_t nx = x + dx[i];
+        int32_t ny = y + dy[i];
+        int32_t nz = z + dz[i];
+
+        if (nx < 0 || nx >= VOBJ_GRID_SIZE ||
+            ny < 0 || ny >= VOBJ_GRID_SIZE ||
+            nz < 0 || nz >= VOBJ_GRID_SIZE)
+        {
+            return true;
+        }
+
+        if (obj->voxels[vobj_index(nx, ny, nz)].material == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void voxel_object_recalc_shape(VoxelObject *obj)
 {
     if (obj->voxel_count <= 0)
     {
         obj->active = false;
         obj->shape_dirty = false;
+        obj->surface_voxel_count = 0;
         return;
     }
 
@@ -35,7 +63,10 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     int32_t counted = 0;
     uint8_t occupancy = 0;
 
-    /* Single pass: bounds, center of mass, and occupancy */
+    obj->surface_voxel_count = 0;
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+
+    /* Single pass: bounds, center of mass, occupancy, and surface voxels */
     for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
     {
         for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
@@ -64,6 +95,17 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                     /* Occupancy: which 8³ region contains this voxel */
                     int32_t region = (x / 8) + ((y / 8) * 2) + ((z / 8) * 4);
                     occupancy |= (uint8_t)(1 << region);
+
+                    /* Extract surface voxels for convex hull */
+                    if (obj->surface_voxel_count < VOBJ_MAX_SURFACE_VOXELS &&
+                        voxel_has_empty_neighbor(obj, x, y, z))
+                    {
+                        Vec3 local_pos = vec3_create(
+                            ((float)x + 0.5f - half_grid) * obj->voxel_size,
+                            ((float)y + 0.5f - half_grid) * obj->voxel_size,
+                            ((float)z + 0.5f - half_grid) * obj->voxel_size);
+                        obj->surface_voxels[obj->surface_voxel_count++] = local_pos;
+                    }
                 }
             }
         }

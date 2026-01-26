@@ -1,89 +1,32 @@
 #include "collision_object.h"
+#include "convex_hull.h"
+#include "gjk.h"
 #include "engine/core/spatial_hash.h"
 #include <string.h>
 
-static void get_obb_corners(VoxelObject *obj, Vec3 corners[8])
+#define COLLISION_SAMPLE_POINTS 24
+
+typedef struct
 {
-    Vec3 he = obj->shape_half_extents;
-    float mat3[9];
-    quat_to_mat3(obj->orientation, mat3);
+    ConvexHull hull;
+    uint32_t revision;
+    bool valid;
+} CachedHull;
 
-    Vec3 axis_x = vec3_create(mat3[0], mat3[3], mat3[6]);
-    Vec3 axis_y = vec3_create(mat3[1], mat3[4], mat3[7]);
-    Vec3 axis_z = vec3_create(mat3[2], mat3[5], mat3[8]);
+static CachedHull g_hull_cache[VOBJ_MAX_OBJECTS];
 
-    Vec3 scaled_x = vec3_scale(axis_x, he.x);
-    Vec3 scaled_y = vec3_scale(axis_y, he.y);
-    Vec3 scaled_z = vec3_scale(axis_z, he.z);
+static void ensure_hull_valid(VoxelObject *obj, int32_t obj_index)
+{
+    CachedHull *cache = &g_hull_cache[obj_index];
+    if (cache->valid && cache->revision == obj->voxel_revision)
+        return;
 
-    Vec3 c = obj->position;
-
-    corners[0] = vec3_add(c, vec3_add(vec3_add(scaled_x, scaled_y), scaled_z));
-    corners[1] = vec3_add(c, vec3_add(vec3_sub(scaled_x, scaled_y), scaled_z));
-    corners[2] = vec3_add(c, vec3_sub(vec3_add(scaled_x, scaled_y), scaled_z));
-    corners[3] = vec3_add(c, vec3_sub(vec3_sub(scaled_x, scaled_y), scaled_z));
-    corners[4] = vec3_add(c, vec3_add(vec3_add(vec3_neg(scaled_x), scaled_y), scaled_z));
-    corners[5] = vec3_add(c, vec3_add(vec3_sub(vec3_neg(scaled_x), scaled_y), scaled_z));
-    corners[6] = vec3_add(c, vec3_sub(vec3_add(vec3_neg(scaled_x), scaled_y), scaled_z));
-    corners[7] = vec3_add(c, vec3_sub(vec3_sub(vec3_neg(scaled_x), scaled_y), scaled_z));
+    convex_hull_build(obj->surface_voxels, obj->surface_voxel_count, &cache->hull);
+    cache->revision = obj->voxel_revision;
+    cache->valid = true;
 }
 
-static Vec3 world_to_local(VoxelObject *obj, Vec3 world_point)
-{
-    Vec3 relative = vec3_sub(world_point, obj->position);
-    Quat inv_orient = quat_conjugate(obj->orientation);
-    return quat_rotate_vec3(inv_orient, relative);
-}
-
-static bool point_in_obb(VoxelObject *obj, Vec3 world_point)
-{
-    Vec3 local = world_to_local(obj, world_point);
-    Vec3 he = obj->shape_half_extents;
-
-    return (fabsf(local.x) <= he.x &&
-            fabsf(local.y) <= he.y &&
-            fabsf(local.z) <= he.z);
-}
-
-static float point_obb_penetration(VoxelObject *obj, Vec3 world_point, Vec3 *out_normal)
-{
-    Vec3 local = world_to_local(obj, world_point);
-    Vec3 he = obj->shape_half_extents;
-
-    float dx = he.x - fabsf(local.x);
-    float dy = he.y - fabsf(local.y);
-    float dz = he.z - fabsf(local.z);
-
-    if (dx < 0 || dy < 0 || dz < 0)
-    {
-        *out_normal = vec3_zero();
-        return 0.0f;
-    }
-
-    float mat3[9];
-    quat_to_mat3(obj->orientation, mat3);
-
-    if (dx <= dy && dx <= dz)
-    {
-        float sign = local.x >= 0.0f ? 1.0f : -1.0f;
-        *out_normal = vec3_create(mat3[0] * sign, mat3[3] * sign, mat3[6] * sign);
-        return dx;
-    }
-    else if (dy <= dx && dy <= dz)
-    {
-        float sign = local.y >= 0.0f ? 1.0f : -1.0f;
-        *out_normal = vec3_create(mat3[1] * sign, mat3[4] * sign, mat3[7] * sign);
-        return dy;
-    }
-    else
-    {
-        float sign = local.z >= 0.0f ? 1.0f : -1.0f;
-        *out_normal = vec3_create(mat3[2] * sign, mat3[5] * sign, mat3[8] * sign);
-        return dz;
-    }
-}
-
-static bool test_obb_obb_coarse(VoxelObject *a, VoxelObject *b)
+static bool test_sphere_sphere_coarse(VoxelObject *a, VoxelObject *b)
 {
     Vec3 delta = vec3_sub(b->position, a->position);
     float dist_sq = vec3_length_sq(delta);
@@ -91,59 +34,297 @@ static bool test_obb_obb_coarse(VoxelObject *a, VoxelObject *b)
     return dist_sq <= combined_radius * combined_radius;
 }
 
+static void get_obb_axes(VoxelObject *obj, Vec3 axes[3])
+{
+    float mat3[9];
+    quat_to_mat3(obj->orientation, mat3);
+    axes[0] = vec3_create(mat3[0], mat3[3], mat3[6]);
+    axes[1] = vec3_create(mat3[1], mat3[4], mat3[7]);
+    axes[2] = vec3_create(mat3[2], mat3[5], mat3[8]);
+}
+
+static float project_obb_onto_axis(VoxelObject *obj, Vec3 axes[3], Vec3 axis)
+{
+    Vec3 he = obj->shape_half_extents;
+    return he.x * fabsf(vec3_dot(axes[0], axis)) +
+           he.y * fabsf(vec3_dot(axes[1], axis)) +
+           he.z * fabsf(vec3_dot(axes[2], axis));
+}
+
+static bool test_sat_axis(VoxelObject *a, VoxelObject *b,
+                          Vec3 axes_a[3], Vec3 axes_b[3],
+                          Vec3 axis, float *min_overlap, Vec3 *min_axis)
+{
+    float axis_len = vec3_length(axis);
+    if (axis_len < K_EPSILON)
+        return true;
+
+    axis = vec3_scale(axis, 1.0f / axis_len);
+
+    float proj_a = project_obb_onto_axis(a, axes_a, axis);
+    float proj_b = project_obb_onto_axis(b, axes_b, axis);
+
+    Vec3 center_diff = vec3_sub(b->position, a->position);
+    float center_dist = fabsf(vec3_dot(center_diff, axis));
+
+    float overlap = proj_a + proj_b - center_dist;
+
+    if (overlap < 0.0f)
+        return false;
+
+    if (overlap < *min_overlap)
+    {
+        *min_overlap = overlap;
+        if (vec3_dot(center_diff, axis) < 0.0f)
+            *min_axis = vec3_neg(axis);
+        else
+            *min_axis = axis;
+    }
+
+    return true;
+}
+
+static bool test_obb_overlap(VoxelObject *obj_a, VoxelObject *obj_b,
+                              float *out_overlap, Vec3 *out_axis)
+{
+    Vec3 axes_a[3], axes_b[3];
+    get_obb_axes(obj_a, axes_a);
+    get_obb_axes(obj_b, axes_b);
+
+    float min_overlap = 1e10f;
+    Vec3 min_axis = vec3_zero();
+
+    for (int i = 0; i < 3; i++)
+    {
+        if (!test_sat_axis(obj_a, obj_b, axes_a, axes_b, axes_a[i], &min_overlap, &min_axis))
+            return false;
+    }
+
+    for (int i = 0; i < 3; i++)
+    {
+        if (!test_sat_axis(obj_a, obj_b, axes_a, axes_b, axes_b[i], &min_overlap, &min_axis))
+            return false;
+    }
+
+    for (int i = 0; i < 3; i++)
+    {
+        for (int j = 0; j < 3; j++)
+        {
+            Vec3 cross_axis = vec3_cross(axes_a[i], axes_b[j]);
+            if (!test_sat_axis(obj_a, obj_b, axes_a, axes_b, cross_axis, &min_overlap, &min_axis))
+                return false;
+        }
+    }
+
+    *out_overlap = min_overlap;
+    *out_axis = min_axis;
+    return min_overlap > K_EPSILON;
+}
+
+static bool world_to_voxel(VoxelObject *obj, Vec3 world_point,
+                           int32_t *out_vx, int32_t *out_vy, int32_t *out_vz)
+{
+    Vec3 relative = vec3_sub(world_point, obj->position);
+    Quat inv_orient = quat_conjugate(obj->orientation);
+    Vec3 local = quat_rotate_vec3(inv_orient, relative);
+
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+    float inv_voxel = 1.0f / obj->voxel_size;
+
+    int32_t vx = (int32_t)floorf(local.x * inv_voxel + half_grid);
+    int32_t vy = (int32_t)floorf(local.y * inv_voxel + half_grid);
+    int32_t vz = (int32_t)floorf(local.z * inv_voxel + half_grid);
+
+    *out_vx = vx;
+    *out_vy = vy;
+    *out_vz = vz;
+
+    return (vx >= 0 && vx < VOBJ_GRID_SIZE &&
+            vy >= 0 && vy < VOBJ_GRID_SIZE &&
+            vz >= 0 && vz < VOBJ_GRID_SIZE);
+}
+
+static bool is_voxel_occupied(VoxelObject *obj, int32_t vx, int32_t vy, int32_t vz)
+{
+    if (vx < 0 || vx >= VOBJ_GRID_SIZE ||
+        vy < 0 || vy >= VOBJ_GRID_SIZE ||
+        vz < 0 || vz >= VOBJ_GRID_SIZE)
+        return false;
+    return obj->voxels[vobj_index(vx, vy, vz)].material != 0;
+}
+
+static Vec3 estimate_surface_normal(VoxelObject *obj, int32_t vx, int32_t vy, int32_t vz)
+{
+    float nx = 0.0f, ny = 0.0f, nz = 0.0f;
+
+    if (!is_voxel_occupied(obj, vx - 1, vy, vz)) nx += 1.0f;
+    if (!is_voxel_occupied(obj, vx + 1, vy, vz)) nx -= 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy - 1, vz)) ny += 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy + 1, vz)) ny -= 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy, vz - 1)) nz += 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy, vz + 1)) nz -= 1.0f;
+
+    float len = sqrtf(nx * nx + ny * ny + nz * nz);
+    if (len > K_EPSILON)
+        return vec3_create(nx / len, ny / len, nz / len);
+    return vec3_create(0.0f, 1.0f, 0.0f);
+}
+
+static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
+                                          Vec3 sat_axis, float sat_overlap,
+                                          Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
+{
+    Vec3 contact_sum = vec3_zero();
+    Vec3 normal_sum = vec3_zero();
+    float max_pen = 0.0f;
+    int32_t contact_count = 0;
+
+    Vec3 center_a = obj_a->position;
+    Vec3 center_b = obj_b->position;
+    Vec3 midpoint = vec3_scale(vec3_add(center_a, center_b), 0.5f);
+
+    float sample_radius = sat_overlap + obj_a->voxel_size * 2.0f;
+
+    static const float offsets[COLLISION_SAMPLE_POINTS][3] = {
+        {0, 0, 0},
+        {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
+        {1, 1, 0}, {1, -1, 0}, {-1, 1, 0}, {-1, -1, 0},
+        {1, 0, 1}, {1, 0, -1}, {-1, 0, 1}, {-1, 0, -1},
+        {0, 1, 1}, {0, 1, -1}, {0, -1, 1}, {0, -1, -1},
+        {1, 1, 1}, {1, 1, -1}, {1, -1, 1}, {-1, 1, 1}
+    };
+
+    float step = sample_radius / 2.0f;
+
+    for (int32_t i = 0; i < COLLISION_SAMPLE_POINTS; i++)
+    {
+        Vec3 sample_world = vec3_add(midpoint, vec3_create(
+            offsets[i][0] * step,
+            offsets[i][1] * step,
+            offsets[i][2] * step));
+
+        int32_t ax, ay, az;
+        if (!world_to_voxel(obj_a, sample_world, &ax, &ay, &az))
+            continue;
+        if (!is_voxel_occupied(obj_a, ax, ay, az))
+            continue;
+
+        int32_t bx, by, bz;
+        if (!world_to_voxel(obj_b, sample_world, &bx, &by, &bz))
+            continue;
+        if (!is_voxel_occupied(obj_b, bx, by, bz))
+            continue;
+
+        Vec3 local_normal_a = estimate_surface_normal(obj_a, ax, ay, az);
+        Vec3 world_normal_a = quat_rotate_vec3(obj_a->orientation, local_normal_a);
+        Vec3 local_normal_b = estimate_surface_normal(obj_b, bx, by, bz);
+        Vec3 world_normal_b = quat_rotate_vec3(obj_b->orientation, local_normal_b);
+
+        Vec3 combined = vec3_sub(world_normal_a, world_normal_b);
+        float combined_len = vec3_length(combined);
+        if (combined_len > K_EPSILON)
+            combined = vec3_scale(combined, 1.0f / combined_len);
+        else
+            combined = sat_axis;
+
+        contact_sum = vec3_add(contact_sum, sample_world);
+        normal_sum = vec3_add(normal_sum, combined);
+        contact_count++;
+
+        float pen = obj_a->voxel_size * 0.5f + obj_b->voxel_size * 0.5f;
+        if (pen > max_pen)
+            max_pen = pen;
+    }
+
+    if (contact_count == 0)
+        return false;
+
+    float inv_count = 1.0f / (float)contact_count;
+    *out_contact = vec3_scale(contact_sum, inv_count);
+
+    float normal_len = vec3_length(normal_sum);
+    if (normal_len > K_EPSILON)
+    {
+        Vec3 computed_normal = vec3_scale(normal_sum, 1.0f / normal_len);
+        if (vec3_dot(computed_normal, sat_axis) < 0.0f)
+            computed_normal = vec3_neg(computed_normal);
+        *out_normal = computed_normal;
+    }
+    else
+    {
+        *out_normal = sat_axis;
+    }
+
+    *out_penetration = max_pen * (1.0f + 0.5f * (float)contact_count / (float)COLLISION_SAMPLE_POINTS);
+
+    return true;
+}
+
 static bool detect_obb_collision(VoxelObject *obj_a, VoxelObject *obj_b,
                                   Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
 {
-    Vec3 corners_a[8], corners_b[8];
-    get_obb_corners(obj_a, corners_a);
-    get_obb_corners(obj_b, corners_b);
+    float sat_overlap;
+    Vec3 sat_axis;
 
-    Vec3 best_contact = vec3_zero();
-    Vec3 best_normal = vec3_zero();
-    float best_penetration = 0.0f;
-    int32_t contact_count = 0;
+    if (!test_obb_overlap(obj_a, obj_b, &sat_overlap, &sat_axis))
+        return false;
 
-    for (int32_t i = 0; i < 8; i++)
+    if (refine_collision_with_voxels(obj_a, obj_b, sat_axis, sat_overlap,
+                                      out_contact, out_normal, out_penetration))
     {
-        if (point_in_obb(obj_b, corners_a[i]))
-        {
-            Vec3 normal;
-            float pen = point_obb_penetration(obj_b, corners_a[i], &normal);
-            if (pen > best_penetration)
-            {
-                best_penetration = pen;
-                best_contact = corners_a[i];
-                best_normal = normal;
-            }
-            contact_count++;
-        }
-    }
-
-    for (int32_t i = 0; i < 8; i++)
-    {
-        if (point_in_obb(obj_a, corners_b[i]))
-        {
-            Vec3 normal;
-            float pen = point_obb_penetration(obj_a, corners_b[i], &normal);
-            if (pen > best_penetration)
-            {
-                best_penetration = pen;
-                best_contact = corners_b[i];
-                best_normal = vec3_neg(normal);
-            }
-            contact_count++;
-        }
-    }
-
-    if (contact_count > 0 && best_penetration > K_EPSILON)
-    {
-        *out_contact = best_contact;
-        *out_normal = best_normal;
-        *out_penetration = best_penetration;
         return true;
     }
 
-    return false;
+    *out_contact = vec3_scale(vec3_add(obj_a->position, obj_b->position), 0.5f);
+    *out_normal = sat_axis;
+    *out_penetration = sat_overlap;
+    return true;
+}
+
+static bool detect_hull_collision(VoxelObject *obj_a, int32_t idx_a,
+                                   VoxelObject *obj_b, int32_t idx_b,
+                                   Vec3 *out_contact, Vec3 *out_normal,
+                                   float *out_penetration)
+{
+    if (obj_a->surface_voxel_count < 4 || obj_b->surface_voxel_count < 4)
+    {
+        return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
+    }
+
+    ensure_hull_valid(obj_a, idx_a);
+    ensure_hull_valid(obj_b, idx_b);
+
+    CachedHull *cache_a = &g_hull_cache[idx_a];
+    CachedHull *cache_b = &g_hull_cache[idx_b];
+
+    if (cache_a->hull.vertex_count < 4 || cache_b->hull.vertex_count < 4)
+    {
+        return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
+    }
+
+    GJKSimplex simplex;
+    if (!gjk_intersect(&cache_a->hull, obj_a->position, obj_a->orientation,
+                       &cache_b->hull, obj_b->position, obj_b->orientation,
+                       &simplex))
+    {
+        return false;
+    }
+
+    EPAResult epa;
+    if (!epa_penetration(&cache_a->hull, obj_a->position, obj_a->orientation,
+                         &cache_b->hull, obj_b->position, obj_b->orientation,
+                         &simplex, &epa))
+    {
+        *out_contact = vec3_scale(vec3_add(obj_a->position, obj_b->position), 0.5f);
+        *out_normal = vec3_normalize(vec3_sub(obj_b->position, obj_a->position));
+        *out_penetration = 0.01f;
+        return true;
+    }
+
+    *out_contact = vec3_scale(vec3_add(epa.contact_a, epa.contact_b), 0.5f);
+    *out_normal = epa.normal;
+    *out_penetration = epa.depth;
+    return true;
 }
 
 int32_t physics_detect_object_pairs(PhysicsWorld *world,
@@ -181,13 +362,14 @@ int32_t physics_detect_object_pairs(PhysicsWorld *world,
             if (!obj_b->active)
                 continue;
 
-            if (!test_obb_obb_coarse(obj_a, obj_b))
+            if (!test_sphere_sphere_coarse(obj_a, obj_b))
                 continue;
 
             Vec3 contact, normal;
             float penetration;
 
-            if (detect_obb_collision(obj_a, obj_b, &contact, &normal, &penetration))
+            if (detect_hull_collision(obj_a, body_a->vobj_index, obj_b, body_b->vobj_index,
+                                       &contact, &normal, &penetration))
             {
                 pairs[pair_count].body_a = i;
                 pairs[pair_count].body_b = j;
@@ -257,7 +439,7 @@ void physics_resolve_object_collision(PhysicsWorld *world,
 
     Vec3 r_a = vec3_sub(pair->contact_point, obj_a->position);
     Vec3 r_b = vec3_sub(pair->contact_point, obj_b->position);
-    Vec3 n = pair->contact_normal;
+    Vec3 n = vec3_neg(pair->contact_normal);
 
     Vec3 vel_a = get_point_vel(body_a, obj_a, pair->contact_point);
     Vec3 vel_b = get_point_vel(body_b, obj_b, pair->contact_point);
@@ -265,7 +447,7 @@ void physics_resolve_object_collision(PhysicsWorld *world,
 
     float v_n = vec3_dot(rel_vel, n);
 
-    if (v_n > 0.0f)
+    if (v_n >= 0.0f)
         return;
 
     float eff_mass_a = compute_effective_mass_pair(body_a, obj_a, r_a, n);

@@ -1,4 +1,5 @@
 #include "rigidbody.h"
+#include "collision_object.h"
 #include "engine/core/profile.h"
 #include <stdlib.h>
 #include <string.h>
@@ -440,6 +441,8 @@ static void solve_terrain_collision(PhysicsWorld *world, int32_t body_index, flo
         if (eff_mass < K_EPSILON)
             continue;
 
+        float j_n = 0.0f;
+
         if (v_n < -0.01f)
         {
             float effective_restitution = body->restitution;
@@ -447,26 +450,31 @@ static void solve_terrain_collision(PhysicsWorld *world, int32_t body_index, flo
                 effective_restitution = 0.0f;
 
             float bias = -PHYS_BAUMGARTE_FACTOR * (1.0f / dt) * maxf(0.0f, penetration - PHYS_SLOP);
-            float j_n = (-(1.0f + effective_restitution) * v_n + bias) / eff_mass;
+            j_n = (-(1.0f + effective_restitution) * v_n + bias) / eff_mass;
             if (j_n < 0.0f)
                 j_n = 0.0f;
 
             Vec3 impulse_n = vec3_scale(normal, j_n);
             physics_body_apply_impulse(world, body_index, impulse_n, point);
+        }
+        else if (penetration > PHYS_SLOP)
+        {
+            float bias = PHYS_BAUMGARTE_FACTOR * (1.0f / dt) * (penetration - PHYS_SLOP);
+            j_n = bias / eff_mass;
+        }
 
-            Vec3 tangent = vec3_sub(point_vel, vec3_scale(normal, v_n));
-            float tangent_len = vec3_length(tangent);
-            if (tangent_len > K_EPSILON)
-            {
-                tangent = vec3_scale(tangent, 1.0f / tangent_len);
-                float v_t = tangent_len;
-                float j_t = -v_t / eff_mass;
-                float max_friction = body->friction * j_n;
-                j_t = clampf(j_t, -max_friction, max_friction);
+        Vec3 tangent = vec3_sub(point_vel, vec3_scale(normal, v_n));
+        float tangent_len = vec3_length(tangent);
+        if (tangent_len > K_EPSILON && j_n > K_EPSILON)
+        {
+            tangent = vec3_scale(tangent, 1.0f / tangent_len);
+            float v_t = tangent_len;
+            float j_t = -v_t / eff_mass;
+            float max_friction = body->friction * j_n;
+            j_t = clampf(j_t, -max_friction, max_friction);
 
-                Vec3 impulse_t = vec3_scale(tangent, j_t);
-                physics_body_apply_impulse(world, body_index, impulse_t, point);
-            }
+            Vec3 impulse_t = vec3_scale(tangent, j_t);
+            physics_body_apply_impulse(world, body_index, impulse_t, point);
         }
 
         total_correction = vec3_add(total_correction, vec3_scale(normal, penetration));
@@ -615,6 +623,8 @@ void physics_world_step(PhysicsWorld *world, float dt)
             solve_terrain_collision(world, i, dt);
         }
     }
+
+    physics_process_object_collisions(world, dt);
 
     for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
     {

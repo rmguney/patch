@@ -16,6 +16,7 @@ extern "C"
 #define VOBJ_GRID_SIZE 16
 #define VOBJ_TOTAL_VOXELS (VOBJ_GRID_SIZE * VOBJ_GRID_SIZE * VOBJ_GRID_SIZE)
 #define VOBJ_MAX_OBJECTS 512
+#define VOBJ_MAX_SURFACE_VOXELS 512
 
 #define VOBJ_RAYCAST_CELL_SIZE 25.0f
 #define VOBJ_RAYCAST_QUERY_RADIUS 50.0f
@@ -44,6 +45,9 @@ extern "C"
 
         float radius;
         Vec3 shape_half_extents;
+
+        Vec3 surface_voxels[VOBJ_MAX_SURFACE_VOXELS];
+        int32_t surface_voxel_count;
 
         bool active;
         bool shape_dirty;       /* Deferred recalc flag */

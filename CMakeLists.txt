@@ -87,6 +87,10 @@ set(ENGINE_PHYSICS_SOURCES
     engine/physics/particles.c
     engine/physics/rigidbody.h
     engine/physics/rigidbody.c
+    engine/physics/convex_hull.h
+    engine/physics/convex_hull.c
+    engine/physics/gjk.h
+    engine/physics/gjk.c
     engine/physics/collision_object.h
     engine/physics/collision_object.c
     engine/physics/character.h

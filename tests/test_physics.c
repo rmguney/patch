@@ -989,6 +989,256 @@ TEST(ragdoll_apply_impulse)
     return 1;
 }
 
+TEST(object_collision_basic)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(-0.3f, 10.0f, 0.0f),
+                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(0.3f, 10.0f, 0.0f),
+                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(obj_a >= 0 && obj_b >= 0);
+
+    int32_t body_a = physics_world_add_body(physics, obj_a);
+    int32_t body_b = physics_world_add_body(physics, obj_b);
+    ASSERT(body_a >= 0 && body_b >= 0);
+
+    RigidBody *rb_a = physics_world_get_body(physics, body_a);
+    RigidBody *rb_b = physics_world_get_body(physics, body_b);
+    rb_a->flags |= PHYS_FLAG_KINEMATIC;
+    rb_b->flags |= PHYS_FLAG_KINEMATIC;
+    rb_a->flags &= ~PHYS_FLAG_KINEMATIC;
+    rb_b->flags &= ~PHYS_FLAG_KINEMATIC;
+
+    Vec3 initial_pos_a = obj_world->objects[obj_a].position;
+    Vec3 initial_pos_b = obj_world->objects[obj_b].position;
+
+    for (int32_t tick = 0; tick < 30; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    Vec3 final_pos_a = obj_world->objects[obj_a].position;
+    Vec3 final_pos_b = obj_world->objects[obj_b].position;
+
+    float initial_dist = fabsf(initial_pos_b.x - initial_pos_a.x);
+    float final_dist = fabsf(final_pos_b.x - final_pos_a.x);
+
+    printf("(initial_dist=%.2f, final_dist=%.2f) ", initial_dist, final_dist);
+
+    ASSERT(final_dist >= initial_dist - 0.1f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+static int32_t create_small_box_object(VoxelObjectWorld *world, Vec3 position, uint8_t material)
+{
+    if (world->object_count >= VOBJ_MAX_OBJECTS)
+        return -1;
+
+    int32_t slot = world->object_count++;
+    VoxelObject *obj = &world->objects[slot];
+    memset(obj, 0, sizeof(VoxelObject));
+
+    obj->position = position;
+    obj->orientation = quat_identity();
+    obj->active = true;
+    obj->voxel_size = world->voxel_size;
+    obj->voxel_count = 0;
+
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+
+    for (int32_t z = 6; z < 10; z++)
+    {
+        for (int32_t y = 6; y < 10; y++)
+        {
+            for (int32_t x = 6; x < 10; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                obj->voxels[idx].material = material;
+                obj->voxel_count++;
+            }
+        }
+    }
+
+    obj->voxel_revision = 1;
+    voxel_object_recalc_shape(obj);
+    return slot;
+}
+
+TEST(object_collision_dumbbell_gap)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t dumbbell_idx = create_dumbbell_object(obj_world, vec3_create(0.0f, 10.0f, 0.0f), MAT_STONE);
+    ASSERT(dumbbell_idx >= 0);
+
+    int32_t small_box = create_small_box_object(obj_world, vec3_create(0.0f, 10.0f + 1.5f, 0.0f), MAT_STONE);
+    ASSERT(small_box >= 0);
+
+    int32_t body_dumbbell = physics_world_add_body(physics, dumbbell_idx);
+    int32_t body_small = physics_world_add_body(physics, small_box);
+    ASSERT(body_dumbbell >= 0 && body_small >= 0);
+
+    RigidBody *rb_dumbbell = physics_world_get_body(physics, body_dumbbell);
+    rb_dumbbell->flags |= PHYS_FLAG_STATIC;
+
+    RigidBody *rb_small = physics_world_get_body(physics, body_small);
+    rb_small->velocity = vec3_create(0.0f, -2.0f, 0.0f);
+
+    float initial_y = obj_world->objects[small_box].position.y;
+
+    for (int32_t tick = 0; tick < 60; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    float final_y = obj_world->objects[small_box].position.y;
+
+    printf("(initial_y=%.2f, final_y=%.2f) ", initial_y, final_y);
+
+    ASSERT(final_y < initial_y - 1.0f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+static int32_t create_l_shape_object(VoxelObjectWorld *world, Vec3 position, uint8_t material)
+{
+    if (world->object_count >= VOBJ_MAX_OBJECTS)
+        return -1;
+
+    int32_t slot = world->object_count++;
+    VoxelObject *obj = &world->objects[slot];
+    memset(obj, 0, sizeof(VoxelObject));
+
+    obj->position = position;
+    obj->orientation = quat_identity();
+    obj->active = true;
+    obj->voxel_size = world->voxel_size;
+    obj->voxel_count = 0;
+
+    for (int32_t z = 4; z < 12; z++)
+    {
+        for (int32_t y = 4; y < 12; y++)
+        {
+            for (int32_t x = 4; x < 8; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                obj->voxels[idx].material = material;
+                obj->voxel_count++;
+            }
+        }
+    }
+
+    for (int32_t z = 4; z < 8; z++)
+    {
+        for (int32_t y = 4; y < 12; y++)
+        {
+            for (int32_t x = 8; x < 12; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                obj->voxels[idx].material = material;
+                obj->voxel_count++;
+            }
+        }
+    }
+
+    obj->voxel_revision = 1;
+    voxel_object_recalc_shape(obj);
+    return slot;
+}
+
+TEST(object_collision_l_shape)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t l_shape = create_l_shape_object(obj_world, vec3_create(0.0f, 10.0f, 0.0f), MAT_STONE);
+    ASSERT(l_shape >= 0);
+
+    int32_t small_box = create_small_box_object(obj_world, vec3_create(0.5f, 10.0f + 1.0f, 0.5f), MAT_STONE);
+    ASSERT(small_box >= 0);
+
+    int32_t body_l = physics_world_add_body(physics, l_shape);
+    int32_t body_small = physics_world_add_body(physics, small_box);
+    ASSERT(body_l >= 0 && body_small >= 0);
+
+    RigidBody *rb_l = physics_world_get_body(physics, body_l);
+    rb_l->flags |= PHYS_FLAG_STATIC;
+
+    RigidBody *rb_small = physics_world_get_body(physics, body_small);
+    rb_small->velocity = vec3_create(0.0f, -2.0f, 0.0f);
+
+    float initial_y = obj_world->objects[small_box].position.y;
+
+    for (int32_t tick = 0; tick < 60; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    float final_y = obj_world->objects[small_box].position.y;
+
+    printf("(initial_y=%.2f, final_y=%.2f) ", initial_y, final_y);
+
+    ASSERT(final_y < initial_y - 0.5f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+TEST(object_collision_contact_accuracy)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
+                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(0.95f, 10.0f, 0.0f),
+                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(obj_a >= 0 && obj_b >= 0);
+
+    int32_t body_a = physics_world_add_body(physics, obj_a);
+    int32_t body_b = physics_world_add_body(physics, obj_b);
+    ASSERT(body_a >= 0 && body_b >= 0);
+
+    ObjectCollisionPair pairs[PHYS_OBJ_COLLISION_BUDGET];
+    int32_t pair_count = physics_detect_object_pairs(physics, pairs, PHYS_OBJ_COLLISION_BUDGET);
+
+    printf("(pair_count=%d) ", pair_count);
+
+    if (pair_count > 0)
+    {
+        ObjectCollisionPair *pair = &pairs[0];
+
+        Vec3 pos_a = obj_world->objects[obj_a].position;
+        Vec3 pos_b = obj_world->objects[obj_b].position;
+        Vec3 expected_contact = vec3_scale(vec3_add(pos_a, pos_b), 0.5f);
+
+        float contact_error = vec3_length(vec3_sub(pair->contact_point, expected_contact));
+        printf("(contact_error=%.3f) ", contact_error);
+
+        ASSERT(contact_error < 1.0f);
+
+        float normal_len = vec3_length(pair->contact_normal);
+        ASSERT(fabsf(normal_len - 1.0f) < 0.01f);
+    }
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
 int main(void)
 {
     platform_time_init();
@@ -1050,6 +1300,12 @@ int main(void)
     RUN_TEST(ragdoll_spawn_despawn);
     RUN_TEST(ragdoll_update_gravity);
     RUN_TEST(ragdoll_apply_impulse);
+
+    printf("\n=== Object-Object Collision Tests ===\n");
+    RUN_TEST(object_collision_basic);
+    RUN_TEST(object_collision_dumbbell_gap);
+    RUN_TEST(object_collision_l_shape);
+    RUN_TEST(object_collision_contact_accuracy);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;
