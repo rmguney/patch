@@ -71,6 +71,8 @@ extern "C"
         RigidBody bodies[PHYS_MAX_BODIES];
         int32_t body_count;
         int32_t first_free;
+        int32_t max_body_index;
+        int16_t vobj_to_body[VOBJ_MAX_OBJECTS];
         VoxelObjectWorld *objects;
         VoxelVolume *terrain;
         Vec3 gravity;

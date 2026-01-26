@@ -124,10 +124,12 @@ static bool gjk_do_simplex_tetrahedron(GJKSimplex *s, Vec3 *dir)
 
     if (vec3_dot(adb, ao) > 0.0f)
     {
-        s->vertices[0] = s->vertices[2];
-        s->vertices[1] = s->vertices[0];
-        s->vertices[1] = s->vertices[3];
-        s->vertices[2] = s->vertices[3];
+        GJKVertex old_d = s->vertices[0];
+        GJKVertex old_b = s->vertices[2];
+        GJKVertex old_a = s->vertices[3];
+        s->vertices[0] = old_d;
+        s->vertices[1] = old_b;
+        s->vertices[2] = old_a;
         s->count = 3;
         return gjk_do_simplex_triangle(s, dir);
     }

@@ -176,7 +176,6 @@ static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
 {
     Vec3 contact_sum = vec3_zero();
     Vec3 normal_sum = vec3_zero();
-    float max_pen = 0.0f;
     int32_t contact_count = 0;
 
     Vec3 center_a = obj_a->position;
@@ -230,10 +229,6 @@ static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
         contact_sum = vec3_add(contact_sum, sample_world);
         normal_sum = vec3_add(normal_sum, combined);
         contact_count++;
-
-        float pen = obj_a->voxel_size * 0.5f + obj_b->voxel_size * 0.5f;
-        if (pen > max_pen)
-            max_pen = pen;
     }
 
     if (contact_count == 0)
@@ -255,7 +250,7 @@ static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
         *out_normal = sat_axis;
     }
 
-    *out_penetration = max_pen * (1.0f + 0.5f * (float)contact_count / (float)COLLISION_SAMPLE_POINTS);
+    *out_penetration = sat_overlap;
 
     return true;
 }
@@ -327,6 +322,38 @@ static bool detect_hull_collision(VoxelObject *obj_a, int32_t idx_a,
     return true;
 }
 
+static bool try_add_collision_pair(PhysicsWorld *world, VoxelObjectWorld *obj_world,
+                                    ObjectCollisionPair *pairs, int32_t *pair_count,
+                                    int32_t max_pairs, int32_t i, int32_t j)
+{
+    if (*pair_count >= max_pairs)
+        return false;
+
+    RigidBody *body_a = &world->bodies[i];
+    RigidBody *body_b = &world->bodies[j];
+    VoxelObject *obj_a = &obj_world->objects[body_a->vobj_index];
+    VoxelObject *obj_b = &obj_world->objects[body_b->vobj_index];
+
+    if (!test_sphere_sphere_coarse(obj_a, obj_b))
+        return true;
+
+    Vec3 contact, normal;
+    float penetration;
+
+    if (detect_hull_collision(obj_a, body_a->vobj_index, obj_b, body_b->vobj_index,
+                               &contact, &normal, &penetration))
+    {
+        pairs[*pair_count].body_a = i;
+        pairs[*pair_count].body_b = j;
+        pairs[*pair_count].contact_point = contact;
+        pairs[*pair_count].contact_normal = normal;
+        pairs[*pair_count].penetration = penetration;
+        pairs[*pair_count].valid = true;
+        (*pair_count)++;
+    }
+    return true;
+}
+
 int32_t physics_detect_object_pairs(PhysicsWorld *world,
                                     ObjectCollisionPair *pairs,
                                     int32_t max_pairs)
@@ -336,48 +363,60 @@ int32_t physics_detect_object_pairs(PhysicsWorld *world,
 
     int32_t pair_count = 0;
     VoxelObjectWorld *obj_world = world->objects;
+    int32_t limit = world->max_body_index + 1;
 
-    for (int32_t i = 0; i < PHYS_MAX_BODIES && pair_count < max_pairs; i++)
+    int32_t sleeping_indices[PHYS_MAX_BODIES];
+    int32_t sleeping_count = 0;
+
+    for (int32_t i = 0; i < limit; i++)
+    {
+        RigidBody *body = &world->bodies[i];
+        if ((body->flags & PHYS_FLAG_ACTIVE) && (body->flags & PHYS_FLAG_SLEEPING))
+        {
+            VoxelObject *obj = &obj_world->objects[body->vobj_index];
+            if (obj->active)
+                sleeping_indices[sleeping_count++] = i;
+        }
+    }
+
+    for (int32_t i = 0; i < limit && pair_count < max_pairs; i++)
     {
         RigidBody *body_a = &world->bodies[i];
         uint8_t flags_a = body_a->flags;
-        if (!(flags_a & PHYS_FLAG_ACTIVE) || (flags_a & PHYS_FLAG_SLEEPING))
+        if (!(flags_a & PHYS_FLAG_ACTIVE))
+            continue;
+        if (flags_a & PHYS_FLAG_SLEEPING)
             continue;
 
         VoxelObject *obj_a = &obj_world->objects[body_a->vobj_index];
         if (!obj_a->active)
             continue;
 
-        for (int32_t j = i + 1; j < PHYS_MAX_BODIES && pair_count < max_pairs; j++)
+        for (int32_t j = i + 1; j < limit && pair_count < max_pairs; j++)
         {
             RigidBody *body_b = &world->bodies[j];
             uint8_t flags_b = body_b->flags;
             if (!(flags_b & PHYS_FLAG_ACTIVE))
                 continue;
 
-            if ((flags_a & PHYS_FLAG_SLEEPING) && (flags_b & PHYS_FLAG_SLEEPING))
-                continue;
-
             VoxelObject *obj_b = &obj_world->objects[body_b->vobj_index];
             if (!obj_b->active)
                 continue;
 
-            if (!test_sphere_sphere_coarse(obj_a, obj_b))
-                continue;
+            if (!try_add_collision_pair(world, obj_world, pairs, &pair_count, max_pairs, i, j))
+                break;
+        }
 
-            Vec3 contact, normal;
-            float penetration;
-
-            if (detect_hull_collision(obj_a, body_a->vobj_index, obj_b, body_b->vobj_index,
-                                       &contact, &normal, &penetration))
+        if (sleeping_count > 0)
+        {
+            for (int32_t k = 0; k < sleeping_count && pair_count < max_pairs; k++)
             {
-                pairs[pair_count].body_a = i;
-                pairs[pair_count].body_b = j;
-                pairs[pair_count].contact_point = contact;
-                pairs[pair_count].contact_normal = normal;
-                pairs[pair_count].penetration = penetration;
-                pairs[pair_count].valid = true;
-                pair_count++;
+                int32_t j = sleeping_indices[k];
+                if (j >= i)
+                    break;
+
+                if (!try_add_collision_pair(world, obj_world, pairs, &pair_count, max_pairs, i, j))
+                    break;
             }
         }
     }
@@ -425,6 +464,8 @@ void physics_resolve_object_collision(PhysicsWorld *world,
                                       ObjectCollisionPair *pair,
                                       float dt)
 {
+    (void)dt;
+
     if (!world || !pair || !pair->valid)
         return;
 
@@ -439,6 +480,7 @@ void physics_resolve_object_collision(PhysicsWorld *world,
 
     Vec3 r_a = vec3_sub(pair->contact_point, obj_a->position);
     Vec3 r_b = vec3_sub(pair->contact_point, obj_b->position);
+
     Vec3 n = vec3_neg(pair->contact_normal);
 
     Vec3 vel_a = get_point_vel(body_a, obj_a, pair->contact_point);
@@ -447,53 +489,75 @@ void physics_resolve_object_collision(PhysicsWorld *world,
 
     float v_n = vec3_dot(rel_vel, n);
 
-    if (v_n >= 0.0f)
-        return;
+    float inv_mass_a = (body_a->flags & PHYS_FLAG_STATIC) ? 0.0f : body_a->inv_mass;
+    float inv_mass_b = (body_b->flags & PHYS_FLAG_STATIC) ? 0.0f : body_b->inv_mass;
 
-    float eff_mass_a = compute_effective_mass_pair(body_a, obj_a, r_a, n);
-    float eff_mass_b = compute_effective_mass_pair(body_b, obj_b, r_b, n);
+    float eff_mass_a = (inv_mass_a > 0.0f) ? compute_effective_mass_pair(body_a, obj_a, r_a, n) : 0.0f;
+    float eff_mass_b = (inv_mass_b > 0.0f) ? compute_effective_mass_pair(body_b, obj_b, r_b, n) : 0.0f;
     float total_eff_mass = eff_mass_a + eff_mass_b;
 
     if (total_eff_mass < K_EPSILON)
+        total_eff_mass = K_EPSILON;
+
+    float total_inv_mass = inv_mass_a + inv_mass_b;
+    if (total_inv_mass < K_EPSILON)
         return;
 
-    float e = minf(body_a->restitution, body_b->restitution);
-    float bias = -PHYS_BAUMGARTE_FACTOR * (1.0f / dt) * maxf(0.0f, pair->penetration - PHYS_SLOP);
-
-    float j_n = (-(1.0f + e) * v_n + bias) / total_eff_mass;
-    if (j_n < 0.0f)
-        j_n = 0.0f;
-
-    Vec3 impulse_n = vec3_scale(n, j_n);
-    physics_body_apply_impulse(world, pair->body_a, impulse_n, pair->contact_point);
-    physics_body_apply_impulse(world, pair->body_b, vec3_neg(impulse_n), pair->contact_point);
-
-    Vec3 tangent = vec3_sub(rel_vel, vec3_scale(n, v_n));
-    float tangent_len = vec3_length(tangent);
-
-    if (tangent_len > K_EPSILON)
+    if (pair->penetration > PHYS_SLOP)
     {
-        tangent = vec3_scale(tangent, 1.0f / tangent_len);
-        float v_t = tangent_len;
-        float mu = (body_a->friction + body_b->friction) * 0.5f;
-        float j_t = -v_t / total_eff_mass;
-        float max_friction = mu * j_n;
+        float correction = (pair->penetration - PHYS_SLOP) * 0.8f;
+        float max_correction = pair->penetration;
+        if (correction > max_correction)
+            correction = max_correction;
 
-        if (j_t < -max_friction)
-            j_t = -max_friction;
-        if (j_t > max_friction)
-            j_t = max_friction;
-
-        Vec3 impulse_t = vec3_scale(tangent, j_t);
-        physics_body_apply_impulse(world, pair->body_a, impulse_t, pair->contact_point);
-        physics_body_apply_impulse(world, pair->body_b, vec3_neg(impulse_t), pair->contact_point);
+        if (inv_mass_a > 0.0f)
+        {
+            float ratio_a = inv_mass_a / total_inv_mass;
+            obj_a->position = vec3_add(obj_a->position, vec3_scale(n, correction * ratio_a));
+        }
+        if (inv_mass_b > 0.0f)
+        {
+            float ratio_b = inv_mass_b / total_inv_mass;
+            obj_b->position = vec3_sub(obj_b->position, vec3_scale(n, correction * ratio_b));
+        }
     }
 
-    float separation = pair->penetration * 0.5f;
-    if (body_a->inv_mass > 0.0f)
-        obj_a->position = vec3_add(obj_a->position, vec3_scale(n, separation * body_a->inv_mass / (body_a->inv_mass + body_b->inv_mass)));
-    if (body_b->inv_mass > 0.0f)
-        obj_b->position = vec3_sub(obj_b->position, vec3_scale(n, separation * body_b->inv_mass / (body_a->inv_mass + body_b->inv_mass)));
+    if (v_n < 0.0f)
+    {
+        float e = minf(body_a->restitution, body_b->restitution);
+        if (fabsf(v_n) < 1.0f)
+            e *= fabsf(v_n);
+
+        float j_n = -(1.0f + e) * v_n / total_eff_mass;
+        if (j_n < 0.0f)
+            j_n = 0.0f;
+
+        Vec3 impulse_n = vec3_scale(n, j_n);
+        if (inv_mass_a > 0.0f)
+            physics_body_apply_impulse(world, pair->body_a, impulse_n, pair->contact_point);
+        if (inv_mass_b > 0.0f)
+            physics_body_apply_impulse(world, pair->body_b, vec3_neg(impulse_n), pair->contact_point);
+
+        Vec3 tangent = vec3_sub(rel_vel, vec3_scale(n, v_n));
+        float tangent_len = vec3_length(tangent);
+
+        if (tangent_len > K_EPSILON)
+        {
+            tangent = vec3_scale(tangent, 1.0f / tangent_len);
+            float v_t = tangent_len;
+            float mu = (body_a->friction + body_b->friction) * 0.5f;
+            float j_t = -v_t / total_eff_mass;
+            float max_friction = mu * j_n;
+
+            j_t = clampf(j_t, -max_friction, max_friction);
+
+            Vec3 impulse_t = vec3_scale(tangent, j_t);
+            if (inv_mass_a > 0.0f)
+                physics_body_apply_impulse(world, pair->body_a, impulse_t, pair->contact_point);
+            if (inv_mass_b > 0.0f)
+                physics_body_apply_impulse(world, pair->body_b, vec3_neg(impulse_t), pair->contact_point);
+        }
+    }
 
     physics_body_wake(world, pair->body_a);
     physics_body_wake(world, pair->body_b);

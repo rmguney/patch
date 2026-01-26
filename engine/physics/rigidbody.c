@@ -15,6 +15,10 @@ PhysicsWorld *physics_world_create(VoxelObjectWorld *objects, VoxelVolume *terra
     world->gravity = vec3_create(0.0f, PHYS_GRAVITY_Y, 0.0f);
     world->body_count = 0;
     world->first_free = -1;
+    world->max_body_index = -1;
+
+    for (int32_t i = 0; i < VOBJ_MAX_OBJECTS; i++)
+        world->vobj_to_body[i] = -1;
 
     for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
     {
@@ -106,6 +110,9 @@ int32_t physics_world_add_body(PhysicsWorld *world, int32_t vobj_index)
     body->next_free = -1;
 
     world->body_count++;
+    if (slot > world->max_body_index)
+        world->max_body_index = slot;
+    world->vobj_to_body[vobj_index] = (int16_t)slot;
     return slot;
 }
 
@@ -148,6 +155,9 @@ int32_t physics_world_add_body_with_mass(PhysicsWorld *world, int32_t vobj_index
     body->next_free = -1;
 
     world->body_count++;
+    if (slot > world->max_body_index)
+        world->max_body_index = slot;
+    world->vobj_to_body[vobj_index] = (int16_t)slot;
     return slot;
 }
 
@@ -160,6 +170,9 @@ void physics_world_remove_body(PhysicsWorld *world, int32_t body_index)
     if (!(body->flags & PHYS_FLAG_ACTIVE))
         return;
 
+    if (body->vobj_index >= 0 && body->vobj_index < VOBJ_MAX_OBJECTS)
+        world->vobj_to_body[body->vobj_index] = -1;
+
     body->flags = 0;
     body->next_free = world->first_free;
     world->first_free = body_index;
@@ -170,12 +183,13 @@ int32_t physics_world_find_body_for_object(PhysicsWorld *world, int32_t vobj_ind
 {
     if (!world)
         return -1;
+    if (vobj_index < 0 || vobj_index >= VOBJ_MAX_OBJECTS)
+        return -1;
 
-    for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
-    {
-        if ((world->bodies[i].flags & PHYS_FLAG_ACTIVE) && world->bodies[i].vobj_index == vobj_index)
-            return i;
-    }
+    int16_t body_idx = world->vobj_to_body[vobj_index];
+    if (body_idx >= 0 && (world->bodies[body_idx].flags & PHYS_FLAG_ACTIVE))
+        return body_idx;
+
     return -1;
 }
 
@@ -603,7 +617,9 @@ void physics_world_step(PhysicsWorld *world, float dt)
 
     PROFILE_BEGIN(PROFILE_SIM_PHYSICS);
 
-    for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
+    int32_t limit = world->max_body_index + 1;
+
+    for (int32_t i = 0; i < limit; i++)
     {
         uint8_t flags = world->bodies[i].flags;
         if (!(flags & PHYS_FLAG_ACTIVE) || (flags & PHYS_FLAG_SLEEPING))
@@ -614,7 +630,7 @@ void physics_world_step(PhysicsWorld *world, float dt)
 
     if (world->terrain)
     {
-        for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
+        for (int32_t i = 0; i < limit; i++)
         {
             uint8_t flags = world->bodies[i].flags;
             if (!(flags & PHYS_FLAG_ACTIVE) || (flags & PHYS_FLAG_SLEEPING))
@@ -626,7 +642,7 @@ void physics_world_step(PhysicsWorld *world, float dt)
 
     physics_process_object_collisions(world, dt);
 
-    for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
+    for (int32_t i = 0; i < limit; i++)
     {
         if (!(world->bodies[i].flags & PHYS_FLAG_ACTIVE))
             continue;
@@ -657,7 +673,8 @@ void physics_world_sync_objects(PhysicsWorld *world)
         }
     }
 
-    for (int32_t i = 0; i < PHYS_MAX_BODIES; i++)
+    int32_t limit = world->max_body_index + 1;
+    for (int32_t i = 0; i < limit; i++)
     {
         RigidBody *body = &world->bodies[i];
         if (!(body->flags & PHYS_FLAG_ACTIVE))

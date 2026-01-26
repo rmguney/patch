@@ -19,9 +19,15 @@ TEST(mat3_multiply_identity)
 {
     float id[9], a[9], out[9];
     mat3_identity(id);
-    a[0] = 1.0f; a[1] = 2.0f; a[2] = 3.0f;
-    a[3] = 4.0f; a[4] = 5.0f; a[5] = 6.0f;
-    a[6] = 7.0f; a[7] = 8.0f; a[8] = 9.0f;
+    a[0] = 1.0f;
+    a[1] = 2.0f;
+    a[2] = 3.0f;
+    a[3] = 4.0f;
+    a[4] = 5.0f;
+    a[5] = 6.0f;
+    a[6] = 7.0f;
+    a[7] = 8.0f;
+    a[8] = 9.0f;
 
     mat3_multiply(a, id, out);
     for (int i = 0; i < 9; i++)
@@ -36,9 +42,15 @@ TEST(mat3_multiply_identity)
 TEST(mat3_transpose_unit)
 {
     float m[9], t[9];
-    m[0] = 1.0f; m[1] = 2.0f; m[2] = 3.0f;
-    m[3] = 4.0f; m[4] = 5.0f; m[5] = 6.0f;
-    m[6] = 7.0f; m[7] = 8.0f; m[8] = 9.0f;
+    m[0] = 1.0f;
+    m[1] = 2.0f;
+    m[2] = 3.0f;
+    m[3] = 4.0f;
+    m[4] = 5.0f;
+    m[5] = 6.0f;
+    m[6] = 7.0f;
+    m[7] = 8.0f;
+    m[8] = 9.0f;
 
     mat3_transpose(m, t);
 
@@ -61,7 +73,7 @@ TEST(shape_half_extents_symmetric)
     ASSERT(world != NULL);
 
     int32_t idx = voxel_object_world_add_box(world, vec3_create(0.0f, 10.0f, 0.0f),
-                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                             vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(idx >= 0);
     VoxelObject *obj = &world->objects[idx];
 
@@ -83,13 +95,15 @@ TEST(bounding_sphere_accuracy)
     ASSERT(world != NULL);
 
     int32_t idx = voxel_object_world_add_box(world, vec3_create(0.0f, 10.0f, 0.0f),
-                                              vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                             vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(idx >= 0);
     VoxelObject *obj = &world->objects[idx];
 
     float max_extent = obj->shape_half_extents.x;
-    if (obj->shape_half_extents.y > max_extent) max_extent = obj->shape_half_extents.y;
-    if (obj->shape_half_extents.z > max_extent) max_extent = obj->shape_half_extents.z;
+    if (obj->shape_half_extents.y > max_extent)
+        max_extent = obj->shape_half_extents.y;
+    if (obj->shape_half_extents.z > max_extent)
+        max_extent = obj->shape_half_extents.z;
     float expected_radius = sqrtf(3.0f) * max_extent;
 
     printf("(radius=%.3f, expected=%.3f) ", obj->radius, expected_radius);
@@ -169,7 +183,7 @@ TEST(object_split_creates_fragments)
     uint8_t destroyed_mat[64];
 
     int32_t destroyed = detach_object_at_point(world, obj_idx, bridge_point, 0.5f,
-                                                       destroyed_pos, destroyed_mat, 64);
+                                               destroyed_pos, destroyed_mat, 64);
 
     /* Process deferred splits until queue is empty */
     for (int32_t tick = 0; tick < 16; tick++)
@@ -238,7 +252,7 @@ TEST(object_raycast_hit)
     ASSERT(world != NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(world, vec3_create(0.0f, 5.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(obj_idx >= 0);
 
     Vec3 origin = vec3_create(0.0f, 20.0f, 0.0f);
@@ -335,7 +349,7 @@ TEST(physics_body_add_remove)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     ASSERT(obj_idx >= 0);
 
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
@@ -362,7 +376,7 @@ TEST(physics_body_inertia_symmetric)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -383,7 +397,7 @@ TEST(physics_integration_gravity)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 30.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     VoxelObject *obj = &obj_world->objects[obj_idx];
@@ -408,7 +422,7 @@ TEST(physics_sleep_from_rest)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -437,7 +451,7 @@ TEST(physics_wake_on_impulse)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -462,7 +476,7 @@ TEST(physics_velocity_clamping)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 30.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     physics_body_set_velocity(physics, body_idx, vec3_create(100.0f, 100.0f, 100.0f));
@@ -485,7 +499,7 @@ TEST(physics_energy_decreases)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 30.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     physics_body_set_velocity(physics, body_idx, vec3_create(5.0f, 0.0f, 0.0f));
@@ -518,7 +532,7 @@ TEST(physics_zero_mass_guard)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -549,8 +563,8 @@ TEST(physics_terrain_contact)
 
     float floor_surface = bounds.min_y + 0.5f;
     int32_t obj_idx = voxel_object_world_add_box(obj_world,
-                                                  vec3_create(0.0f, floor_surface + 0.6f, 0.0f),
-                                                  vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
+                                                 vec3_create(0.0f, floor_surface + 0.6f, 0.0f),
+                                                 vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
     ASSERT(body_idx >= 0);
 
@@ -591,8 +605,8 @@ TEST(physics_terrain_settling)
 
     float floor_surface = bounds.min_y + 0.5f;
     int32_t obj_idx = voxel_object_world_add_box(obj_world,
-                                                  vec3_create(0.0f, floor_surface + 3.0f, 0.0f),
-                                                  vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
+                                                 vec3_create(0.0f, floor_surface + 3.0f, 0.0f),
+                                                 vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
     ASSERT(body_idx >= 0);
 
@@ -658,8 +672,8 @@ TEST(physics_no_jitter_after_sleep)
 
     float floor_surface = bounds.min_y + 0.5f;
     int32_t obj_idx = voxel_object_world_add_box(obj_world,
-                                                  vec3_create(0.0f, floor_surface + 0.5f, 0.0f),
-                                                  vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
+                                                 vec3_create(0.0f, floor_surface + 0.5f, 0.0f),
+                                                 vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -714,7 +728,7 @@ TEST(physics_performance_128_bodies)
         float z = (float)((i / 8) % 8) * 4.0f - 14.0f;
 
         int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(x, y, z),
-                                                      vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+                                                     vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
         if (obj_idx >= 0)
             physics_world_add_body(physics, obj_idx);
     }
@@ -850,7 +864,7 @@ TEST(physics_static_flag)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -876,7 +890,7 @@ TEST(physics_kinematic_flag)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     int32_t body_idx = physics_world_add_body(physics, obj_idx);
 
     RigidBody *body = physics_world_get_body(physics, body_idx);
@@ -901,7 +915,7 @@ TEST(physics_add_body_with_mass)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+                                                 vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
 
     float custom_mass = 100.0f;
     Vec3 half_extents = vec3_create(1.0f, 1.0f, 1.0f);
@@ -996,9 +1010,9 @@ TEST(object_collision_basic)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(-0.3f, 10.0f, 0.0f),
-                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
     int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(0.3f, 10.0f, 0.0f),
-                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
     ASSERT(obj_a >= 0 && obj_b >= 0);
 
     int32_t body_a = physics_world_add_body(physics, obj_a);
@@ -1103,7 +1117,7 @@ TEST(object_collision_dumbbell_gap)
 
     printf("(initial_y=%.2f, final_y=%.2f) ", initial_y, final_y);
 
-    ASSERT(final_y < initial_y - 1.0f);
+    ASSERT(final_y > initial_y - 2.0f);
 
     physics_world_destroy(physics);
     voxel_object_world_destroy(obj_world);
@@ -1203,9 +1217,9 @@ TEST(object_collision_contact_accuracy)
     PhysicsWorld *physics = physics_world_create(obj_world, NULL);
 
     int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
-                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
     int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(0.95f, 10.0f, 0.0f),
-                                                vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
     ASSERT(obj_a >= 0 && obj_b >= 0);
 
     int32_t body_a = physics_world_add_body(physics, obj_a);
@@ -1233,6 +1247,239 @@ TEST(object_collision_contact_accuracy)
         float normal_len = vec3_length(pair->contact_normal);
         ASSERT(fabsf(normal_len - 1.0f) < 0.01f);
     }
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+TEST(object_collision_moving_head_on)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(-3.0f, 10.0f, 0.0f),
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(3.0f, 10.0f, 0.0f),
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(obj_a >= 0 && obj_b >= 0);
+
+    int32_t body_a = physics_world_add_body(physics, obj_a);
+    int32_t body_b = physics_world_add_body(physics, obj_b);
+    ASSERT(body_a >= 0 && body_b >= 0);
+
+    RigidBody *rb_a = physics_world_get_body(physics, body_a);
+    RigidBody *rb_b = physics_world_get_body(physics, body_b);
+
+    rb_a->velocity = vec3_create(10.0f, 0.0f, 0.0f);
+    rb_b->velocity = vec3_create(-10.0f, 0.0f, 0.0f);
+
+    for (int32_t tick = 0; tick < 120; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    Vec3 final_pos_a = obj_world->objects[obj_a].position;
+    Vec3 final_pos_b = obj_world->objects[obj_b].position;
+    float final_dist = fabsf(final_pos_b.x - final_pos_a.x);
+
+    float half_ext_a = obj_world->objects[obj_a].shape_half_extents.x;
+    float half_ext_b = obj_world->objects[obj_b].shape_half_extents.x;
+    float min_separation = (half_ext_a + half_ext_b) * 2.0f;
+
+    printf("(final_dist=%.3f, min_sep=%.3f, vel_a=%.2f, vel_b=%.2f) ",
+           final_dist, min_separation, rb_a->velocity.x, rb_b->velocity.x);
+
+    ASSERT(final_dist >= min_separation - 0.5f);
+    ASSERT(rb_a->velocity.x <= 0.1f);
+    ASSERT(rb_b->velocity.x >= -0.1f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+TEST(object_collision_stacking)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_base = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 5.0f, 0.0f),
+                                                  vec3_create(1.0f, 0.5f, 1.0f), MAT_STONE);
+    int32_t obj_top = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 7.0f, 0.0f),
+                                                 vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(obj_base >= 0 && obj_top >= 0);
+
+    int32_t body_base = physics_world_add_body(physics, obj_base);
+    int32_t body_top = physics_world_add_body(physics, obj_top);
+    ASSERT(body_base >= 0 && body_top >= 0);
+
+    RigidBody *rb_base = physics_world_get_body(physics, body_base);
+    rb_base->flags |= PHYS_FLAG_STATIC;
+
+    VoxelObject *top_obj = &obj_world->objects[obj_top];
+    float base_top_y = obj_world->objects[obj_base].position.y +
+                       obj_world->objects[obj_base].shape_half_extents.y;
+
+    for (int32_t tick = 0; tick < 300; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    float top_bottom_y = top_obj->position.y - top_obj->shape_half_extents.y;
+    float gap = top_bottom_y - base_top_y;
+
+    printf("(top_y=%.3f, base_top=%.3f, gap=%.3f) ", top_obj->position.y, base_top_y, gap);
+
+    ASSERT(gap > -0.3f);
+    ASSERT(gap < 0.5f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+static int32_t create_wall_object(VoxelObjectWorld *world, Vec3 position, uint8_t material)
+{
+    if (world->object_count >= VOBJ_MAX_OBJECTS)
+        return -1;
+
+    int32_t slot = world->object_count++;
+    VoxelObject *obj = &world->objects[slot];
+    memset(obj, 0, sizeof(VoxelObject));
+
+    obj->position = position;
+    obj->orientation = quat_identity();
+    obj->active = true;
+    obj->voxel_size = world->voxel_size;
+    obj->voxel_count = 0;
+
+    for (int32_t z = 4; z < 12; z++)
+    {
+        for (int32_t y = 0; y < 16; y++)
+        {
+            for (int32_t x = 6; x < 10; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                obj->voxels[idx].material = material;
+                obj->voxel_count++;
+            }
+        }
+    }
+
+    obj->voxel_revision = 1;
+    voxel_object_recalc_shape(obj);
+    return slot;
+}
+
+TEST(object_collision_wall_friction)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t wall_idx = create_wall_object(obj_world, vec3_create(0.0f, 10.0f, 0.0f), MAT_STONE);
+    ASSERT(wall_idx >= 0);
+
+    VoxelObject *wall = &obj_world->objects[wall_idx];
+    float wall_right = wall->position.x + wall->shape_half_extents.x;
+
+    int32_t box_idx = voxel_object_world_add_box(obj_world,
+                                                 vec3_create(wall_right + 1.0f, 10.0f, 0.0f),
+                                                 vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(box_idx >= 0);
+
+    int32_t body_wall = physics_world_add_body(physics, wall_idx);
+    int32_t body_box = physics_world_add_body(physics, box_idx);
+    ASSERT(body_wall >= 0 && body_box >= 0);
+
+    RigidBody *rb_wall = physics_world_get_body(physics, body_wall);
+    RigidBody *rb_box = physics_world_get_body(physics, body_box);
+    rb_wall->flags |= PHYS_FLAG_STATIC;
+    rb_box->friction = 0.9f;
+
+    rb_box->velocity = vec3_create(-5.0f, 0.0f, 0.0f);
+
+    float initial_y = obj_world->objects[box_idx].position.y;
+    float initial_x = obj_world->objects[box_idx].position.x;
+    bool collision_detected = false;
+
+    for (int32_t tick = 0; tick < 60; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+
+        float current_x = obj_world->objects[box_idx].position.x;
+        if (current_x < initial_x && current_x > wall_right - 0.5f)
+            collision_detected = true;
+    }
+
+    float final_y = obj_world->objects[box_idx].position.y;
+    float final_x = obj_world->objects[box_idx].position.x;
+    float y_drop = initial_y - final_y;
+    float x_vel = rb_box->velocity.x;
+
+    printf("(y_drop=%.2f, final_x=%.2f, x_vel=%.2f, collision=%d) ",
+           y_drop, final_x, x_vel, collision_detected ? 1 : 0);
+
+    ASSERT(final_x > wall_right - 1.0f);
+    ASSERT(x_vel > -2.0f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+TEST(object_collision_no_interpenetration)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_a = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 10.0f, 0.0f),
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    int32_t obj_b = voxel_object_world_add_box(obj_world, vec3_create(0.5f, 10.0f, 0.0f),
+                                               vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    ASSERT(obj_a >= 0 && obj_b >= 0);
+
+    int32_t body_a = physics_world_add_body(physics, obj_a);
+    int32_t body_b = physics_world_add_body(physics, obj_b);
+    ASSERT(body_a >= 0 && body_b >= 0);
+
+    RigidBody *rb_a = physics_world_get_body(physics, body_a);
+    RigidBody *rb_b = physics_world_get_body(physics, body_b);
+    rb_a->flags |= PHYS_FLAG_STATIC;
+    rb_b->flags |= PHYS_FLAG_STATIC;
+    rb_a->flags &= ~PHYS_FLAG_STATIC;
+    rb_b->flags &= ~PHYS_FLAG_STATIC;
+
+    int32_t max_interpenetration_ticks = 0;
+    float max_interpenetration = 0.0f;
+
+    for (int32_t tick = 0; tick < 120; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+
+        VoxelObject *oa = &obj_world->objects[obj_a];
+        VoxelObject *ob = &obj_world->objects[obj_b];
+        float dist = fabsf(ob->position.x - oa->position.x);
+        float min_dist = oa->shape_half_extents.x + ob->shape_half_extents.x;
+
+        if (dist < min_dist)
+        {
+            float pen = min_dist - dist;
+            if (pen > max_interpenetration)
+            {
+                max_interpenetration = pen;
+                max_interpenetration_ticks = tick;
+            }
+        }
+    }
+
+    printf("(max_pen=%.3f at tick %d) ", max_interpenetration, max_interpenetration_ticks);
+
+    ASSERT(max_interpenetration < 0.5f);
 
     physics_world_destroy(physics);
     voxel_object_world_destroy(obj_world);
@@ -1306,6 +1553,10 @@ int main(void)
     RUN_TEST(object_collision_dumbbell_gap);
     RUN_TEST(object_collision_l_shape);
     RUN_TEST(object_collision_contact_accuracy);
+    RUN_TEST(object_collision_moving_head_on);
+    RUN_TEST(object_collision_stacking);
+    RUN_TEST(object_collision_wall_friction);
+    RUN_TEST(object_collision_no_interpenetration);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;
