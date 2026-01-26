@@ -7,7 +7,6 @@
 #include "app/app_ui.h"
 #include "app/app_debug.h"
 #include "game/ball_pit.h"
-#include "game/ball_pit_renderer.h"
 #include "game/roam.h"
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
@@ -22,14 +21,13 @@ static constexpr uint64_t DEFAULT_RNG_SEED = 12345;
 static constexpr float DEFAULT_FOV = 60.0f;
 static constexpr float DEFAULT_NEAR = 0.1f;
 static constexpr float DEFAULT_FAR = 200.0f;
-static constexpr float DEFAULT_ORTHO_WIDTH = 16.0f;
-static constexpr float DEFAULT_ORTHO_HEIGHT = 16.0f;
+static constexpr float DEFAULT_ORTHO_WIDTH = 60.0f;
+static constexpr float DEFAULT_ORTHO_HEIGHT = 60.0f;
 static constexpr float MAX_FRAME_DT = 0.1f;
 static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
 static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
 static constexpr float FREE_CAM_MOVE_SPEED = 20.0f;
 static constexpr int TERRAIN_DEBUG_MODE_COUNT = 14;
-static constexpr float CHAR_LOOK_SENSITIVITY = 0.003f;
 
 static BallPitParams params_from_settings(const AppSettings *s)
 {
@@ -282,11 +280,6 @@ int patch_main(int argc, char *argv[])
     float last_mouse_x = 0.0f;
     float last_mouse_y = 0.0f;
 
-    /* Character controller state for roam scene */
-    bool char_mouse_captured = false;
-    float char_last_mouse_x = 0.0f;
-    float char_last_mouse_y = 0.0f;
-
     while (!window.should_close())
     {
         PROFILE_BEGIN(PROFILE_FRAME_TOTAL);
@@ -323,28 +316,10 @@ int patch_main(int argc, char *argv[])
             {
                 free_camera_pos = renderer.get_camera_position();
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-                /* Release character mouse capture when switching to free camera */
-                if (char_mouse_captured)
-                {
-                    char_mouse_captured = false;
-                }
             }
             else
             {
-                /* Return to character mode for roam, ortho for ball_pit */
-                if (current_scene == ActiveScene::Roam)
-                {
-                    renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-                    window.set_mouse_capture(true);
-                    window.set_cursor_visible(false);
-                    char_mouse_captured = true;
-                    char_last_mouse_x = window.mouse().x;
-                    char_last_mouse_y = window.mouse().y;
-                }
-                else
-                {
-                    renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
-                }
+                renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
                 window.set_mouse_capture(false);
                 window.set_cursor_visible(true);
                 free_camera_mouse_captured = false;
@@ -357,26 +332,11 @@ int patch_main(int argc, char *argv[])
             {
                 app_state = AppState::Paused;
                 app_ui_show_screen(&ui, APP_SCREEN_PAUSE);
-                /* Release mouse on pause */
-                if (char_mouse_captured)
-                {
-                    window.set_mouse_capture(false);
-                    window.set_cursor_visible(true);
-                }
             }
             else if (app_state == AppState::Paused)
             {
                 app_state = AppState::Playing;
                 app_ui_hide(&ui);
-                /* Re-capture mouse on resume for roam scene */
-                if (current_scene == ActiveScene::Roam && !free_camera_active)
-                {
-                    window.set_mouse_capture(true);
-                    window.set_cursor_visible(false);
-                    char_mouse_captured = true;
-                    char_last_mouse_x = window.mouse().x;
-                    char_last_mouse_y = window.mouse().y;
-                }
             }
             else
             {
@@ -490,14 +450,9 @@ int patch_main(int argc, char *argv[])
             current_scene = ActiveScene::Roam;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
-
-            /* Roam uses third-person character controller by default */
-            renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-            window.set_mouse_capture(true);
-            window.set_cursor_visible(false);
-            char_mouse_captured = true;
-            char_last_mouse_x = static_cast<float>(window.width()) / 2.0f;
-            char_last_mouse_y = static_cast<float>(window.height()) / 2.0f;
+            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
+            if (free_camera_active)
+                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
 
             VoxelVolume *terrain = roam_get_terrain(active_scene);
             if (terrain)
@@ -566,13 +521,6 @@ int patch_main(int argc, char *argv[])
             renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
             if (free_camera_active)
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-            /* Release mouse capture */
-            if (char_mouse_captured)
-            {
-                window.set_mouse_capture(false);
-                window.set_cursor_visible(true);
-                char_mouse_captured = false;
-            }
             break;
 
         case APP_ACTION_QUIT:
@@ -598,38 +546,6 @@ int patch_main(int argc, char *argv[])
             else if (current_scene == ActiveScene::Roam)
             {
                 roam_set_ray(active_scene, ray_origin, ray_dir);
-
-                /* Character movement input */
-                if (!free_camera_active && char_mouse_captured)
-                {
-                    float move_x = 0.0f;
-                    float move_z = 0.0f;
-                    if (window.keys().w)
-                        move_z += 1.0f;
-                    if (window.keys().s)
-                        move_z -= 1.0f;
-                    if (window.keys().d)
-                        move_x += 1.0f;
-                    if (window.keys().a)
-                        move_x -= 1.0f;
-
-                    roam_set_move_input(active_scene, move_x, move_z);
-
-                    /* Mouse look */
-                    float dx = window.mouse().x - char_last_mouse_x;
-                    float dy = window.mouse().y - char_last_mouse_y;
-                    char_last_mouse_x = window.mouse().x;
-                    char_last_mouse_y = window.mouse().y;
-
-                    roam_set_look_input(active_scene, -dx * CHAR_LOOK_SENSITIVITY, dy * CHAR_LOOK_SENSITIVITY);
-
-                    /* Jump */
-                    if (window.keys().space)
-                    {
-                        roam_set_jump(active_scene, true);
-                    }
-                }
-
                 scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
                                    window.mouse().left_down, window.mouse().right_down);
             }
@@ -733,10 +649,13 @@ int patch_main(int argc, char *argv[])
         }
         else if (active_scene && current_scene == ActiveScene::Roam)
         {
-            /* Third-person character camera */
-            Vec3 cam_pos = roam_get_camera_position(active_scene);
-            Vec3 cam_target = roam_get_camera_target(active_scene);
-            renderer.set_look_at(cam_pos, cam_target);
+            float content_y = active_scene->bounds.min_y + 2.0f;
+            Vec3 center = vec3_create(
+                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
+                content_y,
+                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+
+            renderer.set_view_angle_at(45.0f, 80.0f, center, dt);
         }
 
         uint32_t image_index;

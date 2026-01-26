@@ -2,19 +2,9 @@
 #include "content/scenes.h"
 #include "content/materials.h"
 #include "engine/core/rng.h"
-#include "engine/physics/collision_object.h"
-#include "engine/sim/detach.h"
 #include <stdlib.h>
 #include <math.h>
 
-#define ROAM_PLAYER_START_HEIGHT 5.0f
-#define ROAM_CAMERA_DISTANCE 5.0f
-#define ROAM_CAMERA_HEIGHT 2.0f
-#define ROAM_CAMERA_LERP_SPEED 8.0f
-#define ROAM_MOVE_SPEED 6.0f
-#define ROAM_JUMP_VELOCITY 8.0f
-#define ROAM_PITCH_MIN -0.8f
-#define ROAM_PITCH_MAX 0.8f
 #define ROAM_BASE_HEIGHT 2.0f
 #define ROAM_GRASS_DEPTH_MULT 1.5f
 #define ROAM_DIRT_DEPTH_MULT 4.0f
@@ -29,12 +19,6 @@
 #define ROAM_PILLAR_RADIUS_MAX 0.6f
 #define ROAM_RAYCAST_MAX_DIST 100.0f
 #define ROAM_DESTROY_RADIUS_MULT 3.0f
-#define ROAM_PARTICLE_VEL_NORM 2.0f
-#define ROAM_PARTICLE_VEL_SPREAD 3.0f
-#define ROAM_PARTICLE_VEL_Y_MAX 4.0f
-#define ROAM_PARTICLE_VEL_Y_MIN 1.0f
-#define ROAM_PARTICLE_SIZE_BASE 0.3f
-#define ROAM_PARTICLE_SIZE_VAR 0.4f
 
 static const uint8_t PASTEL_MATERIALS[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
@@ -197,30 +181,11 @@ static void roam_init(Scene *scene)
     Vec3 origin = vec3_create(scene->bounds.min_x, scene->bounds.min_y, scene->bounds.min_z);
     data->terrain = volume_create_dims(desc->chunks_x, desc->chunks_y, desc->chunks_z, origin, data->voxel_size);
 
-    data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
-    data->particles = particle_system_create(scene->bounds);
-    data->physics = NULL;
-
     generate_terrain(data, desc);
     generate_structures(data, desc);
 
     volume_rebuild_all_occupancy(data->terrain);
     data->stats.terrain_voxels = data->terrain->total_solid_voxels;
-
-    data->physics = physics_world_create(data->objects, data->terrain);
-    connectivity_work_init(&data->detach_work, data->terrain);
-
-    float cx = (scene->bounds.min_x + scene->bounds.max_x) * 0.5f;
-    float cz = (scene->bounds.min_z + scene->bounds.max_z) * 0.5f;
-    Vec3 start_pos = vec3_create(cx, ROAM_BASE_HEIGHT + ROAM_PLAYER_START_HEIGHT, cz);
-    character_init(&data->player, start_pos);
-
-    data->camera_yaw = 0.0f;
-    data->camera_pitch = 0.3f;
-    data->camera_offset = vec3_create(0.0f, ROAM_CAMERA_HEIGHT, -ROAM_CAMERA_DISTANCE);
-    data->camera_position = vec3_add(start_pos, data->camera_offset);
-    data->move_input = vec3_zero();
-    data->jump_pressed = false;
 }
 
 static void roam_destroy_impl(Scene *scene)
@@ -228,13 +193,6 @@ static void roam_destroy_impl(Scene *scene)
     RoamData *data = (RoamData *)scene->user_data;
     if (data)
     {
-        if (data->physics)
-            physics_world_destroy(data->physics);
-        connectivity_work_destroy(&data->detach_work);
-        if (data->particles)
-            particle_system_destroy(data->particles);
-        if (data->objects)
-            voxel_object_world_destroy(data->objects);
         if (data->terrain)
             volume_destroy(data->terrain);
         free(data);
@@ -244,91 +202,7 @@ static void roam_destroy_impl(Scene *scene)
 
 static void roam_tick(Scene *scene)
 {
-    RoamData *data = (RoamData *)scene->user_data;
-    if (!data)
-        return;
-
-    if (data->particles)
-    {
-        particle_system_update(data->particles, SIM_TIMESTEP);
-    }
-
-    if (data->objects)
-    {
-        voxel_object_world_process_splits(data->objects);
-        voxel_object_world_process_recalcs(data->objects);
-        voxel_object_world_update_raycast_grid(data->objects);
-    }
-
-    if (data->terrain && data->objects)
-    {
-        DetachConfig cfg = detach_config_default();
-        detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, NULL);
-    }
-
-    if (data->physics)
-    {
-        physics_world_sync_objects(data->physics);
-        physics_world_step(data->physics, SIM_TIMESTEP);
-        physics_process_object_collisions(data->physics, SIM_TIMESTEP);
-    }
-
-    float cos_yaw = cosf(data->camera_yaw);
-    float sin_yaw = sinf(data->camera_yaw);
-
-    Vec3 forward = vec3_create(sin_yaw, 0.0f, cos_yaw);
-    Vec3 right = vec3_create(cos_yaw, 0.0f, -sin_yaw);
-
-    Vec3 world_move = vec3_zero();
-    world_move = vec3_add(world_move, vec3_scale(forward, data->move_input.z * ROAM_MOVE_SPEED));
-    world_move = vec3_add(world_move, vec3_scale(right, data->move_input.x * ROAM_MOVE_SPEED));
-
-    character_move(&data->player, data->terrain, data->objects, world_move, SIM_TIMESTEP);
-
-    if (data->jump_pressed && data->player.is_grounded)
-    {
-        character_jump(&data->player, ROAM_JUMP_VELOCITY);
-        data->jump_pressed = false;
-    }
-
-    Vec3 player_head = character_get_head_position(&data->player);
-
-    float cam_cos_pitch = cosf(data->camera_pitch);
-    float cam_sin_pitch = sinf(data->camera_pitch);
-
-    Vec3 cam_back = vec3_create(
-        -sin_yaw * cam_cos_pitch,
-        cam_sin_pitch,
-        -cos_yaw * cam_cos_pitch);
-
-    Vec3 target_cam_pos = vec3_add(player_head, vec3_scale(cam_back, ROAM_CAMERA_DISTANCE));
-    target_cam_pos.y += ROAM_CAMERA_HEIGHT * 0.5f;
-
-    float lerp_factor = 1.0f - expf(-ROAM_CAMERA_LERP_SPEED * SIM_TIMESTEP);
-    data->camera_position = vec3_lerp(data->camera_position, target_cam_pos, lerp_factor);
-
-    data->stats.particles_active = data->particles ? data->particles->count : 0;
-}
-
-static void spawn_destruction_particles(RoamData *data, Vec3 pos, Vec3 normal, uint8_t material, RngState *rng)
-{
-    if (!data->particles)
-        return;
-
-    Vec3 color = material_get_color(material);
-    int32_t count = 3 + rng_range_i32(rng, 0, 3);
-
-    for (int32_t i = 0; i < count; i++)
-    {
-        Vec3 vel;
-        vel.x = normal.x * ROAM_PARTICLE_VEL_NORM + rng_signed_half(rng) * ROAM_PARTICLE_VEL_SPREAD;
-        vel.y = normal.y * ROAM_PARTICLE_VEL_NORM + rng_float(rng) * ROAM_PARTICLE_VEL_Y_MAX + ROAM_PARTICLE_VEL_Y_MIN;
-        vel.z = normal.z * ROAM_PARTICLE_VEL_NORM + rng_signed_half(rng) * ROAM_PARTICLE_VEL_SPREAD;
-
-        float size = data->voxel_size * (ROAM_PARTICLE_SIZE_BASE + rng_float(rng) * ROAM_PARTICLE_SIZE_VAR);
-
-        particle_system_add(data->particles, rng, pos, vel, color, size);
-    }
+    (void)scene;
 }
 
 static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool left_down, bool right_down)
@@ -338,7 +212,7 @@ static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool l
     (void)right_down;
 
     RoamData *data = (RoamData *)scene->user_data;
-    if (!data)
+    if (!data || !data->terrain)
         return;
 
     bool left_clicked = left_down && !data->left_was_down;
@@ -354,8 +228,6 @@ static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool l
 
     if (dist < 0.0f)
         return;
-
-    spawn_destruction_particles(data, hit_pos, hit_normal, hit_material, &scene->rng);
 
     float radius = data->voxel_size * ROAM_DESTROY_RADIUS_MULT;
     volume_edit_begin(data->terrain);
@@ -397,7 +269,7 @@ static const SceneVTable roam_vtable = {
 RoamParams roam_default_params(void)
 {
     RoamParams p;
-    p.num_pillars = 15;
+    p.num_pillars = 60;
     p.terrain_amplitude = 3.0f;
     p.terrain_frequency = 0.1f;
     return p;
@@ -418,7 +290,6 @@ Scene *roam_scene_create(Bounds3D bounds, float voxel_size, const RoamParams *pa
 
     data->params = params ? *params : roam_default_params();
     data->voxel_size = voxel_size;
-    data->use_ortho_camera = true;
     data->left_was_down = false;
 
     scene->vtable = &roam_vtable;
@@ -446,30 +317,6 @@ void roam_set_ray(Scene *scene, Vec3 origin, Vec3 direction)
     }
 }
 
-bool roam_get_ortho_camera(Scene *scene)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? data->use_ortho_camera : true;
-}
-
-void roam_set_ortho_camera(Scene *scene, bool ortho)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (data)
-    {
-        data->use_ortho_camera = ortho;
-    }
-}
-
-void roam_toggle_camera(Scene *scene)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (data)
-    {
-        data->use_ortho_camera = !data->use_ortho_camera;
-    }
-}
-
 VoxelVolume *roam_get_terrain(Scene *scene)
 {
     RoamData *data = (RoamData *)scene->user_data;
@@ -478,78 +325,24 @@ VoxelVolume *roam_get_terrain(Scene *scene)
 
 VoxelObjectWorld *roam_get_objects(Scene *scene)
 {
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? data->objects : NULL;
+    (void)scene;
+    return NULL;
 }
 
 ParticleSystem *roam_get_particles(Scene *scene)
 {
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? data->particles : NULL;
+    (void)scene;
+    return NULL;
 }
 
 PhysicsWorld *roam_get_physics(Scene *scene)
 {
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? data->physics : NULL;
+    (void)scene;
+    return NULL;
 }
 
 const RoamStats *roam_get_stats(Scene *scene)
 {
     RoamData *data = (RoamData *)scene->user_data;
     return data ? &data->stats : NULL;
-}
-
-void roam_set_move_input(Scene *scene, float x, float z)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (data)
-    {
-        data->move_input.x = x;
-        data->move_input.z = z;
-    }
-}
-
-void roam_set_look_input(Scene *scene, float yaw_delta, float pitch_delta)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (!data)
-        return;
-
-    data->camera_yaw += yaw_delta;
-    data->camera_pitch += pitch_delta;
-
-    if (data->camera_pitch < ROAM_PITCH_MIN)
-        data->camera_pitch = ROAM_PITCH_MIN;
-    if (data->camera_pitch > ROAM_PITCH_MAX)
-        data->camera_pitch = ROAM_PITCH_MAX;
-}
-
-void roam_set_jump(Scene *scene, bool pressed)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (data)
-    {
-        data->jump_pressed = pressed;
-    }
-}
-
-Vec3 roam_get_camera_position(Scene *scene)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? data->camera_position : vec3_zero();
-}
-
-Vec3 roam_get_camera_target(Scene *scene)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    if (!data)
-        return vec3_zero();
-    return character_get_head_position(&data->player);
-}
-
-Character *roam_get_player(Scene *scene)
-{
-    RoamData *data = (RoamData *)scene->user_data;
-    return data ? &data->player : NULL;
 }

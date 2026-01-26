@@ -93,7 +93,8 @@ layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
 layout(rgba32f, SET_BINDING(2, 4)) writeonly uniform image2D out_world_pos;
 layout(rg16f, SET_BINDING(2, 5)) writeonly uniform image2D out_motion_vector;
 
-const int DEFAULT_MAX_STEPS = 384;  /* Reduced from 512 - bilateral skip handles empty space */
+const int MIN_STEPS = 256;
+const int MAX_STEPS = 2048;
 const int VOBJ_BASE_STEPS = 48;
 
 vec3 world_to_grid(vec3 world_pos) {
@@ -147,18 +148,11 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
     }
 
-    int step_count = (pc.max_steps > 0) ? pc.max_steps : DEFAULT_MAX_STEPS;
-
-    /* Terrain distance LOD: reduce steps for ortho or distant rays.
-       FAR rays (high t_start) can use fewer steps because distant terrain
-       is small on screen. CLOSE rays need full steps to reach far geometry. */
-    if (pc.is_orthographic != 0) {
-        step_count = (step_count * 3) / 4;
-    } else if (t_start > 200.0) {
-        step_count = step_count / 2;
-    } else if (t_start > 100.0) {
-        step_count = (step_count * 3) / 4;
-    }
+    /* Dynamic step count based on ray distance through volume.
+       Use full voxel count - HDDA skips empty chunks efficiently. */
+    float ray_distance = box_hit.y - t_start;
+    int voxels_along_ray = int(ceil(ray_distance / pc.voxel_size));
+    int step_count = (pc.max_steps > 0) ? pc.max_steps : clamp(voxels_along_ray, MIN_STEPS, MAX_STEPS);
 
     for (int i = 0; i < step_count; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
@@ -178,10 +172,17 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         }
 
         if (chunk_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            last_mask = mask;
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip through empty chunk using DDA steps until we exit */
+            ivec3 chunk_min = current_chunk * CHUNK_SIZE;
+            ivec3 chunk_max = chunk_min + CHUNK_SIZE;
+            while (map_pos.x >= chunk_min.x && map_pos.x < chunk_max.x &&
+                   map_pos.y >= chunk_min.y && map_pos.y < chunk_max.y &&
+                   map_pos.z >= chunk_min.z && map_pos.z < chunk_max.z) {
+                bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+                last_mask = mask;
+                side_dist += vec3(mask) * delta_dist;
+                map_pos += ivec3(mask) * step_dir;
+            }
             continue;
         }
 
@@ -194,10 +195,17 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         }
 
         if (region_empty) {
-            bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-            last_mask = mask;
-            side_dist += vec3(mask) * delta_dist;
-            map_pos += ivec3(mask) * step_dir;
+            /* Skip through empty region using DDA steps until we exit */
+            ivec3 region_min = current_chunk * CHUNK_SIZE + current_region * REGION_SIZE;
+            ivec3 region_max = region_min + REGION_SIZE;
+            while (map_pos.x >= region_min.x && map_pos.x < region_max.x &&
+                   map_pos.y >= region_min.y && map_pos.y < region_max.y &&
+                   map_pos.z >= region_min.z && map_pos.z < region_max.z) {
+                bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+                last_mask = mask;
+                side_dist += vec3(mask) * delta_dist;
+                map_pos += ivec3(mask) * step_dir;
+            }
             continue;
         }
 

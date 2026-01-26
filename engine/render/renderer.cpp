@@ -225,7 +225,7 @@ namespace patch
             return false;
         }
 
-        if (!gpu_allocator_.init(instance_, physical_device_, device_, VK_API_VERSION_1_4))
+        if (!gpu_allocator_.init(instance_, physical_device_, device_, VK_API_VERSION_1_3))
         {
             init_error_ = "Failed to initialize GPU memory allocator";
             return false;

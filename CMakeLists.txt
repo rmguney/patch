@@ -265,12 +265,7 @@ set(GAME_C_SOURCES
     game/roam.c
 )
 
-set(GAME_CXX_SOURCES
-    game/ball_pit_renderer.h
-    game/ball_pit_renderer.cpp
-)
-
-add_library(game STATIC ${GAME_C_SOURCES} ${GAME_CXX_SOURCES})
+add_library(game STATIC ${GAME_C_SOURCES})
 target_link_libraries(game PUBLIC
     engine_core
     engine_physics

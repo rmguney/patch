@@ -15,7 +15,7 @@ namespace patch
         app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         app_info.pEngineName = "PatchEngine";
         app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        app_info.apiVersion = VK_API_VERSION_1_4;
+        app_info.apiVersion = VK_API_VERSION_1_3;
 
         const char *extensions[] = {
             VK_KHR_SURFACE_EXTENSION_NAME,
@@ -32,6 +32,8 @@ namespace patch
 
     bool Renderer::select_physical_device()
     {
+        printf("Requesting Vulkan 1.3\n");
+
         uint32_t device_count = 0;
         vkEnumeratePhysicalDevices(instance_, &device_count, nullptr);
         if (device_count == 0)
@@ -75,7 +77,7 @@ namespace patch
 
             printf("GPU %u: %s (%s, Vulkan %u.%u.%u)\n", i, props.deviceName, type_str, major, minor, patch);
 
-            if (props.apiVersion >= VK_API_VERSION_1_4)
+            if (props.apiVersion >= VK_API_VERSION_1_3)
             {
                 if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && discrete_gpu == VK_NULL_HANDLE)
                 {
@@ -91,7 +93,7 @@ namespace patch
         physical_device_ = (discrete_gpu != VK_NULL_HANDLE) ? discrete_gpu : integrated_gpu;
         if (physical_device_ == VK_NULL_HANDLE)
         {
-            printf("No GPU with Vulkan 1.4+ support found\n");
+            printf("No GPU with Vulkan 1.3+ support found\n");
             return false;
         }
 
