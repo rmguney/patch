@@ -21,6 +21,7 @@ extern "C"
         int32_t vertex_count;
         int32_t adjacency[HULL_MAX_VERTICES][HULL_MAX_ADJACENCY];
         int32_t adj_count[HULL_MAX_VERTICES];
+        float margin;
     } ConvexHull;
 
     void convex_hull_build(const Vec3 *points, int32_t count, ConvexHull *out);

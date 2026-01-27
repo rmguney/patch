@@ -30,12 +30,22 @@ extern "C"
     typedef struct
     {
         VoxelVolume *terrain;
+        VoxelObjectWorld *objects;
+        ParticleSystem *particles;
+        PhysicsWorld *physics;
+        void *detach_work; /* ConnectivityWorkBuffer* - opaque to avoid header dependency */
+
         RoamParams params;
         RoamStats stats;
         Vec3 ray_origin;
         Vec3 ray_dir;
         float voxel_size;
+
         bool left_was_down;
+        bool pending_connectivity;
+        bool detach_ready;
+        double last_connectivity_time;
+        Vec3 last_destroy_point;
     } RoamData;
 
     RoamParams roam_default_params(void);

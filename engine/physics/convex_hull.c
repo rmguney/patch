@@ -415,6 +415,14 @@ Vec3 convex_hull_support_point(const ConvexHull *hull, Vec3 dir, Vec3 position, 
         return position;
 
     Vec3 local_point = hull->vertices[idx];
+
+    if (hull->margin > 0.0f)
+    {
+        float dir_len = vec3_length(local_dir);
+        if (dir_len > 1e-6f)
+            local_point = vec3_add(local_point, vec3_scale(local_dir, hull->margin / dir_len));
+    }
+
     Vec3 world_point = quat_rotate_vec3(orientation, local_point);
     return vec3_add(position, world_point);
 }

@@ -27,11 +27,12 @@ typedef struct
 {
     bool enabled;
     int32_t max_islands_per_tick;
-    int32_t max_voxels_per_island;
     int32_t min_voxels_per_island;
     int32_t max_bodies_alive;
     float anchor_y_offset;
 } DetachConfig;
+
+#define DETACH_MAX_SPAWNED 16
 
 /* Result of terrain detach processing */
 typedef struct
@@ -40,6 +41,7 @@ typedef struct
     int32_t bodies_spawned;
     int32_t voxels_removed;
     int32_t islands_skipped;
+    int32_t spawned_indices[DETACH_MAX_SPAWNED];
 } DetachResult;
 
 /* Default config */
@@ -47,8 +49,7 @@ static inline DetachConfig detach_config_default(void)
 {
     DetachConfig cfg;
     cfg.enabled = true;
-    cfg.max_islands_per_tick = 8;
-    cfg.max_voxels_per_island = VOBJ_TOTAL_VOXELS;
+    cfg.max_islands_per_tick = 64;
     cfg.min_voxels_per_island = 4;
     cfg.max_bodies_alive = VOBJ_MAX_OBJECTS - 8;
     cfg.anchor_y_offset = 0.1f;

@@ -18,7 +18,7 @@
  *        uint atlas_slice;
  *        uint material_base;
  *        uint flags;
- *        uint occupancy_mask; // 8-bit region occupancy (2×2×2 regions of 8³)
+ *        uint occupancy_mask; // 8-bit region occupancy (2×2×2 regions of grid_size/2)
  *    };
  *
  * 2. Buffer bindings:
@@ -138,7 +138,7 @@ bool vobj_ray_could_hit(vec3 ray_origin, vec3 ray_dir, int object_idx) {
  *   Mid:   < 80/120/160 units -> medium (36)
  *   Far:   >= threshold      -> reduced (28)
  *
- * Minimum 28 steps to ensure full grid diagonal traversal (sqrt(16^2+16^2+16^2) ~ 27.7).
+ * Minimum 56 steps to ensure full grid diagonal traversal (sqrt(32^2*3) ~ 55.4).
  */
 int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps) {
     float quality_scale = float(max(lod_quality + 1, 1));
@@ -147,13 +147,13 @@ int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps
 
     int steps;
     if (distance < near_thresh) {
-        steps = 52;                   // Full detail
+        steps = 96;                   // Full detail
     } else if (distance < far_thresh) {
-        steps = 36;                   // Medium detail
+        steps = 72;                   // Medium detail
     } else {
-        steps = 28;                   // Reduced detail
+        steps = 56;                   // Reduced detail
     }
-    return max(steps, 28);            // Minimum for typical object traversal
+    return max(steps, 56);            // Minimum for grid diagonal traversal
 }
 
 /*
@@ -161,26 +161,26 @@ int vobj_calc_distance_lod_steps(float distance, int lod_quality, int base_steps
  * Large objects covering more screen need fewer steps (voxels span multiple pixels).
  *
  * Coverage thresholds (minimum 28 steps for diagonal traversal):
- *   > 50% screen -> reduced (28 steps minimum)
- *   > 30% screen -> reduced (28 steps minimum)
- *   > 15% screen -> reduced (28 steps minimum)
- *   > 5% screen  -> medium (28 steps)
- *   <= 5%        -> high detail (32 steps)
+ *   > 50% screen -> reduced (56 steps minimum)
+ *   > 30% screen -> reduced (56 steps minimum)
+ *   > 15% screen -> reduced (56 steps minimum)
+ *   > 5% screen  -> medium (56 steps)
+ *   <= 5%        -> high detail (64 steps)
  */
 int vobj_calc_coverage_lod_steps(float coverage, int base_steps) {
     int steps;
     if (coverage > 0.5) {
-        steps = base_steps / 6;       // ~8 steps (will be clamped)
+        steps = base_steps / 6;
     } else if (coverage > 0.3) {
-        steps = base_steps / 4;       // ~12 steps (will be clamped)
+        steps = base_steps / 4;
     } else if (coverage > 0.15) {
-        steps = base_steps / 3;       // ~16 steps (will be clamped)
+        steps = base_steps / 3;
     } else if (coverage > 0.05) {
-        steps = base_steps / 2;       // ~24 steps (will be clamped)
+        steps = base_steps / 2;
     } else {
-        steps = (base_steps * 2) / 3; // ~32 steps
+        steps = (base_steps * 2) / 3;
     }
-    return max(steps, 28);            // Minimum for typical object traversal
+    return max(steps, 56);            // Minimum for grid diagonal traversal
 }
 
 /*
@@ -255,15 +255,16 @@ HitInfo vobj_march_object(
             break;
         }
 
-        /* Region occupancy check (2×2×2 regions of 8³ voxels) */
-        ivec3 region = dda.map_pos / 8;
+        /* Region occupancy check (2×2×2 regions of grid_size/2 voxels) */
+        int region_size = grid_size_i.x / 2;
+        ivec3 region = dda.map_pos / region_size;
         if (region != last_region) {
             last_region = region;
             int region_idx = region.x + region.y * 2 + region.z * 4;
             if ((occupancy & (1u << region_idx)) == 0u) {
                 /* Skip to region boundary along the DDA exit axis */
-                ivec3 region_min = region * 8;
-                ivec3 region_max = region_min + 7;
+                ivec3 region_min = region * region_size;
+                ivec3 region_max = region_min + (region_size - 1);
                 ivec3 cells_to_exit;
                 cells_to_exit.x = (dda.step_dir.x > 0) ? (region_max.x - dda.map_pos.x + 1) : (dda.map_pos.x - region_min.x + 1);
                 cells_to_exit.y = (dda.step_dir.y > 0) ? (region_max.y - dda.map_pos.y + 1) : (dda.map_pos.y - region_min.y + 1);

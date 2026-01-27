@@ -21,24 +21,30 @@ extern "C"
 #define PHYS_SLEEP_LINEAR_THRESHOLD 0.05f
 #define PHYS_SLEEP_ANGULAR_THRESHOLD 0.1f
 #define PHYS_SLEEP_FRAMES 30
-#define PHYS_GROUND_LINEAR_DAMPING 0.85f
-#define PHYS_GROUND_ANGULAR_DAMPING 0.80f
+#define PHYS_GROUND_LINEAR_DAMPING 0.90f
+#define PHYS_GROUND_ANGULAR_DAMPING 0.85f
 #define PHYS_SETTLE_LINEAR_THRESHOLD 0.3f
 #define PHYS_SETTLE_ANGULAR_THRESHOLD 0.4f
 #define PHYS_GROUND_PERSIST_FRAMES 5
-#define PHYS_DEFAULT_RESTITUTION 0.3f
+#define PHYS_DEFAULT_RESTITUTION 0.4f
+#define PHYS_BOUNCE_DEAD_ZONE 0.2f
 #define PHYS_DEFAULT_FRICTION 0.5f
 #define PHYS_VOXEL_DENSITY 1.0f
 #define PHYS_BAUMGARTE_FACTOR 0.2f
 #define PHYS_SLOP 0.005f
 #define PHYS_MAX_COLLISION_PAIRS 128
 #define PHYS_TERRAIN_SAMPLE_POINTS 14
+#define PHYS_SUBSTEP_VELOCITY_THRESHOLD 10.0f
+#define PHYS_MAX_SUBSTEPS 4
+#define PHYS_STABLE_SUPPORT_RATIO 0.8f
 
 #define PHYS_FLAG_ACTIVE     (1 << 0)
 #define PHYS_FLAG_SLEEPING   (1 << 1)
 #define PHYS_FLAG_STATIC     (1 << 2)
 #define PHYS_FLAG_KINEMATIC  (1 << 3)
-#define PHYS_FLAG_GROUNDED   (1 << 4)
+#define PHYS_FLAG_GROUNDED     (1 << 4)
+#define PHYS_FLAG_OBJ_CONTACT  (1 << 5)
+#define PHYS_FLAG_STABLE       (1 << 6)
 
     typedef struct
     {
@@ -55,6 +61,7 @@ extern "C"
         uint8_t ground_frames;
         uint8_t flags;
         int16_t next_free;
+        uint32_t synced_revision; /* last voxel_revision synced from VoxelObject */
     } RigidBody;
 
     typedef struct
@@ -106,6 +113,8 @@ extern "C"
     void physics_body_compute_inertia(RigidBody *body, Vec3 half_extents);
 
     void physics_world_sync_objects(PhysicsWorld *world);
+
+    void physics_world_wake_in_region(PhysicsWorld *world, Vec3 center, float radius);
 
 #ifdef __cplusplus
 }

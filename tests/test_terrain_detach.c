@@ -4,6 +4,7 @@
 #include "engine/voxel/connectivity.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/sim/detach.h"
+#include "engine/platform/platform.h"
 #include "content/materials.h"
 #include "test_common.h"
 #include <string.h>
@@ -13,7 +14,6 @@ TEST(default_config)
     DetachConfig cfg = detach_config_default();
     ASSERT(cfg.enabled == true);
     ASSERT(cfg.max_islands_per_tick > 0);
-    ASSERT(cfg.max_voxels_per_island > 0);
     ASSERT(cfg.min_voxels_per_island > 0);
     ASSERT(cfg.max_bodies_alive > 0);
     return 1;
@@ -228,6 +228,104 @@ TEST(small_islands_deleted)
     return 1;
 }
 
+TEST(large_island_split)
+{
+    /*
+     * Tests that floating islands larger than VOBJ_GRID_SIZE (32) are subdivided
+     * into multiple VoxelObjects rather than deleted.
+     */
+    Bounds3D bounds = {-64.0f, 64.0f, 0.0f, 128.0f, -64.0f, 64.0f};
+    VoxelVolume *vol = volume_create(8, 8, 8, bounds);
+    ASSERT(vol != NULL);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, vol->voxel_size);
+    ASSERT(obj_world != NULL);
+
+    ConnectivityWorkBuffer work;
+    ASSERT(connectivity_work_init(&work, vol));
+
+    /* Create a floating block larger than 32 voxels in X dimension */
+    Vec3 min_corner = {-20.0f, 40.0f, -2.0f};
+    Vec3 max_corner = {20.0f, 44.0f, 2.0f};
+    volume_edit_begin(vol);
+    volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
+    volume_edit_end(vol);
+
+    DetachConfig cfg = detach_config_default();
+
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+
+    /* Oversized island: subdivided into multiple objects */
+    ASSERT(result.bodies_spawned >= 2);
+
+    /* Voxels should be cleared from terrain */
+    Vec3 check_pos = {0.0f, 42.0f, 0.0f};
+    ASSERT(volume_get_at(vol, check_pos) == 0);
+
+    /* Verify spawned objects have voxels */
+    int32_t total_voxels = 0;
+    for (int32_t i = 0; i < obj_world->object_count; i++)
+    {
+        if (obj_world->objects[i].active)
+            total_voxels += obj_world->objects[i].voxel_count;
+    }
+    ASSERT(total_voxels > 0);
+
+    connectivity_work_destroy(&work);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(vol);
+    return 1;
+}
+
+TEST(detach_performance)
+{
+    /*
+     * Benchmark detach processing to ensure it stays within budget.
+     */
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
+    VoxelVolume *vol = volume_create(2, 2, 2, bounds);
+    ASSERT(vol != NULL);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, vol->voxel_size);
+    ASSERT(obj_world != NULL);
+
+    ConnectivityWorkBuffer work;
+    ASSERT(connectivity_work_init(&work, vol));
+
+    /* Create multiple small floating blocks */
+    for (int i = 0; i < 4; i++)
+    {
+        Vec3 min_corner = {-4.0f + i * 4.0f, 15.0f, -1.0f};
+        Vec3 max_corner = {-2.0f + i * 4.0f, 17.0f, 1.0f};
+        volume_edit_begin(vol);
+        volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
+        volume_edit_end(vol);
+    }
+
+    DetachConfig cfg = detach_config_default();
+
+    PlatformTime start = platform_time_now();
+
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+
+    PlatformTime end = platform_time_now();
+    float ms = platform_time_delta_seconds(start, end) * 1000.0f;
+
+    printf("(%.3fms, %d bodies) ", ms, result.bodies_spawned);
+
+    ASSERT(result.bodies_spawned >= 1);
+
+    /* Budget: <5ms for detach (event-driven, not per-frame) */
+    ASSERT(ms < 5.0f);
+
+    connectivity_work_destroy(&work);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(vol);
+    return 1;
+}
+
 TEST(determinism)
 {
     Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
@@ -288,6 +386,8 @@ int main(void)
     RUN_TEST(floating_island_spawns_object);
     RUN_TEST(anchored_island_stays);
     RUN_TEST(small_islands_deleted);
+    RUN_TEST(large_island_split);
+    RUN_TEST(detach_performance);
     RUN_TEST(determinism);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);

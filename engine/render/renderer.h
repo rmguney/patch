@@ -636,7 +636,7 @@ namespace patch
 
         /* Voxel object GPU raymarching */
         static constexpr uint32_t VOBJ_ATLAS_MAX_OBJECTS = 512;
-        static constexpr uint32_t VOBJ_GRID_DIM = 16;
+        static constexpr uint32_t VOBJ_GRID_DIM = 32;
         VkImage vobj_atlas_image_ = VK_NULL_HANDLE;
         VmaAllocation vobj_atlas_memory_ = VK_NULL_HANDLE;
         VkImageView vobj_atlas_view_ = VK_NULL_HANDLE;

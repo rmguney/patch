@@ -10,6 +10,7 @@ typedef struct
 {
     ConvexHull hull;
     uint32_t revision;
+    const VoxelObject *obj_ptr;
     bool valid;
 } CachedHull;
 
@@ -18,10 +19,12 @@ static CachedHull g_hull_cache[VOBJ_MAX_OBJECTS];
 static void ensure_hull_valid(VoxelObject *obj, int32_t obj_index)
 {
     CachedHull *cache = &g_hull_cache[obj_index];
-    if (cache->valid && cache->revision == obj->voxel_revision)
+    if (cache->valid && cache->obj_ptr == obj && cache->revision == obj->voxel_revision)
         return;
 
     convex_hull_build(obj->surface_voxels, obj->surface_voxel_count, &cache->hull);
+    cache->hull.margin = 0.04f;
+    cache->obj_ptr = obj;
     cache->revision = obj->voxel_revision;
     cache->valid = true;
 }
@@ -85,7 +88,7 @@ static bool test_sat_axis(VoxelObject *a, VoxelObject *b,
 }
 
 static bool test_obb_overlap(VoxelObject *obj_a, VoxelObject *obj_b,
-                              float *out_overlap, Vec3 *out_axis)
+                             float *out_overlap, Vec3 *out_axis)
 {
     Vec3 axes_a[3], axes_b[3];
     get_obb_axes(obj_a, axes_a);
@@ -157,12 +160,18 @@ static Vec3 estimate_surface_normal(VoxelObject *obj, int32_t vx, int32_t vy, in
 {
     float nx = 0.0f, ny = 0.0f, nz = 0.0f;
 
-    if (!is_voxel_occupied(obj, vx - 1, vy, vz)) nx += 1.0f;
-    if (!is_voxel_occupied(obj, vx + 1, vy, vz)) nx -= 1.0f;
-    if (!is_voxel_occupied(obj, vx, vy - 1, vz)) ny += 1.0f;
-    if (!is_voxel_occupied(obj, vx, vy + 1, vz)) ny -= 1.0f;
-    if (!is_voxel_occupied(obj, vx, vy, vz - 1)) nz += 1.0f;
-    if (!is_voxel_occupied(obj, vx, vy, vz + 1)) nz -= 1.0f;
+    if (!is_voxel_occupied(obj, vx - 1, vy, vz))
+        nx += 1.0f;
+    if (!is_voxel_occupied(obj, vx + 1, vy, vz))
+        nx -= 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy - 1, vz))
+        ny += 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy + 1, vz))
+        ny -= 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy, vz - 1))
+        nz += 1.0f;
+    if (!is_voxel_occupied(obj, vx, vy, vz + 1))
+        nz -= 1.0f;
 
     float len = sqrtf(nx * nx + ny * ny + nz * nz);
     if (len > K_EPSILON)
@@ -171,8 +180,8 @@ static Vec3 estimate_surface_normal(VoxelObject *obj, int32_t vx, int32_t vy, in
 }
 
 static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
-                                          Vec3 sat_axis, float sat_overlap,
-                                          Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
+                                         Vec3 sat_axis, float sat_overlap,
+                                         Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
 {
     Vec3 contact_sum = vec3_zero();
     Vec3 normal_sum = vec3_zero();
@@ -186,21 +195,37 @@ static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
 
     static const float offsets[COLLISION_SAMPLE_POINTS][3] = {
         {0, 0, 0},
-        {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
-        {1, 1, 0}, {1, -1, 0}, {-1, 1, 0}, {-1, -1, 0},
-        {1, 0, 1}, {1, 0, -1}, {-1, 0, 1}, {-1, 0, -1},
-        {0, 1, 1}, {0, 1, -1}, {0, -1, 1}, {0, -1, -1},
-        {1, 1, 1}, {1, 1, -1}, {1, -1, 1}, {-1, 1, 1}
-    };
+        {1, 0, 0},
+        {-1, 0, 0},
+        {0, 1, 0},
+        {0, -1, 0},
+        {0, 0, 1},
+        {0, 0, -1},
+        {1, 1, 0},
+        {1, -1, 0},
+        {-1, 1, 0},
+        {-1, -1, 0},
+        {1, 0, 1},
+        {1, 0, -1},
+        {-1, 0, 1},
+        {-1, 0, -1},
+        {0, 1, 1},
+        {0, 1, -1},
+        {0, -1, 1},
+        {0, -1, -1},
+        {1, 1, 1},
+        {1, 1, -1},
+        {1, -1, 1},
+        {-1, 1, 1}};
 
     float step = sample_radius / 2.0f;
 
     for (int32_t i = 0; i < COLLISION_SAMPLE_POINTS; i++)
     {
         Vec3 sample_world = vec3_add(midpoint, vec3_create(
-            offsets[i][0] * step,
-            offsets[i][1] * step,
-            offsets[i][2] * step));
+                                                   offsets[i][0] * step,
+                                                   offsets[i][1] * step,
+                                                   offsets[i][2] * step));
 
         int32_t ax, ay, az;
         if (!world_to_voxel(obj_a, sample_world, &ax, &ay, &az))
@@ -256,7 +281,7 @@ static bool refine_collision_with_voxels(VoxelObject *obj_a, VoxelObject *obj_b,
 }
 
 static bool detect_obb_collision(VoxelObject *obj_a, VoxelObject *obj_b,
-                                  Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
+                                 Vec3 *out_contact, Vec3 *out_normal, float *out_penetration)
 {
     float sat_overlap;
     Vec3 sat_axis;
@@ -265,7 +290,7 @@ static bool detect_obb_collision(VoxelObject *obj_a, VoxelObject *obj_b,
         return false;
 
     if (refine_collision_with_voxels(obj_a, obj_b, sat_axis, sat_overlap,
-                                      out_contact, out_normal, out_penetration))
+                                     out_contact, out_normal, out_penetration))
     {
         return true;
     }
@@ -277,14 +302,12 @@ static bool detect_obb_collision(VoxelObject *obj_a, VoxelObject *obj_b,
 }
 
 static bool detect_hull_collision(VoxelObject *obj_a, int32_t idx_a,
-                                   VoxelObject *obj_b, int32_t idx_b,
-                                   Vec3 *out_contact, Vec3 *out_normal,
-                                   float *out_penetration)
+                                  VoxelObject *obj_b, int32_t idx_b,
+                                  Vec3 *out_contact, Vec3 *out_normal,
+                                  float *out_penetration)
 {
     if (obj_a->surface_voxel_count < 4 || obj_b->surface_voxel_count < 4)
-    {
         return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
-    }
 
     ensure_hull_valid(obj_a, idx_a);
     ensure_hull_valid(obj_b, idx_b);
@@ -293,38 +316,39 @@ static bool detect_hull_collision(VoxelObject *obj_a, int32_t idx_a,
     CachedHull *cache_b = &g_hull_cache[idx_b];
 
     if (cache_a->hull.vertex_count < 4 || cache_b->hull.vertex_count < 4)
-    {
         return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
-    }
 
     GJKSimplex simplex;
     if (!gjk_intersect(&cache_a->hull, obj_a->position, obj_a->orientation,
                        &cache_b->hull, obj_b->position, obj_b->orientation,
                        &simplex))
-    {
         return false;
-    }
 
     EPAResult epa;
     if (!epa_penetration(&cache_a->hull, obj_a->position, obj_a->orientation,
                          &cache_b->hull, obj_b->position, obj_b->orientation,
                          &simplex, &epa))
     {
-        *out_contact = vec3_scale(vec3_add(obj_a->position, obj_b->position), 0.5f);
-        *out_normal = vec3_normalize(vec3_sub(obj_b->position, obj_a->position));
-        *out_penetration = 0.01f;
-        return true;
+        return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
+    }
+
+    float combined_margin = cache_a->hull.margin + cache_b->hull.margin;
+    float adjusted_depth = epa.depth - combined_margin;
+
+    if (adjusted_depth < K_EPSILON)
+    {
+        return detect_obb_collision(obj_a, obj_b, out_contact, out_normal, out_penetration);
     }
 
     *out_contact = vec3_scale(vec3_add(epa.contact_a, epa.contact_b), 0.5f);
     *out_normal = epa.normal;
-    *out_penetration = epa.depth;
+    *out_penetration = adjusted_depth;
     return true;
 }
 
 static bool try_add_collision_pair(PhysicsWorld *world, VoxelObjectWorld *obj_world,
-                                    ObjectCollisionPair *pairs, int32_t *pair_count,
-                                    int32_t max_pairs, int32_t i, int32_t j)
+                                   ObjectCollisionPair *pairs, int32_t *pair_count,
+                                   int32_t max_pairs, int32_t i, int32_t j)
 {
     if (*pair_count >= max_pairs)
         return false;
@@ -341,7 +365,7 @@ static bool try_add_collision_pair(PhysicsWorld *world, VoxelObjectWorld *obj_wo
     float penetration;
 
     if (detect_hull_collision(obj_a, body_a->vobj_index, obj_b, body_b->vobj_index,
-                               &contact, &normal, &penetration))
+                              &contact, &normal, &penetration))
     {
         pairs[*pair_count].body_a = i;
         pairs[*pair_count].body_b = j;
@@ -454,9 +478,15 @@ static float compute_effective_mass_pair(RigidBody *body, VoxelObject *obj, Vec3
     return body->inv_mass + vec3_dot(term, n);
 }
 
+static Vec3 obj_world_com(VoxelObject *obj)
+{
+    Vec3 rotated_com = quat_rotate_vec3(obj->orientation, obj->local_com);
+    return vec3_add(obj->position, rotated_com);
+}
+
 static Vec3 get_point_vel(RigidBody *body, VoxelObject *obj, Vec3 world_point)
 {
-    Vec3 r = vec3_sub(world_point, obj->position);
+    Vec3 r = vec3_sub(world_point, obj_world_com(obj));
     return vec3_add(body->velocity, vec3_cross(body->angular_velocity, r));
 }
 
@@ -478,8 +508,8 @@ void physics_resolve_object_collision(PhysicsWorld *world,
     VoxelObject *obj_a = &world->objects->objects[body_a->vobj_index];
     VoxelObject *obj_b = &world->objects->objects[body_b->vobj_index];
 
-    Vec3 r_a = vec3_sub(pair->contact_point, obj_a->position);
-    Vec3 r_b = vec3_sub(pair->contact_point, obj_b->position);
+    Vec3 r_a = vec3_sub(pair->contact_point, obj_world_com(obj_a));
+    Vec3 r_b = vec3_sub(pair->contact_point, obj_world_com(obj_b));
 
     Vec3 n = vec3_neg(pair->contact_normal);
 
@@ -525,8 +555,8 @@ void physics_resolve_object_collision(PhysicsWorld *world,
     if (v_n < 0.0f)
     {
         float e = minf(body_a->restitution, body_b->restitution);
-        if (fabsf(v_n) < 1.0f)
-            e *= fabsf(v_n);
+        if (fabsf(v_n) < 0.5f)
+            e *= fabsf(v_n) / 0.5f;
 
         float j_n = -(1.0f + e) * v_n / total_eff_mass;
         if (j_n < 0.0f)
@@ -561,6 +591,11 @@ void physics_resolve_object_collision(PhysicsWorld *world,
 
     physics_body_wake(world, pair->body_a);
     physics_body_wake(world, pair->body_b);
+
+    if (pair->contact_normal.y > 0.5f)
+        body_a->flags |= PHYS_FLAG_OBJ_CONTACT;
+    if (pair->contact_normal.y < -0.5f)
+        body_b->flags |= PHYS_FLAG_OBJ_CONTACT;
 }
 
 void physics_process_object_collisions(PhysicsWorld *world, float dt)

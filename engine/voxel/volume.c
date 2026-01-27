@@ -618,6 +618,7 @@ void volume_edit_begin(VoxelVolume *vol)
         return;
 
     vol->edit_batch_active = true;
+    vol->edit_budget_bypass = false;
     vol->edit_count = 0;
     vol->edit_touched_count = 0;
 
@@ -630,8 +631,8 @@ void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material)
     if (!vol || !vol->edit_batch_active)
         return;
 
-    /* Enforce per-tick edit budget */
-    if (vol->edit_count >= VOLUME_MAX_EDITS_PER_TICK)
+    /* Enforce per-tick edit budget (bypassed for correctness-critical operations) */
+    if (vol->edit_count >= VOLUME_MAX_EDITS_PER_TICK && !vol->edit_budget_bypass)
         return;
 
     int32_t cx, cy, cz, lx, ly, lz;

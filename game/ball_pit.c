@@ -296,6 +296,7 @@ static void ball_pit_tick(Scene *scene)
     {
         voxel_object_world_process_splits(data->objects);
         voxel_object_world_process_recalcs(data->objects);
+        voxel_object_world_tick_render_delays(data->objects);
         voxel_object_world_update_raycast_grid(data->objects);
     }
 
@@ -303,7 +304,6 @@ static void ball_pit_tick(Scene *scene)
     {
         physics_world_sync_objects(data->physics);
         physics_world_step(data->physics, dt);
-        physics_process_object_collisions(data->physics, dt);
     }
 
     PlatformTime t1 = platform_time_now();
@@ -442,6 +442,9 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             }
             volume_edit_end(data->terrain);
 
+            if (data->physics)
+                physics_world_wake_in_region(data->physics, terrain_hit_pos, destroy_radius * 2.0f);
+
             for (int32_t i = 0; i < destroyed_count; i++)
             {
                 Vec3 dir = vec3_sub(destroyed_positions[i], terrain_hit_pos);
@@ -463,6 +466,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
 
             /* Mark for deferred connectivity analysis (runs when mouse released) */
             data->pending_connectivity = true;
+            data->last_destroy_point = terrain_hit_pos;
         }
     }
     else
@@ -473,16 +477,58 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             int64_t now_ticks = platform_get_ticks();
             int64_t freq = platform_get_frequency();
             double now = (double)now_ticks / (double)freq;
-            double cooldown_sec = 0.1; /* 100ms minimum between analyses */
+            double cooldown_sec = 0.016; /* ~1 frame minimum between analyses */
 
-            /* Throttle: skip if too soon after last analysis or frame already over budget */
+            /* Throttle: skip if too soon after last analysis */
             bool cooldown_ok = (now - data->last_connectivity_time) >= cooldown_sec;
-            bool budget_ok = profile_budget_used_pct() < 80.0f;
 
-            if (cooldown_ok && budget_ok)
+            if (cooldown_ok)
             {
                 DetachConfig cfg = detach_config_default();
-                detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, NULL);
+                DetachResult detach_result;
+                detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, &detach_result);
+
+                /* Apply outward velocity to newly spawned islands */
+                if (detach_result.bodies_spawned > 0 && data->physics)
+                {
+                    physics_world_sync_objects(data->physics);
+
+                    int32_t count = detach_result.bodies_spawned;
+                    if (count > DETACH_MAX_SPAWNED)
+                        count = DETACH_MAX_SPAWNED;
+
+                    for (int32_t i = 0; i < count; i++)
+                    {
+                        int32_t obj_idx = detach_result.spawned_indices[i];
+                        VoxelObject *obj = &data->objects->objects[obj_idx];
+                        if (!obj->active)
+                            continue;
+
+                        int32_t body_idx = physics_world_find_body_for_object(data->physics, obj_idx);
+                        if (body_idx < 0)
+                            continue;
+
+                        Vec3 dir = vec3_sub(obj->position, data->last_destroy_point);
+                        float dist = vec3_length(dir);
+                        if (dist > 0.001f)
+                            dir = vec3_scale(dir, 1.0f / dist);
+                        else
+                            dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                        float speed = 3.0f;
+                        Vec3 velocity = vec3_scale(dir, speed);
+                        velocity.y += 1.5f;
+                        physics_body_set_velocity(data->physics, body_idx, velocity);
+
+                        RigidBody *body = physics_world_get_body(data->physics, body_idx);
+                        if (body)
+                        {
+                            body->flags &= ~PHYS_FLAG_GROUNDED;
+                            body->ground_frames = 0;
+                        }
+                    }
+                }
+
                 data->pending_connectivity = false;
                 data->last_connectivity_time = now;
             }

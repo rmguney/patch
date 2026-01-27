@@ -742,7 +742,9 @@ namespace patch
             /* Frustum culling: use bounding sphere (sqrt(3) * half_size for cube diagonal) */
             float bounding_radius = half_size * 1.732051f;
             FrustumResult cull_result = frustum_test_sphere(&frustum, obj->position, bounding_radius);
-            bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active;
+            bool atlas_ready = !is_vobj_dirty(static_cast<uint32_t>(i));
+            bool render_ready = obj->render_delay <= 0;
+            bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active && atlas_ready && render_ready;
 
             /* Skip invisible objects - only upload visible ones */
             if (!visible)

@@ -2,7 +2,12 @@
 #include "content/scenes.h"
 #include "content/materials.h"
 #include "engine/core/rng.h"
+#include "engine/core/profile.h"
+#include "engine/voxel/connectivity.h"
+#include "engine/sim/detach.h"
+#include "engine/platform/platform.h"
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 #define ROAM_BASE_HEIGHT 2.0f
@@ -186,6 +191,16 @@ static void roam_init(Scene *scene)
 
     volume_rebuild_all_occupancy(data->terrain);
     data->stats.terrain_voxels = data->terrain->total_solid_voxels;
+
+    ConnectivityWorkBuffer *work = (ConnectivityWorkBuffer *)calloc(1, sizeof(ConnectivityWorkBuffer));
+    data->detach_work = work;
+    data->detach_ready = work && connectivity_work_init(work, data->terrain);
+
+    data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
+    voxel_object_world_set_terrain(data->objects, data->terrain);
+
+    data->particles = particle_system_create(scene->bounds);
+    data->physics = physics_world_create(data->objects, data->terrain);
 }
 
 static void roam_destroy_impl(Scene *scene)
@@ -193,6 +208,17 @@ static void roam_destroy_impl(Scene *scene)
     RoamData *data = (RoamData *)scene->user_data;
     if (data)
     {
+        if (data->physics)
+            physics_world_destroy(data->physics);
+        if (data->particles)
+            particle_system_destroy(data->particles);
+        if (data->objects)
+            voxel_object_world_destroy(data->objects);
+        if (data->detach_work)
+        {
+            connectivity_work_destroy((ConnectivityWorkBuffer *)data->detach_work);
+            free(data->detach_work);
+        }
         if (data->terrain)
             volume_destroy(data->terrain);
         free(data);
@@ -202,7 +228,33 @@ static void roam_destroy_impl(Scene *scene)
 
 static void roam_tick(Scene *scene)
 {
-    (void)scene;
+    RoamData *data = (RoamData *)scene->user_data;
+    if (!data)
+        return;
+
+    float dt = 1.0f / 60.0f;
+
+    if (data->objects)
+    {
+        voxel_object_world_process_splits(data->objects);
+        voxel_object_world_process_recalcs(data->objects);
+        voxel_object_world_tick_render_delays(data->objects);
+    }
+
+    if (data->physics && data->objects)
+    {
+        physics_world_sync_objects(data->physics);
+        physics_world_step(data->physics, dt);
+    }
+
+    if (data->particles)
+    {
+        particle_system_update(data->particles, dt);
+        data->stats.particles_active = data->particles->count;
+    }
+
+    if (data->objects)
+        voxel_object_world_update_raycast_grid(data->objects);
 }
 
 static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool left_down, bool right_down)
@@ -215,41 +267,195 @@ static void roam_handle_input(Scene *scene, float mouse_x, float mouse_y, bool l
     if (!data || !data->terrain)
         return;
 
-    bool left_clicked = left_down && !data->left_was_down;
     data->left_was_down = left_down;
 
-    if (!left_clicked)
-        return;
-
-    Vec3 hit_pos, hit_normal;
-    uint8_t hit_material;
-    float dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir, ROAM_RAYCAST_MAX_DIST,
-                                &hit_pos, &hit_normal, &hit_material);
-
-    if (dist < 0.0f)
-        return;
-
-    float radius = data->voxel_size * ROAM_DESTROY_RADIUS_MULT;
-    volume_edit_begin(data->terrain);
-
-    for (float dx = -radius; dx <= radius; dx += data->voxel_size)
+    if (left_down)
     {
-        for (float dy = -radius; dy <= radius; dy += data->voxel_size)
+        /* Raycast against both terrain and objects */
+        bool terrain_hit = false;
+        float terrain_dist = 1e30f;
+        Vec3 terrain_hit_pos = vec3_zero();
+        Vec3 terrain_hit_normal = vec3_zero();
+        uint8_t terrain_mat = 0;
+
+        VoxelObjectHit obj_hit = {0};
+        float obj_dist = 1e30f;
+
+        if (data->objects)
         {
-            for (float dz = -radius; dz <= radius; dz += data->voxel_size)
+            obj_hit = voxel_object_world_raycast(data->objects, data->ray_origin, data->ray_dir);
+            if (obj_hit.hit)
+                obj_dist = vec3_length(vec3_sub(obj_hit.impact_point, data->ray_origin));
+        }
+
+        terrain_dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir,
+                                      ROAM_RAYCAST_MAX_DIST, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat);
+        terrain_hit = (terrain_dist >= 0.0f && terrain_mat != 0);
+
+        /* Destroy object voxels */
+        if (obj_hit.hit && (!terrain_hit || obj_dist <= terrain_dist))
+        {
+#define MAX_DESTROYED 64
+            Vec3 destroyed_positions[MAX_DESTROYED];
+            uint8_t destroyed_materials[MAX_DESTROYED];
+
+            float destroy_radius = data->objects->voxel_size * 1.5f;
+            int32_t destroyed = detach_object_at_point(
+                data->objects, obj_hit.object_index, obj_hit.impact_point, destroy_radius,
+                destroyed_positions, destroyed_materials, MAX_DESTROYED);
+            int32_t destroyed_cap = destroyed < MAX_DESTROYED ? destroyed : MAX_DESTROYED;
+
+            float voxel_size = data->objects->voxel_size;
+            for (int32_t i = 0; i < destroyed_cap; i++)
             {
-                float d2 = dx * dx + dy * dy + dz * dz;
-                if (d2 <= radius * radius)
+                Vec3 color = material_get_color(destroyed_materials[i]);
+                Vec3 dir = vec3_sub(destroyed_positions[i], obj_hit.impact_point);
+                float d = vec3_length(dir);
+                if (d > 0.001f)
+                    dir = vec3_scale(dir, 1.0f / d);
+                else
+                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                float speed = 2.0f + rng_float(&scene->rng) * 2.0f;
+                Vec3 velocity = vec3_scale(dir, speed);
+                velocity.y += 1.0f;
+
+                particle_system_add(data->particles, &scene->rng,
+                                    destroyed_positions[i], velocity, color,
+                                    voxel_size * 0.4f);
+            }
+#undef MAX_DESTROYED
+        }
+
+        /* Destroy terrain voxels */
+        if (terrain_hit && (!obj_hit.hit || terrain_dist < obj_dist))
+        {
+            float destroy_radius = data->terrain->voxel_size * ROAM_DESTROY_RADIUS_MULT;
+
+#define MAX_TERRAIN_DESTROYED 64
+            Vec3 destroyed_positions[MAX_TERRAIN_DESTROYED];
+            Vec3 destroyed_colors[MAX_TERRAIN_DESTROYED];
+            int32_t destroyed_count = 0;
+
+            volume_edit_begin(data->terrain);
+            for (float dx = -destroy_radius; dx <= destroy_radius; dx += data->terrain->voxel_size)
+            {
+                for (float dy = -destroy_radius; dy <= destroy_radius; dy += data->terrain->voxel_size)
                 {
-                    Vec3 vpos = vec3_create(hit_pos.x + dx, hit_pos.y + dy, hit_pos.z + dz);
-                    volume_edit_set(data->terrain, vpos, MAT_AIR);
+                    for (float dz = -destroy_radius; dz <= destroy_radius; dz += data->terrain->voxel_size)
+                    {
+                        Vec3 pos = vec3_create(terrain_hit_pos.x + dx,
+                                               terrain_hit_pos.y + dy,
+                                               terrain_hit_pos.z + dz);
+                        float dist_sq = dx * dx + dy * dy + dz * dz;
+                        if (dist_sq <= destroy_radius * destroy_radius)
+                        {
+                            uint8_t mat = volume_get_at(data->terrain, pos);
+                            if (mat != 0)
+                            {
+                                volume_edit_set(data->terrain, pos, 0);
+
+                                if (destroyed_count < MAX_TERRAIN_DESTROYED)
+                                {
+                                    destroyed_positions[destroyed_count] = pos;
+                                    destroyed_colors[destroyed_count] = material_get_color(mat);
+                                    destroyed_count++;
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+            volume_edit_end(data->terrain);
+
+            for (int32_t i = 0; i < destroyed_count; i++)
+            {
+                Vec3 dir = vec3_sub(destroyed_positions[i], terrain_hit_pos);
+                float d = vec3_length(dir);
+                if (d > 0.001f)
+                    dir = vec3_scale(dir, 1.0f / d);
+                else
+                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                float speed = 2.0f + rng_float(&scene->rng) * 2.0f;
+                Vec3 velocity = vec3_scale(dir, speed);
+                velocity.y += 1.0f;
+
+                particle_system_add(data->particles, &scene->rng,
+                                    destroyed_positions[i], velocity, destroyed_colors[i],
+                                    data->terrain->voxel_size * 0.4f);
+            }
+#undef MAX_TERRAIN_DESTROYED
+
+            data->pending_connectivity = true;
+            data->last_destroy_point = terrain_hit_pos;
+            data->stats.terrain_voxels = data->terrain->total_solid_voxels;
+        }
+    }
+    else
+    {
+        /* Mouse not held - run pending connectivity analysis */
+        if (data->pending_connectivity && data->detach_ready && data->terrain && data->objects)
+        {
+            int64_t now_ticks = platform_get_ticks();
+            int64_t freq = platform_get_frequency();
+            double now = (double)now_ticks / (double)freq;
+            double cooldown_sec = 0.016;
+
+            bool cooldown_ok = (now - data->last_connectivity_time) >= cooldown_sec;
+
+            if (cooldown_ok)
+            {
+                DetachConfig cfg = detach_config_default();
+                DetachResult detach_result;
+                detach_terrain_process(data->terrain, data->objects, &cfg,
+                                       (ConnectivityWorkBuffer *)data->detach_work, &detach_result);
+
+                if (detach_result.bodies_spawned > 0 && data->physics)
+                {
+                    physics_world_sync_objects(data->physics);
+
+                    int32_t count = detach_result.bodies_spawned;
+                    if (count > DETACH_MAX_SPAWNED)
+                        count = DETACH_MAX_SPAWNED;
+
+                    for (int32_t i = 0; i < count; i++)
+                    {
+                        int32_t obj_idx = detach_result.spawned_indices[i];
+                        VoxelObject *obj = &data->objects->objects[obj_idx];
+                        if (!obj->active)
+                            continue;
+
+                        int32_t body_idx = physics_world_find_body_for_object(data->physics, obj_idx);
+                        if (body_idx < 0)
+                            continue;
+
+                        Vec3 dir = vec3_sub(obj->position, data->last_destroy_point);
+                        float dist = vec3_length(dir);
+                        if (dist > 0.001f)
+                            dir = vec3_scale(dir, 1.0f / dist);
+                        else
+                            dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                        float speed = 3.0f;
+                        Vec3 velocity = vec3_scale(dir, speed);
+                        velocity.y += 1.5f;
+                        physics_body_set_velocity(data->physics, body_idx, velocity);
+
+                        RigidBody *body = physics_world_get_body(data->physics, body_idx);
+                        if (body)
+                        {
+                            body->flags &= ~PHYS_FLAG_GROUNDED;
+                            body->ground_frames = 0;
+                        }
+                    }
+                }
+
+                data->pending_connectivity = false;
+                data->last_connectivity_time = now;
             }
         }
     }
-
-    volume_edit_end(data->terrain);
-    data->stats.terrain_voxels = data->terrain->total_solid_voxels;
 }
 
 static const char *roam_get_name(Scene *scene)
@@ -291,6 +497,9 @@ Scene *roam_scene_create(Bounds3D bounds, float voxel_size, const RoamParams *pa
     data->params = params ? *params : roam_default_params();
     data->voxel_size = voxel_size;
     data->left_was_down = false;
+    data->pending_connectivity = false;
+    data->detach_ready = false;
+    data->last_connectivity_time = 0.0;
 
     scene->vtable = &roam_vtable;
     scene->bounds = bounds;
@@ -325,20 +534,20 @@ VoxelVolume *roam_get_terrain(Scene *scene)
 
 VoxelObjectWorld *roam_get_objects(Scene *scene)
 {
-    (void)scene;
-    return NULL;
+    RoamData *data = (RoamData *)scene->user_data;
+    return data ? data->objects : NULL;
 }
 
 ParticleSystem *roam_get_particles(Scene *scene)
 {
-    (void)scene;
-    return NULL;
+    RoamData *data = (RoamData *)scene->user_data;
+    return data ? data->particles : NULL;
 }
 
 PhysicsWorld *roam_get_physics(Scene *scene)
 {
-    (void)scene;
-    return NULL;
+    RoamData *data = (RoamData *)scene->user_data;
+    return data ? data->physics : NULL;
 }
 
 const RoamStats *roam_get_stats(Scene *scene)

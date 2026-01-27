@@ -161,6 +161,7 @@ bool gjk_intersect(
         return false;
 
     Vec3 dir = vec3_sub(pos_b, pos_a);
+    dir = vec3_add(dir, vec3_create(0.00091f, 0.00037f, 0.00071f));
     if (vec3_length_sq(dir) < GJK_EPSILON * GJK_EPSILON)
         dir = vec3_create(1.0f, 0.0f, 0.0f);
 

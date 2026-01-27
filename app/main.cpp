@@ -421,7 +421,7 @@ int patch_main(int argc, char *argv[])
             current_scene = ActiveScene::BallPit;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
-            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
+            renderer.set_orthographic(20.0f, 20.0f, DEFAULT_FAR);
             if (free_camera_active)
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
 
@@ -645,7 +645,7 @@ int patch_main(int argc, char *argv[])
                 content_y,
                 (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
 
-            renderer.set_view_angle_at(45.0f, 40.0f, center, dt);
+            renderer.set_view_angle_at(45.0f, 20.0f, center, dt);
         }
         else if (active_scene && current_scene == ActiveScene::Roam)
         {

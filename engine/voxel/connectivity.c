@@ -13,11 +13,27 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
 
     int32_t total_voxels = vol->total_chunks * CHUNK_VOXEL_COUNT;
 
+    /* BFS stack sized to volume (capped to avoid excessive allocation) */
+    int32_t stack_size = total_voxels;
+    if (stack_size > CONNECTIVITY_MAX_STACK_SIZE)
+        stack_size = CONNECTIVITY_MAX_STACK_SIZE;
+    if (stack_size < CONNECTIVITY_MIN_STACK_SIZE)
+        stack_size = CONNECTIVITY_MIN_STACK_SIZE;
+
+    work->stack = (int32_t *)malloc((size_t)stack_size * sizeof(int32_t));
+    if (!work->stack)
+        return false;
+    work->stack_capacity = stack_size;
+
     /* Generation-based visited: 1 byte per voxel instead of 1 bit */
     work->visited_size = total_voxels;
     work->visited_gen = (uint8_t *)calloc(1, (size_t)work->visited_size);
     if (!work->visited_gen)
+    {
+        free(work->stack);
+        work->stack = NULL;
         return false;
+    }
 
     work->generation = 1;  /* Start at 1; 0 means "never visited" */
 
@@ -25,6 +41,8 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
     work->island_ids = (uint8_t *)calloc(1, (size_t)work->island_ids_size);
     if (!work->island_ids)
     {
+        free(work->stack);
+        work->stack = NULL;
         free(work->visited_gen);
         work->visited_gen = NULL;
         return false;
@@ -38,6 +56,11 @@ void connectivity_work_destroy(ConnectivityWorkBuffer *work)
     if (!work)
         return;
 
+    if (work->stack)
+    {
+        free(work->stack);
+        work->stack = NULL;
+    }
     if (work->visited_gen)
     {
         free(work->visited_gen);
@@ -128,6 +151,7 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
                               uint8_t island_id, IslandInfo *island, float anchor_y, uint8_t anchor_mat)
 {
     work->stack_top = 0;
+    bool stack_overflowed = false;
 
     int32_t packed = pack_voxel_pos(start_cx, start_cy, start_cz, start_lx, start_ly, start_lz);
     work->stack[work->stack_top++] = packed;
@@ -191,20 +215,15 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         if (global_vz > island->voxel_max_z)
             island->voxel_max_z = global_vz;
 
+        /* Anchor to floor if any voxel is at or below the anchor height */
         if (world_pos.y <= anchor_y + vol->voxel_size)
         {
             island->anchor = ANCHOR_FLOOR;
         }
+        /* Anchor to specific material if specified */
         if (anchor_mat != 0 && mat == anchor_mat)
         {
             island->anchor = ANCHOR_MATERIAL;
-        }
-        if ((cx == 0 || cx == vol->chunks_x - 1 ||
-             cz == 0 || cz == vol->chunks_z - 1) &&
-            world_pos.y <= anchor_y + vol->voxel_size * 2.0f)
-        {
-            if (island->anchor == ANCHOR_NONE)
-                island->anchor = ANCHOR_VOLUME_EDGE;
         }
 
         for (int32_t n = 0; n < 6; n++)
@@ -268,16 +287,14 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
             set_visited(work, neighbor_global);
             set_island_id(work, neighbor_global, island_id);
 
-            if (work->stack_top < CONNECTIVITY_WORK_STACK_SIZE)
+            if (work->stack_top < work->stack_capacity)
             {
                 int32_t neighbor_packed = pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
                 work->stack[work->stack_top++] = neighbor_packed;
             }
             else
             {
-                /* Stack overflow: force anchor to be safe, but note that this
-                   neighbor's neighbors won't be explored, potentially orphaning them. */
-                island->anchor = ANCHOR_FLOOR;
+                stack_overflowed = true;
             }
         }
     }
@@ -287,6 +304,13 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         island->center_of_mass = vec3_scale(com_sum, 1.0f / mass_sum);
         island->total_mass = mass_sum;
     }
+
+    /* If BFS stack overflowed, the island is incomplete — unexplored neighbors
+     * will become false "floating" islands in the outer loop. Force-anchor this
+     * island to prevent false fragmentation of connected terrain. */
+    if (stack_overflowed)
+        island->anchor = ANCHOR_FLOOR;
+
     island->is_floating = (island->anchor == ANCHOR_NONE);
 }
 
@@ -566,6 +590,7 @@ void connectivity_remove_island(VoxelVolume *vol, const IslandInfo *island,
         return;
 
     volume_edit_begin(vol);
+    vol->edit_budget_bypass = true;
 
     for (int32_t gz = island->voxel_min_z; gz <= island->voxel_max_z; gz++)
     {

@@ -54,6 +54,7 @@ extern "C"
         int32_t edit_touched_count;
         int32_t edit_count;
         bool edit_batch_active;
+        bool edit_budget_bypass;
 
         uint64_t edit_touched_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
 

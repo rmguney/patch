@@ -12,8 +12,9 @@ extern "C"
 #endif
 
 #define CONNECTIVITY_MAX_ISLANDS 64
-#define CONNECTIVITY_WORK_STACK_SIZE 65536
 #define CONNECTIVITY_MAX_VOXELS_PER_ISLAND 8192
+#define CONNECTIVITY_MIN_STACK_SIZE 65536
+#define CONNECTIVITY_MAX_STACK_SIZE 1048576
 
 typedef enum
 {
@@ -52,7 +53,8 @@ typedef struct
 
 typedef struct
 {
-    int32_t stack[CONNECTIVITY_WORK_STACK_SIZE];
+    int32_t *stack;          /* Dynamically allocated BFS stack */
+    int32_t stack_capacity;  /* Allocated capacity */
     int32_t stack_top;
 
     /* Generation-based visited tracking (avoids memset on each call) */

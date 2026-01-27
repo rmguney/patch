@@ -1,4 +1,5 @@
 #include "voxel_object.h"
+#include "content/materials.h"
 #include "engine/core/profile.h"
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,96 @@ static bool voxel_has_empty_neighbor(const VoxelObject *obj, int32_t x, int32_t 
     return false;
 }
 
+static void compute_collider_boxes(VoxelObject *obj)
+{
+    obj->collider_box_count = 0;
+
+    uint8_t assigned[VOBJ_TOTAL_VOXELS];
+    memset(assigned, 0, sizeof(assigned));
+
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+    float vs = obj->voxel_size;
+
+    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    {
+        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+        {
+            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            {
+                int32_t idx = vobj_index(x, y, z);
+                if (obj->voxels[idx].material == 0 || assigned[idx])
+                    continue;
+
+                if (obj->collider_box_count >= VOBJ_MAX_COLLIDER_BOXES)
+                    return;
+
+                int32_t ex = x;
+                while (ex + 1 < VOBJ_GRID_SIZE)
+                {
+                    int32_t ni = vobj_index(ex + 1, y, z);
+                    if (obj->voxels[ni].material == 0 || assigned[ni])
+                        break;
+                    ex++;
+                }
+
+                int32_t ey = y;
+                while (ey + 1 < VOBJ_GRID_SIZE)
+                {
+                    bool row_ok = true;
+                    for (int32_t ix = x; ix <= ex; ix++)
+                    {
+                        int32_t ni = vobj_index(ix, ey + 1, z);
+                        if (obj->voxels[ni].material == 0 || assigned[ni])
+                        {
+                            row_ok = false;
+                            break;
+                        }
+                    }
+                    if (!row_ok)
+                        break;
+                    ey++;
+                }
+
+                int32_t ez = z;
+                while (ez + 1 < VOBJ_GRID_SIZE)
+                {
+                    bool plane_ok = true;
+                    for (int32_t iy = y; iy <= ey && plane_ok; iy++)
+                    {
+                        for (int32_t ix = x; ix <= ex; ix++)
+                        {
+                            int32_t ni = vobj_index(ix, iy, ez + 1);
+                            if (obj->voxels[ni].material == 0 || assigned[ni])
+                            {
+                                plane_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!plane_ok)
+                        break;
+                    ez++;
+                }
+
+                for (int32_t iz = z; iz <= ez; iz++)
+                    for (int32_t iy = y; iy <= ey; iy++)
+                        for (int32_t ix = x; ix <= ex; ix++)
+                            assigned[vobj_index(ix, iy, iz)] = 1;
+
+                ColliderBox *box = &obj->collider_boxes[obj->collider_box_count++];
+                box->local_min = vec3_create(
+                    ((float)x - half_grid) * vs,
+                    ((float)y - half_grid) * vs,
+                    ((float)z - half_grid) * vs);
+                box->local_max = vec3_create(
+                    ((float)(ex + 1) - half_grid) * vs,
+                    ((float)(ey + 1) - half_grid) * vs,
+                    ((float)(ez + 1) - half_grid) * vs);
+            }
+        }
+    }
+}
+
 void voxel_object_recalc_shape(VoxelObject *obj)
 {
     if (obj->voxel_count <= 0)
@@ -53,7 +144,66 @@ void voxel_object_recalc_shape(VoxelObject *obj)
         obj->active = false;
         obj->shape_dirty = false;
         obj->surface_voxel_count = 0;
+        obj->collider_box_count = 0;
         return;
+    }
+
+    /* Recenter voxels in the 32³ grid so OBB/collision shapes align with obj->position.
+     * After splits or destruction, voxels may be clustered in one corner of the grid.
+     * The OBB and terrain sample points assume voxels are centered around grid position 16. */
+    {
+        int32_t bmin_x = VOBJ_GRID_SIZE, bmax_x = 0;
+        int32_t bmin_y = VOBJ_GRID_SIZE, bmax_y = 0;
+        int32_t bmin_z = VOBJ_GRID_SIZE, bmax_z = 0;
+
+        for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+            for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+                for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+                {
+                    if (obj->voxels[vobj_index(x, y, z)].material != 0)
+                    {
+                        if (x < bmin_x) bmin_x = x;
+                        if (x > bmax_x) bmax_x = x;
+                        if (y < bmin_y) bmin_y = y;
+                        if (y > bmax_y) bmax_y = y;
+                        if (z < bmin_z) bmin_z = z;
+                        if (z > bmax_z) bmax_z = z;
+                    }
+                }
+
+        int32_t occ_x = bmax_x - bmin_x + 1;
+        int32_t occ_y = bmax_y - bmin_y + 1;
+        int32_t occ_z = bmax_z - bmin_z + 1;
+        int32_t ideal_x = (VOBJ_GRID_SIZE - occ_x) / 2;
+        int32_t ideal_y = (VOBJ_GRID_SIZE - occ_y) / 2;
+        int32_t ideal_z = (VOBJ_GRID_SIZE - occ_z) / 2;
+        int32_t sx = ideal_x - bmin_x;
+        int32_t sy = ideal_y - bmin_y;
+        int32_t sz = ideal_z - bmin_z;
+
+        if (sx != 0 || sy != 0 || sz != 0)
+        {
+            Vec3 local_shift = vec3_create(
+                -(float)sx * obj->voxel_size,
+                -(float)sy * obj->voxel_size,
+                -(float)sz * obj->voxel_size);
+            obj->position = vec3_add(obj->position,
+                                     quat_rotate_vec3(obj->orientation, local_shift));
+
+            VObjVoxel tmp[VOBJ_TOTAL_VOXELS];
+            memset(tmp, 0, sizeof(tmp));
+            for (int32_t z = bmin_z; z <= bmax_z; z++)
+                for (int32_t y = bmin_y; y <= bmax_y; y++)
+                    for (int32_t x = bmin_x; x <= bmax_x; x++)
+                    {
+                        int32_t src = vobj_index(x, y, z);
+                        if (obj->voxels[src].material == 0)
+                            continue;
+                        int32_t nx = x + sx, ny = y + sy, nz = z + sz;
+                        tmp[vobj_index(nx, ny, nz)] = obj->voxels[src];
+                    }
+            memcpy(obj->voxels, tmp, sizeof(obj->voxels));
+        }
     }
 
     int32_t min_x = VOBJ_GRID_SIZE, max_x = 0;
@@ -92,18 +242,32 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                     com_z += (float)z + 0.5f;
                     counted++;
 
-                    /* Occupancy: which 8³ region contains this voxel */
-                    int32_t region = (x / 8) + ((y / 8) * 2) + ((z / 8) * 4);
+                    /* Occupancy: which region contains this voxel (2×2×2 regions) */
+                    int32_t region_size = VOBJ_GRID_SIZE / 2;
+                    int32_t region = (x / region_size) + ((y / region_size) * 2) + ((z / region_size) * 4);
                     occupancy |= (uint8_t)(1 << region);
 
-                    /* Extract surface voxels for convex hull */
+                    /* Extract surface voxels for convex hull.
+                     * Push position to voxel boundary along exposed faces
+                     * so the convex hull matches actual voxel extents. */
                     if (obj->surface_voxel_count < VOBJ_MAX_SURFACE_VOXELS &&
                         voxel_has_empty_neighbor(obj, x, y, z))
                     {
+                        bool neg_x = (x == 0 || obj->voxels[vobj_index(x - 1, y, z)].material == 0);
+                        bool pos_x = (x >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x + 1, y, z)].material == 0);
+                        bool neg_y = (y == 0 || obj->voxels[vobj_index(x, y - 1, z)].material == 0);
+                        bool pos_y = (y >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x, y + 1, z)].material == 0);
+                        bool neg_z = (z == 0 || obj->voxels[vobj_index(x, y, z - 1)].material == 0);
+                        bool pos_z = (z >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x, y, z + 1)].material == 0);
+
+                        float ox = (pos_x && !neg_x) ? 1.0f : (neg_x && !pos_x) ? 0.0f : 0.5f;
+                        float oy = (pos_y && !neg_y) ? 1.0f : (neg_y && !pos_y) ? 0.0f : 0.5f;
+                        float oz = (pos_z && !neg_z) ? 1.0f : (neg_z && !pos_z) ? 0.0f : 0.5f;
+
                         Vec3 local_pos = vec3_create(
-                            ((float)x + 0.5f - half_grid) * obj->voxel_size,
-                            ((float)y + 0.5f - half_grid) * obj->voxel_size,
-                            ((float)z + 0.5f - half_grid) * obj->voxel_size);
+                            ((float)x + ox - half_grid) * obj->voxel_size,
+                            ((float)y + oy - half_grid) * obj->voxel_size,
+                            ((float)z + oz - half_grid) * obj->voxel_size);
                         obj->surface_voxels[obj->surface_voxel_count++] = local_pos;
                     }
                 }
@@ -117,6 +281,73 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     float extent_y = (float)(max_y - min_y + 1) * obj->voxel_size * 0.5f;
     float extent_z = (float)(max_z - min_z + 1) * obj->voxel_size * 0.5f;
     obj->shape_half_extents = vec3_create(extent_x, extent_y, extent_z);
+
+    /* Compute center of mass and total mass using per-material density */
+    float mass_sum = 0.0f;
+    float mass_com_x = 0.0f, mass_com_y = 0.0f, mass_com_z = 0.0f;
+    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    {
+        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+        {
+            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            {
+                uint8_t mat = obj->voxels[vobj_index(x, y, z)].material;
+                if (mat != 0)
+                {
+                    const MaterialDescriptor *desc = material_get(mat);
+                    float density = (desc && desc->density > 0.0f) ? desc->density : 1.0f;
+                    float px = ((float)x + 0.5f - half_grid) * obj->voxel_size;
+                    float py = ((float)y + 0.5f - half_grid) * obj->voxel_size;
+                    float pz = ((float)z + 0.5f - half_grid) * obj->voxel_size;
+                    mass_sum += density;
+                    mass_com_x += density * px;
+                    mass_com_y += density * py;
+                    mass_com_z += density * pz;
+                }
+            }
+        }
+    }
+
+    if (mass_sum > 0.0f)
+    {
+        float inv_mass = 1.0f / mass_sum;
+        obj->local_com = vec3_create(mass_com_x * inv_mass,
+                                      mass_com_y * inv_mass,
+                                      mass_com_z * inv_mass);
+    }
+    else
+    {
+        obj->local_com = vec3_zero();
+    }
+    obj->total_mass = mass_sum;
+
+    /* Compute inertia tensor about COM using parallel-axis theorem */
+    float Ixx = 0.0f, Iyy = 0.0f, Izz = 0.0f;
+    float vs2 = obj->voxel_size * obj->voxel_size;
+    float voxel_inertia = vs2 / 6.0f; /* single voxel I = m * s^2 / 6 for each axis */
+    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    {
+        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+        {
+            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            {
+                uint8_t mat = obj->voxels[vobj_index(x, y, z)].material;
+                if (mat != 0)
+                {
+                    const MaterialDescriptor *desc = material_get(mat);
+                    float density = (desc && desc->density > 0.0f) ? desc->density : 1.0f;
+                    float rx = ((float)x + 0.5f - half_grid) * obj->voxel_size - obj->local_com.x;
+                    float ry = ((float)y + 0.5f - half_grid) * obj->voxel_size - obj->local_com.y;
+                    float rz = ((float)z + 0.5f - half_grid) * obj->voxel_size - obj->local_com.z;
+                    float self = density * voxel_inertia;
+                    Ixx += self + density * (ry * ry + rz * rz);
+                    Iyy += self + density * (rx * rx + rz * rz);
+                    Izz += self + density * (rx * rx + ry * ry);
+                }
+            }
+        }
+    }
+    obj->inertia_diag = vec3_create(Ixx, Iyy, Izz);
 
     float inv_count = 1.0f / (float)counted;
     com_x *= inv_count;
@@ -141,6 +372,9 @@ void voxel_object_recalc_shape(VoxelObject *obj)
             max_dist_sq = dist_sq;
     }
     obj->radius = sqrtf(max_dist_sq);
+
+    compute_collider_boxes(obj);
+
     obj->shape_dirty = false;
 }
 
@@ -577,6 +811,17 @@ void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index)
 
     world->split_queue[world->split_queue_tail] = obj_index;
     world->split_queue_tail = next_tail;
+}
+
+void voxel_object_world_tick_render_delays(VoxelObjectWorld *world)
+{
+    if (!world)
+        return;
+    for (int32_t i = 0; i < world->object_count; i++)
+    {
+        if (world->objects[i].active && world->objects[i].render_delay > 0)
+            world->objects[i].render_delay--;
+    }
 }
 
 void voxel_object_world_process_recalcs(VoxelObjectWorld *world)

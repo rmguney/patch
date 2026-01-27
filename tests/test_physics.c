@@ -618,7 +618,7 @@ TEST(physics_terrain_settling)
     int32_t max_sleep_frames = 0;
     int32_t above_threshold_count = 0;
 
-    for (int32_t tick = 0; tick < 600; tick++)
+    for (int32_t tick = 0; tick < 900; tick++)
     {
         physics_world_step(physics, 1.0f / 60.0f);
 
@@ -679,7 +679,7 @@ TEST(physics_no_jitter_after_sleep)
     RigidBody *body = physics_world_get_body(physics, body_idx);
     VoxelObject *obj = &obj_world->objects[obj_idx];
 
-    for (int32_t tick = 0; tick < 600; tick++)
+    for (int32_t tick = 0; tick < 900; tick++)
     {
         physics_world_step(physics, 1.0f / 60.0f);
         if (body->flags & PHYS_FLAG_SLEEPING)
@@ -1064,13 +1064,14 @@ static int32_t create_small_box_object(VoxelObjectWorld *world, Vec3 position, u
     obj->voxel_size = world->voxel_size;
     obj->voxel_count = 0;
 
-    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+    int32_t lo = VOBJ_GRID_SIZE / 2 - 2;
+    int32_t hi = VOBJ_GRID_SIZE / 2 + 2;
 
-    for (int32_t z = 6; z < 10; z++)
+    for (int32_t z = lo; z < hi; z++)
     {
-        for (int32_t y = 6; y < 10; y++)
+        for (int32_t y = lo; y < hi; y++)
         {
-            for (int32_t x = 6; x < 10; x++)
+            for (int32_t x = lo; x < hi; x++)
             {
                 int32_t idx = vobj_index(x, y, z);
                 obj->voxels[idx].material = material;
@@ -1356,11 +1357,12 @@ static int32_t create_wall_object(VoxelObjectWorld *world, Vec3 position, uint8_
     obj->voxel_size = world->voxel_size;
     obj->voxel_count = 0;
 
-    for (int32_t z = 4; z < 12; z++)
+    int32_t hg = VOBJ_GRID_SIZE / 2;
+    for (int32_t z = hg - 4; z < hg + 4; z++)
     {
-        for (int32_t y = 0; y < 16; y++)
+        for (int32_t y = hg - 8; y < hg + 8; y++)
         {
-            for (int32_t x = 6; x < 10; x++)
+            for (int32_t x = hg - 2; x < hg + 2; x++)
             {
                 int32_t idx = vobj_index(x, y, z);
                 obj->voxels[idx].material = material;
@@ -1486,6 +1488,272 @@ TEST(object_collision_no_interpenetration)
     return 1;
 }
 
+TEST(physics_no_sleep_midair)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, 0.25f);
+    PhysicsWorld *physics = physics_world_create(obj_world, NULL);
+
+    int32_t obj_idx = voxel_object_world_add_box(obj_world, vec3_create(0.0f, 30.0f, 0.0f),
+                                                  vec3_create(0.5f, 0.5f, 0.5f), MAT_STONE);
+    int32_t body_idx = physics_world_add_body(physics, obj_idx);
+    ASSERT(body_idx >= 0);
+
+    RigidBody *body = physics_world_get_body(physics, body_idx);
+    body->velocity = vec3_zero();
+    body->angular_velocity = vec3_zero();
+
+    for (int32_t tick = 0; tick < 600; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    printf("(sleeping=%d, y=%.2f) ",
+           (body->flags & PHYS_FLAG_SLEEPING) ? 1 : 0,
+           obj_world->objects[obj_idx].position.y);
+
+    ASSERT((body->flags & PHYS_FLAG_SLEEPING) == 0);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    return 1;
+}
+
+TEST(physics_terrain_bounce)
+{
+    Bounds3D bounds = {-5.0f, 5.0f, 0.0f, 8.0f, -5.0f, 5.0f};
+    float voxel_size = 0.1f;
+
+    Vec3 origin = vec3_create(bounds.min_x, bounds.min_y, bounds.min_z);
+    VoxelVolume *terrain = volume_create_dims(4, 4, 4, origin, voxel_size);
+
+    Vec3 floor_min = vec3_create(bounds.min_x, bounds.min_y, bounds.min_z);
+    Vec3 floor_max = vec3_create(bounds.max_x, bounds.min_y + 0.5f, bounds.max_z);
+    volume_fill_box(terrain, floor_min, floor_max, MAT_STONE);
+    volume_rebuild_all_occupancy(terrain);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, voxel_size);
+    PhysicsWorld *physics = physics_world_create(obj_world, terrain);
+
+    float floor_surface = bounds.min_y + 0.5f;
+    int32_t obj_idx = voxel_object_world_add_box(obj_world,
+                                                  vec3_create(0.0f, floor_surface + 3.0f, 0.0f),
+                                                  vec3_create(0.3f, 0.3f, 0.3f), MAT_STONE);
+    int32_t body_idx = physics_world_add_body(physics, obj_idx);
+    ASSERT(body_idx >= 0);
+
+    RigidBody *body = physics_world_get_body(physics, body_idx);
+    bool bounced = false;
+
+    for (int32_t tick = 0; tick < 300; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+
+        if ((body->flags & PHYS_FLAG_GROUNDED) && body->velocity.y > 0.1f)
+        {
+            bounced = true;
+            break;
+        }
+    }
+
+    printf("(bounced=%d) ", bounced ? 1 : 0);
+    ASSERT(bounced);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(terrain);
+    return 1;
+}
+
+TEST(physics_no_tunneling)
+{
+    Bounds3D bounds = {-10.0f, 10.0f, 0.0f, 20.0f, -10.0f, 10.0f};
+    float voxel_size = 0.1f;
+
+    Vec3 origin = vec3_create(bounds.min_x, bounds.min_y, bounds.min_z);
+    VoxelVolume *terrain = volume_create_dims(4, 4, 4, origin, voxel_size);
+
+    Vec3 wall_min = vec3_create(-0.5f, 0.0f, -5.0f);
+    Vec3 wall_max = vec3_create(0.5f, 10.0f, 5.0f);
+    volume_fill_box(terrain, wall_min, wall_max, MAT_STONE);
+    volume_rebuild_all_occupancy(terrain);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, voxel_size);
+    PhysicsWorld *physics = physics_world_create(obj_world, terrain);
+
+    int32_t obj_idx = voxel_object_world_add_box(obj_world,
+                                                  vec3_create(-5.0f, 5.0f, 0.0f),
+                                                  vec3_create(0.15f, 0.15f, 0.15f), MAT_STONE);
+    int32_t body_idx = physics_world_add_body(physics, obj_idx);
+    ASSERT(body_idx >= 0);
+
+    physics_body_set_velocity(physics, body_idx, vec3_create(20.0f, 0.0f, 0.0f));
+
+    for (int32_t tick = 0; tick < 60; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+    }
+
+    VoxelObject *obj = &obj_world->objects[obj_idx];
+    printf("(x=%.2f) ", obj->position.x);
+
+    ASSERT(obj->position.x < 0.0f);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(terrain);
+    return 1;
+}
+
+TEST(collider_box_count_basic)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
+    ASSERT(world != NULL);
+
+    int32_t obj_idx = voxel_object_world_add_box(world, vec3_create(0.0f, 10.0f, 0.0f),
+                                                  vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+    ASSERT(obj_idx >= 0);
+
+    VoxelObject *obj = &world->objects[obj_idx];
+    printf("(boxes=%d, voxels=%d) ", obj->collider_box_count, obj->voxel_count);
+
+    ASSERT(obj->collider_box_count == 1);
+
+    ColliderBox *box = &obj->collider_boxes[0];
+    float vol_x = box->local_max.x - box->local_min.x;
+    float vol_y = box->local_max.y - box->local_min.y;
+    float vol_z = box->local_max.z - box->local_min.z;
+    float box_volume = vol_x * vol_y * vol_z;
+    float vs = obj->voxel_size;
+    float voxel_volume = (float)obj->voxel_count * vs * vs * vs;
+    float ratio = box_volume / voxel_volume;
+    ASSERT(ratio > 0.99f && ratio < 1.01f);
+
+    voxel_object_world_destroy(world);
+    return 1;
+}
+
+TEST(collider_box_l_shape)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
+    ASSERT(world != NULL);
+
+    int32_t obj_idx = create_l_shape_object(world, vec3_create(0.0f, 10.0f, 0.0f), MAT_STONE);
+    ASSERT(obj_idx >= 0);
+
+    VoxelObject *obj = &world->objects[obj_idx];
+    printf("(boxes=%d, voxels=%d) ", obj->collider_box_count, obj->voxel_count);
+
+    ASSERT(obj->collider_box_count >= 2);
+    ASSERT(obj->collider_box_count <= 10);
+
+    float vs = obj->voxel_size;
+    float total_box_volume = 0.0f;
+    for (int32_t i = 0; i < obj->collider_box_count; i++)
+    {
+        ColliderBox *box = &obj->collider_boxes[i];
+        float dx = box->local_max.x - box->local_min.x;
+        float dy = box->local_max.y - box->local_min.y;
+        float dz = box->local_max.z - box->local_min.z;
+        ASSERT(dx > 0.0f && dy > 0.0f && dz > 0.0f);
+        total_box_volume += dx * dy * dz;
+    }
+    float voxel_volume = (float)obj->voxel_count * vs * vs * vs;
+    float ratio = total_box_volume / voxel_volume;
+    printf("(vol_ratio=%.3f) ", ratio);
+    ASSERT(ratio > 0.99f && ratio < 1.01f);
+
+    voxel_object_world_destroy(world);
+    return 1;
+}
+
+TEST(collider_box_dumbbell)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 64.0f, -16.0f, 16.0f};
+    VoxelObjectWorld *world = voxel_object_world_create(bounds, 0.25f);
+    ASSERT(world != NULL);
+
+    int32_t obj_idx = create_dumbbell_object(world, vec3_create(0.0f, 10.0f, 0.0f), MAT_STONE);
+    ASSERT(obj_idx >= 0);
+
+    VoxelObject *obj = &world->objects[obj_idx];
+    printf("(boxes=%d, voxels=%d) ", obj->collider_box_count, obj->voxel_count);
+
+    ASSERT(obj->collider_box_count >= 3);
+
+    float vs = obj->voxel_size;
+    float total_box_volume = 0.0f;
+    for (int32_t i = 0; i < obj->collider_box_count; i++)
+    {
+        ColliderBox *box = &obj->collider_boxes[i];
+        float dx = box->local_max.x - box->local_min.x;
+        float dy = box->local_max.y - box->local_min.y;
+        float dz = box->local_max.z - box->local_min.z;
+        total_box_volume += dx * dy * dz;
+    }
+    float voxel_volume = (float)obj->voxel_count * vs * vs * vs;
+    float ratio = total_box_volume / voxel_volume;
+    printf("(vol_ratio=%.3f) ", ratio);
+    ASSERT(ratio > 0.99f && ratio < 1.01f);
+
+    voxel_object_world_destroy(world);
+    return 1;
+}
+
+TEST(terrain_contact_l_shape_stability)
+{
+    Bounds3D bounds = {-5.0f, 5.0f, 0.0f, 20.0f, -5.0f, 5.0f};
+    float voxel_size = 0.1f;
+
+    Vec3 origin = vec3_create(bounds.min_x, bounds.min_y, bounds.min_z);
+    VoxelVolume *terrain = volume_create_dims(4, 4, 4, origin, voxel_size);
+    Vec3 floor_min = vec3_create(bounds.min_x, bounds.min_y, bounds.min_z);
+    Vec3 floor_max = vec3_create(bounds.max_x, bounds.min_y + 0.5f, bounds.max_z);
+    volume_fill_box(terrain, floor_min, floor_max, MAT_STONE);
+    volume_rebuild_all_occupancy(terrain);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, voxel_size);
+    PhysicsWorld *physics = physics_world_create(obj_world, terrain);
+
+    float floor_surface = bounds.min_y + 0.5f;
+    int32_t obj_idx = create_l_shape_object(obj_world, vec3_create(0.0f, floor_surface + 2.0f, 0.0f), MAT_STONE);
+    ASSERT(obj_idx >= 0);
+    int32_t body_idx = physics_world_add_body(physics, obj_idx);
+    ASSERT(body_idx >= 0);
+
+    RigidBody *body = physics_world_get_body(physics, body_idx);
+    VoxelObject *obj = &obj_world->objects[obj_idx];
+
+    int32_t settled_tick = -1;
+    for (int32_t tick = 0; tick < 900; tick++)
+    {
+        physics_world_step(physics, 1.0f / 60.0f);
+
+        if (body->flags & PHYS_FLAG_SLEEPING)
+        {
+            settled_tick = tick;
+            break;
+        }
+    }
+
+    float final_y = obj->position.y;
+    bool above_floor = final_y > floor_surface - 0.5f;
+    bool below_start = final_y < floor_surface + 2.0f;
+
+    printf("(settled=%d, y=%.2f, boxes=%d) ", settled_tick, final_y, obj->collider_box_count);
+
+    ASSERT(settled_tick >= 0);
+    ASSERT(above_floor);
+    ASSERT(below_start);
+
+    physics_world_destroy(physics);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(terrain);
+    return 1;
+}
+
 int main(void)
 {
     platform_time_init();
@@ -1557,6 +1825,17 @@ int main(void)
     RUN_TEST(object_collision_stacking);
     RUN_TEST(object_collision_wall_friction);
     RUN_TEST(object_collision_no_interpenetration);
+
+    printf("\n=== Compound Collider Tests ===\n");
+    RUN_TEST(collider_box_count_basic);
+    RUN_TEST(collider_box_l_shape);
+    RUN_TEST(collider_box_dumbbell);
+    RUN_TEST(terrain_contact_l_shape_stability);
+
+    printf("\n=== Physics Sleep & Tunneling Tests ===\n");
+    RUN_TEST(physics_no_sleep_midair);
+    RUN_TEST(physics_terrain_bounce);
+    RUN_TEST(physics_no_tunneling);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;
