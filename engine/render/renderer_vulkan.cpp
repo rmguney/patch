@@ -928,39 +928,52 @@ namespace patch
 
         if (result != VK_SUCCESS)
         {
-            out_timings->shadow_pass_ms = 0.0f;
-            out_timings->main_pass_ms = 0.0f;
-            out_timings->total_gpu_ms = 0.0f;
+            *out_timings = {};
             return false;
         }
 
-        bool all_available = true;
-        for (uint32_t i = 0; i < 4; i++)
+        /* Check availability for all 16 timestamps.
+         * Some passes may be skipped (quality=0), so only require
+         * the first pair (gbuffer compute) to be available. */
+        if (data[0 * 2 + 1] == 0 || data[1 * 2 + 1] == 0)
         {
-            if (data[i * 2 + 1] == 0)
-            {
-                all_available = false;
-                break;
-            }
-        }
-
-        if (!all_available)
-        {
-            out_timings->shadow_pass_ms = 0.0f;
-            out_timings->main_pass_ms = 0.0f;
-            out_timings->total_gpu_ms = 0.0f;
+            *out_timings = {};
             return false;
         }
 
         float ns_to_ms = timestamp_period_ns_ / 1000000.0f;
-        uint64_t t0 = data[0];
-        uint64_t t1 = data[2];
-        uint64_t t2 = data[4];
-        uint64_t t3 = data[6];
 
-        out_timings->shadow_pass_ms = (float)(t1 - t0) * ns_to_ms;
-        out_timings->main_pass_ms = (float)(t3 - t2) * ns_to_ms;
-        out_timings->total_gpu_ms = (float)(t3 - t0) * ns_to_ms;
+        /* Helper: compute duration between timestamp pair if both available */
+        auto pass_ms = [&](uint32_t start_idx, uint32_t end_idx) -> float
+        {
+            if (data[start_idx * 2 + 1] == 0 || data[end_idx * 2 + 1] == 0)
+                return 0.0f;
+            return (float)(data[end_idx * 2] - data[start_idx * 2]) * ns_to_ms;
+        };
+
+        /* Per-pass timings (see renderer.h for index mapping) */
+        out_timings->gbuffer_compute_ms = pass_ms(0, 1);
+        out_timings->shadow_compute_ms = pass_ms(2, 3);
+        out_timings->temporal_shadow_ms = pass_ms(4, 5);
+        out_timings->ao_compute_ms = pass_ms(6, 7);
+        out_timings->temporal_ao_ms = pass_ms(8, 9);
+        out_timings->render_pass_ms = pass_ms(10, 11);
+        out_timings->taa_resolve_ms = pass_ms(12, 13);
+        out_timings->spatial_denoise_ms = pass_ms(14, 15);
+
+        /* Legacy fields for backward compatibility */
+        out_timings->shadow_pass_ms = out_timings->shadow_compute_ms;
+        out_timings->main_pass_ms = out_timings->render_pass_ms;
+
+        /* Total GPU: first timestamp to last available timestamp */
+        uint64_t t_first = data[0 * 2];
+        uint64_t t_last = t_first;
+        for (uint32_t i = 1; i < GPU_TIMESTAMP_COUNT; i++)
+        {
+            if (data[i * 2 + 1] != 0 && data[i * 2] > t_last)
+                t_last = data[i * 2];
+        }
+        out_timings->total_gpu_ms = (float)(t_last - t_first) * ns_to_ms;
 
         return true;
     }

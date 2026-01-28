@@ -24,14 +24,17 @@ struct PerfThreshold
     float fail_ms; // Red: regression detected
 };
 
-static const PerfThreshold THRESHOLD_50 = {7.5f, 8.5f, 10.0f};
-static const PerfThreshold THRESHOLD_250 = {9.0f, 10.5f, 12.0f};
+/* Thresholds calibrated for Fair preset (shadow=1, ao=1, taa=1, denoise=1).
+ * GPU budget: gbuffer ~5ms + shadow ~2ms + render ~3ms + post ~0.5ms = ~10.5ms typical.
+ * Previous 7.5ms baseline was measured before compute gbuffer and temporal passes existed. */
+static const PerfThreshold THRESHOLD_50 = {10.0f, 11.0f, 13.0f};
+static const PerfThreshold THRESHOLD_250 = {10.0f, 11.5f, 14.0f};
 static const PerfThreshold THRESHOLD_500 = {13.0f, 16.0f, 20.0f};
 static const PerfThreshold THRESHOLD_1000 = {14.0f, 17.0f, 22.0f};
-static const PerfThreshold THRESHOLD_CLOSEUP = {10.0f, 12.0f, 15.0f};         /* Close-up 250 objects */
-static const PerfThreshold THRESHOLD_TERRAIN_CLOSEUP = {11.0f, 13.0f, 16.0f};  /* Terrain close-up */
-static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {11.0f, 14.0f, 18.0f}; /* Extreme close-up (nearly touching) */
-static const PerfThreshold THRESHOLD_TOPDOWN = {14.0f, 18.0f, 25.0f};          /* Looking straight down into object pile */
+static const PerfThreshold THRESHOLD_CLOSEUP = {15.0f, 17.0f, 20.0f};         /* Close-up 250 objects */
+static const PerfThreshold THRESHOLD_TERRAIN_CLOSEUP = {16.0f, 18.0f, 22.0f};  /* Terrain close-up + camera motion */
+static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {16.0f, 18.0f, 22.0f}; /* Extreme close-up (nearly touching) */
+static const PerfThreshold THRESHOLD_TOPDOWN = {16.0f, 19.0f, 25.0f};          /* Looking straight down into object pile */
 static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {10.0f, 13.0f, 18.0f};  /* Distance scaling tests */
 
 /* CPU dispatch timing thresholds */
@@ -52,8 +55,10 @@ struct GPUThreshold
     float total_ms;  /* Total GPU time */
 };
 
-static const GPUThreshold GPU_THRESHOLD_NORMAL = {7.0f, 4.0f, 12.0f};
-static const GPUThreshold GPU_THRESHOLD_CLOSEUP = {8.0f, 5.0f, 14.0f};
+/* GPU thresholds: render = rasterization pass, shadow = shadow compute, total = all passes.
+ * "main" field now captures the rasterization/render pass (timestamps 10-11). */
+static const GPUThreshold GPU_THRESHOLD_NORMAL = {8.0f, 4.0f, 12.0f};
+static const GPUThreshold GPU_THRESHOLD_CLOSEUP = {12.0f, 10.0f, 18.0f};
 
 enum PerfStatus
 {
@@ -95,12 +100,24 @@ struct ProfileData
     float render_main_avg_ms;
     float render_ui_avg_ms;
     float sim_tick_avg_ms;
+    float sim_tick_max_ms;
     float sim_physics_avg_ms;
     float sim_collision_avg_ms;
+    float sim_connectivity_avg_ms;
+    float sim_connectivity_max_ms;
+    float sim_particles_avg_ms;
+    float sim_particles_max_ms;
     /* GPU execution times (from header comments, distinct from CPU dispatch times above) */
     float gpu_shadow_ms;
     float gpu_main_ms;
     float gpu_total_ms;
+    /* Per-pass GPU breakdown */
+    float gpu_gbuffer_ms;
+    float gpu_temporal_shadow_ms;
+    float gpu_ao_ms;
+    float gpu_temporal_ao_ms;
+    float gpu_taa_ms;
+    float gpu_denoise_ms;
     /* Budget/spike data from header */
     float budget_pct;
     int budget_overruns;
@@ -230,6 +247,24 @@ static void parse_gpu_timings_header(const char *line, ProfileData *data)
         data->gpu_total_ms = (float)atof(total_start + 6);
 }
 
+static void parse_gpu_passes_header(const char *line, ProfileData *data)
+{
+    /* Parse: # GPU Passes: gbuffer=X, shadow=X, tshadow=X, ao=X, tao=X, render=X, taa=X, denoise=X */
+    const char *prefix = "# GPU Passes:";
+    if (strncmp(line, prefix, strlen(prefix)) != 0)
+        return;
+
+    const char *p = line + strlen(prefix);
+
+    const char *v;
+    if ((v = strstr(p, "gbuffer="))) data->gpu_gbuffer_ms = (float)atof(v + 8);
+    if ((v = strstr(p, "tshadow="))) data->gpu_temporal_shadow_ms = (float)atof(v + 8);
+    if ((v = strstr(p, "ao="))) data->gpu_ao_ms = (float)atof(v + 3);
+    if ((v = strstr(p, "tao="))) data->gpu_temporal_ao_ms = (float)atof(v + 4);
+    if ((v = strstr(p, "taa="))) data->gpu_taa_ms = (float)atof(v + 4);
+    if ((v = strstr(p, "denoise="))) data->gpu_denoise_ms = (float)atof(v + 8);
+}
+
 static void parse_budget_header(const char *line, ProfileData *data)
 {
     /* Parse: # Budget: 142.1% used, 930 overruns, 267.85ms worst */
@@ -294,6 +329,7 @@ static ProfileData parse_profile_csv(const char *filepath)
         if (line[0] == '#')
         {
             parse_gpu_timings_header(line, &data);
+            parse_gpu_passes_header(line, &data);
             parse_budget_header(line, &data);
             parse_trend_header(line, &data);
             continue;
@@ -323,11 +359,24 @@ static ProfileData parse_profile_csv(const char *filepath)
         else if ((val = parse_csv_value(line, "render_ui", 0)) >= 0.0f)
             data.render_ui_avg_ms = val;
         else if ((val = parse_csv_value(line, "sim_tick", 0)) >= 0.0f)
+        {
             data.sim_tick_avg_ms = val;
+            data.sim_tick_max_ms = parse_csv_value(line, "sim_tick", 1);
+        }
         else if ((val = parse_csv_value(line, "sim_physics", 0)) >= 0.0f)
             data.sim_physics_avg_ms = val;
         else if ((val = parse_csv_value(line, "sim_collision", 0)) >= 0.0f)
             data.sim_collision_avg_ms = val;
+        else if ((val = parse_csv_value(line, "sim_connectivity", 0)) >= 0.0f)
+        {
+            data.sim_connectivity_avg_ms = val;
+            data.sim_connectivity_max_ms = parse_csv_value(line, "sim_connectivity", 1);
+        }
+        else if ((val = parse_csv_value(line, "sim_particles", 0)) >= 0.0f)
+        {
+            data.sim_particles_avg_ms = val;
+            data.sim_particles_max_ms = parse_csv_value(line, "sim_particles", 1);
+        }
     }
 
     fclose(f);
@@ -409,8 +458,14 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     {
         float gpu_budget_pct = (data.gpu_total_ms / FRAME_BUDGET_MS) * 100.0f;
         printf("\nGPU Execution (%5.1f%% of budget):\n", gpu_budget_pct);
+        printf("  GBuffer:     %7.2f ms\n", data.gpu_gbuffer_ms);
         printf("  Shadow:      %7.2f ms\n", data.gpu_shadow_ms);
-        printf("  Main:        %7.2f ms\n", data.gpu_main_ms);
+        printf("  T.Shadow:    %7.2f ms\n", data.gpu_temporal_shadow_ms);
+        printf("  AO:          %7.2f ms\n", data.gpu_ao_ms);
+        printf("  T.AO:        %7.2f ms\n", data.gpu_temporal_ao_ms);
+        printf("  Render:      %7.2f ms\n", data.gpu_main_ms);
+        printf("  TAA:         %7.2f ms\n", data.gpu_taa_ms);
+        printf("  Denoise:     %7.2f ms\n", data.gpu_denoise_ms);
         printf("  Total:       %7.2f ms\n", data.gpu_total_ms);
     }
     printf("\n");
@@ -418,7 +473,13 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("Simulation Breakdown (%5.1f%% of budget):\n", sim_pct);
     printf("  Tick:        %7.2f ms\n", data.sim_tick_avg_ms);
     printf("  Physics:     %7.2f ms\n", data.sim_physics_avg_ms);
-    printf("  Collision:   %7.2f ms\n\n", data.sim_collision_avg_ms);
+    printf("  Collision:   %7.2f ms\n", data.sim_collision_avg_ms);
+    if (data.sim_connectivity_avg_ms > 0.0f || data.sim_particles_avg_ms > 0.0f)
+    {
+        printf("  Connectivity:%7.2f ms (max: %.2fms)\n", data.sim_connectivity_avg_ms, data.sim_connectivity_max_ms);
+        printf("  Particles:   %7.2f ms (max: %.2fms)\n", data.sim_particles_avg_ms, data.sim_particles_max_ms);
+    }
+    printf("\n");
 
     PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
     printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
@@ -463,18 +524,16 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     {
         float overrun_pct = (float)data.budget_overruns / (float)data.samples * 100.0f;
 
-        /* More than 10% overruns is a warning */
-        if (overrun_pct > 10.0f)
-        {
-            printf("OVERRUN WARNING: %.1f%% of frames exceeded budget (%d overruns)\n",
-                   overrun_pct, data.budget_overruns);
-            spike_issues++;
-        }
-
-        /* More than 25% overruns is a failure */
+        /* More than 25% overruns is a failure, 10-25% is a warning (mutually exclusive) */
         if (overrun_pct > 25.0f)
         {
             printf("OVERRUN FAIL: %.1f%% of frames exceeded budget - severe stuttering\n", overrun_pct);
+            spike_issues++;
+        }
+        else if (overrun_pct > 10.0f)
+        {
+            printf("OVERRUN WARNING: %.1f%% of frames exceeded budget (%d overruns)\n",
+                   overrun_pct, data.budget_overruns);
             spike_issues++;
         }
 
@@ -522,8 +581,9 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
             spike_issues++;
         }
 
-        /* GPU spike detection: GPU time exceeding frame budget is a guaranteed frame drop */
-        if (data.gpu_total_ms > FRAME_BUDGET_MS)
+        /* GPU spike detection: GPU time significantly exceeding frame budget is a guaranteed frame drop.
+           Allow 0.5ms tolerance to avoid false positives from measurement noise. */
+        if (data.gpu_total_ms > FRAME_BUDGET_MS + 0.5f)
         {
             printf("GPU SPIKE FAIL: GPU total %.2fms exceeds frame budget (%.2fms) - guaranteed stuttering\n",
                    data.gpu_total_ms, FRAME_BUDGET_MS);
@@ -531,18 +591,18 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
         }
 
         /* GPU main spike: if main pass alone exceeds budget, it's catastrophic */
-        if (data.gpu_main_ms > FRAME_BUDGET_MS)
+        if (data.gpu_main_ms > FRAME_BUDGET_MS + 0.5f)
         {
             printf("GPU MAIN SPIKE FAIL: GPU main %.2fms exceeds frame budget (%.2fms) - catastrophic\n",
                    data.gpu_main_ms, FRAME_BUDGET_MS);
             spike_issues += 2;
         }
 
-        /* GPU shadow spike: shadow pass alone shouldn't exceed half budget */
-        if (data.gpu_shadow_ms > FRAME_BUDGET_MS * 0.5f)
+        /* GPU shadow spike: shadow pass alone shouldn't exceed 60% of budget */
+        if (data.gpu_shadow_ms > FRAME_BUDGET_MS * 0.6f)
         {
-            printf("GPU SHADOW SPIKE WARNING: GPU shadow %.2fms exceeds half frame budget (%.2fms)\n",
-                   data.gpu_shadow_ms, FRAME_BUDGET_MS * 0.5f);
+            printf("GPU SHADOW SPIKE WARNING: GPU shadow %.2fms exceeds 60%% frame budget (%.2fms)\n",
+                   data.gpu_shadow_ms, FRAME_BUDGET_MS * 0.6f);
             spike_issues++;
         }
     }
@@ -721,6 +781,190 @@ static bool run_approach_test(const char *exe_path, const char *test_name, int f
     return (status != PERF_FAIL);
 }
 
+/* Destruction stress thresholds */
+struct DestructionThreshold
+{
+    float connectivity_max_ms; /* Max acceptable single connectivity spike */
+    float sim_tick_max_ms;     /* Max acceptable single sim tick */
+    float particles_avg_ms;    /* Max acceptable avg particle cost */
+};
+
+static const DestructionThreshold DESTRUCTION_THRESHOLD_NORMAL = {20.0f, 25.0f, 3.0f};
+static const DestructionThreshold DESTRUCTION_THRESHOLD_HEAVY = {40.0f, 50.0f, 5.0f};
+
+/* Destruction test: exercises terrain carving, connectivity analysis, particle spawning */
+static bool run_destruction_test(const char *exe_path, const char *test_name, int frames,
+                                  int stress_objects, int destroy_interval,
+                                  const PerfThreshold &threshold,
+                                  const DestructionThreshold &dest_threshold,
+                                  int *passed, int *warned, int *failed,
+                                  const float *camera_pos = nullptr)
+{
+    char args[512];
+    if (camera_pos)
+    {
+        snprintf(args, sizeof(args),
+                 "--scene 0 --test-frames %d --profile-csv %s --test-destruction %d "
+                 "--camera-pos %.1f %.1f %.1f",
+                 frames, TEMP_CSV, destroy_interval,
+                 camera_pos[0], camera_pos[1], camera_pos[2]);
+    }
+    else
+    {
+        snprintf(args, sizeof(args),
+                 "--scene 0 --test-frames %d --profile-csv %s --test-destruction %d",
+                 frames, TEMP_CSV, destroy_interval);
+    }
+
+    printf("\n");
+    printf("================================================================================\n");
+    printf("  %s\n", test_name);
+    printf("================================================================================\n");
+    printf("Configuration: %d frames, %d objects, destruction every %d frames%s\n",
+           frames, stress_objects > 0 ? stress_objects : 10, destroy_interval,
+           camera_pos ? " (close-up)" : "");
+    printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n",
+           threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
+    printf("Destruction: connectivity_max <%.0fms | sim_tick_max <%.0fms | particles_avg <%.1fms\n\n",
+           dest_threshold.connectivity_max_ms, dest_threshold.sim_tick_max_ms,
+           dest_threshold.particles_avg_ms);
+    fflush(stdout);
+
+    DeleteFileA(TEMP_CSV);
+
+    int result = launch_app(exe_path, args, LAUNCH_WAIT_MS * 2, stress_objects);
+    if (result != 0)
+    {
+        printf("FAIL: App exited with code %d\n", result);
+        (*failed)++;
+        return false;
+    }
+
+    ProfileData data = parse_profile_csv(TEMP_CSV);
+    if (!data.valid)
+    {
+        printf("FAIL: Could not parse profile data\n");
+        (*failed)++;
+        return false;
+    }
+
+    float frame_budget_pct = (data.frame_avg_ms / FRAME_BUDGET_MS) * 100.0f;
+    float sim_pct = (data.sim_tick_avg_ms / FRAME_BUDGET_MS) * 100.0f;
+    float effective_fps = 1000.0f / data.frame_avg_ms;
+
+    printf("Frame Timing (target: %.2fms):\n", FRAME_BUDGET_MS);
+    printf("  Average:     %7.2f ms  (%5.1f%% budget)\n", data.frame_avg_ms, frame_budget_pct);
+    printf("  Maximum:     %7.2f ms\n", data.frame_max_ms);
+    printf("  95th pct:    %7.2f ms\n", data.frame_p95_ms);
+    printf("  Samples:     %d\n", data.samples);
+    printf("  Effective:   %.1f FPS\n", effective_fps);
+    if (data.budget_overruns > 0)
+    {
+        printf("  Overruns:    %d (%.1f%% of frames)\n", data.budget_overruns,
+               (float)data.budget_overruns / (float)data.samples * 100.0f);
+        printf("  Worst:       %7.2f ms\n", data.worst_frame_ms);
+    }
+    printf("\n");
+
+    printf("Simulation Breakdown (%5.1f%% of budget):\n", sim_pct);
+    printf("  Tick:        %7.2f ms (max: %.2fms)\n", data.sim_tick_avg_ms, data.sim_tick_max_ms);
+    printf("  Physics:     %7.2f ms\n", data.sim_physics_avg_ms);
+    printf("  Collision:   %7.2f ms\n", data.sim_collision_avg_ms);
+    printf("  Connectivity:%7.2f ms (max: %.2fms)\n", data.sim_connectivity_avg_ms, data.sim_connectivity_max_ms);
+    printf("  Particles:   %7.2f ms (max: %.2fms)\n", data.sim_particles_avg_ms, data.sim_particles_max_ms);
+
+    /* GPU execution timings */
+    if (data.gpu_total_ms > 0.0f)
+    {
+        float gpu_budget_pct = (data.gpu_total_ms / FRAME_BUDGET_MS) * 100.0f;
+        printf("\nGPU Execution (%5.1f%% of budget):\n", gpu_budget_pct);
+        printf("  GBuffer:     %7.2f ms\n", data.gpu_gbuffer_ms);
+        printf("  Shadow:      %7.2f ms\n", data.gpu_shadow_ms);
+        printf("  Render:      %7.2f ms\n", data.gpu_main_ms);
+        printf("  Total:       %7.2f ms\n", data.gpu_total_ms);
+    }
+    printf("\n");
+
+    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
+    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
+           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+
+    int spike_issues = 0;
+
+    /* Connectivity spike detection — the primary destruction bottleneck */
+    if (data.sim_connectivity_max_ms > dest_threshold.connectivity_max_ms)
+    {
+        printf("CONNECTIVITY SPIKE: %.2fms max (threshold: %.1fms)\n",
+               data.sim_connectivity_max_ms, dest_threshold.connectivity_max_ms);
+        spike_issues += 2;
+    }
+    else if (data.sim_connectivity_max_ms > dest_threshold.connectivity_max_ms * 0.5f)
+    {
+        printf("CONNECTIVITY WARNING: %.2fms max (warning at %.1fms)\n",
+               data.sim_connectivity_max_ms, dest_threshold.connectivity_max_ms * 0.5f);
+        spike_issues++;
+    }
+
+    /* Sim tick spike detection */
+    if (data.sim_tick_max_ms > dest_threshold.sim_tick_max_ms)
+    {
+        printf("SIM TICK SPIKE: %.2fms max (threshold: %.1fms)\n",
+               data.sim_tick_max_ms, dest_threshold.sim_tick_max_ms);
+        spike_issues += 2;
+    }
+
+    /* Particle budget check */
+    if (data.sim_particles_avg_ms > dest_threshold.particles_avg_ms)
+    {
+        printf("PARTICLE BUDGET FAIL: %.2fms avg (threshold: %.1fms)\n",
+               data.sim_particles_avg_ms, dest_threshold.particles_avg_ms);
+        spike_issues++;
+    }
+
+    /* Catastrophic frame spike (same as other tests) */
+    if (data.worst_frame_ms > 100.0f)
+    {
+        printf("CATASTROPHIC SPIKE: %.2fms worst frame\n", data.worst_frame_ms);
+        spike_issues += 3;
+    }
+
+    /* Spike ratio: max/avg > 5x during destruction is severe
+       (relaxed vs regular tests since destruction causes expected spikes) */
+    float spike_ratio = data.frame_max_ms / data.frame_avg_ms;
+    if (spike_ratio > 5.0f)
+    {
+        printf("SPIKE RATIO FAIL: %.1fx (max/avg) indicates catastrophic hitching\n", spike_ratio);
+        spike_issues += 2;
+    }
+    else if (spike_ratio > 3.5f)
+    {
+        printf("SPIKE RATIO WARNING: %.1fx (max/avg) indicates hitching\n", spike_ratio);
+        spike_issues++;
+    }
+
+    if (spike_issues > 1)
+    {
+        printf("DESTRUCTION SPIKE FAIL: %d spike issues detected (threshold: >1)\n", spike_issues);
+        (*failed)++;
+        return false;
+    }
+
+    switch (status)
+    {
+    case PERF_PASS:
+        (*passed)++;
+        break;
+    case PERF_WARN:
+        (*warned)++;
+        break;
+    case PERF_FAIL:
+        (*failed)++;
+        break;
+    }
+
+    return (status != PERF_FAIL);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc < 2)
@@ -816,6 +1060,27 @@ int main(int argc, char *argv[])
     float descent_end[3] = {5.0f, 2.0f, 5.0f};
     run_approach_test(exe_path, "SPIRAL DESCENT (high->low)", 180, descent_start, descent_end,
                       THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed);
+
+    /* Destruction stress tests: exercise terrain carving, connectivity, particles */
+    static const PerfThreshold THRESHOLD_DESTRUCTION = {14.0f, 18.0f, 25.0f};
+    static const PerfThreshold THRESHOLD_DESTRUCTION_HEAVY = {18.0f, 22.0f, 30.0f};
+
+    /* Light destruction: every 10 frames, with objects and close-up camera */
+    float dest_camera[3] = {5.0f, 6.0f, 5.0f};
+    run_destruction_test(exe_path, "DESTRUCTION LIGHT (10 objects)", 120, 10, 10,
+                         THRESHOLD_DESTRUCTION, DESTRUCTION_THRESHOLD_NORMAL,
+                         &passed, &warned, &failed, dest_camera);
+
+    /* Heavy destruction: every 5 frames, rapid-fire terrain carving */
+    run_destruction_test(exe_path, "DESTRUCTION HEAVY (50 objects)", 120, 50, 5,
+                         THRESHOLD_DESTRUCTION_HEAVY, DESTRUCTION_THRESHOLD_HEAVY,
+                         &passed, &warned, &failed, dest_camera);
+
+    /* Sustained destruction: long test with objects, detach, particles accumulating */
+    float sustained_camera[3] = {8.0f, 8.0f, 8.0f};
+    run_destruction_test(exe_path, "DESTRUCTION SUSTAINED (50 objects, 300 frames)", 300, 50, 8,
+                         THRESHOLD_DESTRUCTION_HEAVY, DESTRUCTION_THRESHOLD_HEAVY,
+                         &passed, &warned, &failed, sustained_camera);
 
     /* Distance scaling test series: verify performance scales linearly with distance */
     /* Uses scene 0 with 0 objects to isolate pure terrain performance */

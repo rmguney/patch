@@ -372,10 +372,10 @@ namespace patch
 
         if (timestamps_supported_)
         {
-            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
             vkCmdWriteTimestamp(command_buffers_[current_frame_],
                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                timestamp_query_pool_, query_offset + 2);
+                                timestamp_query_pool_, qo + 10);
         }
 
         VkClearValue clear_values[7]{};

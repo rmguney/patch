@@ -9,6 +9,7 @@
 #include "game/ball_pit.h"
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
+#include "engine/sim/detach.h"
 #include "content/materials.h"
 #include "content/scenes.h"
 #include <cstdio>
@@ -63,6 +64,8 @@ int patch_main(int argc, char *argv[])
     bool has_camera_approach = false;
     float camera_start[3] = {0.0f, 0.0f, 0.0f};
     float camera_end[3] = {0.0f, 0.0f, 0.0f};
+    bool test_destruction = false;
+    int test_destruction_interval = 10; /* frames between destructions */
 
     for (int i = 1; i < argc; i++)
     {
@@ -94,6 +97,12 @@ int patch_main(int argc, char *argv[])
             camera_end[1] = static_cast<float>(atof(argv[++i]));
             camera_end[2] = static_cast<float>(atof(argv[++i]));
             has_camera_approach = true;
+        }
+        else if (strcmp(argv[i], "--test-destruction") == 0)
+        {
+            test_destruction = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                test_destruction_interval = atoi(argv[++i]);
         }
     }
 
@@ -501,6 +510,128 @@ int patch_main(int argc, char *argv[])
 
             scene_update(active_scene, dt);
             PROFILE_END(PROFILE_SIM_TICK);
+
+            /* Programmatic destruction for test mode */
+            if (test_destruction && current_scene == ActiveScene::BallPit &&
+                frames_elapsed > 0 && (frames_elapsed % test_destruction_interval) == 0)
+            {
+                BallPitData *bp_data = (BallPitData *)active_scene->user_data;
+                if (bp_data && bp_data->terrain)
+                {
+                    /* Pick a random destruction point on the terrain surface */
+                    float cx = (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f;
+                    float cz = (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f;
+                    float range_x = (active_scene->bounds.max_x - active_scene->bounds.min_x) * 0.3f;
+                    float range_z = (active_scene->bounds.max_z - active_scene->bounds.min_z) * 0.3f;
+                    float px = cx + (rng_float(&active_scene->rng) * 2.0f - 1.0f) * range_x;
+                    float pz = cz + (rng_float(&active_scene->rng) * 2.0f - 1.0f) * range_z;
+
+                    /* Raycast down to find terrain surface */
+                    Vec3 ray_o = vec3_create(px, active_scene->bounds.max_y, pz);
+                    Vec3 ray_d = vec3_create(0.0f, -1.0f, 0.0f);
+                    Vec3 hit_pos = vec3_zero();
+                    Vec3 hit_normal = vec3_zero();
+                    uint8_t hit_mat = 0;
+                    float hit_dist = volume_raycast(bp_data->terrain, ray_o, ray_d,
+                                                     50.0f, &hit_pos, &hit_normal, &hit_mat);
+
+                    if (hit_dist >= 0.0f && hit_mat != 0)
+                    {
+                        float destroy_radius = bp_data->terrain->voxel_size * 3.0f;
+
+                        /* Carve sphere out of terrain */
+                        volume_edit_begin(bp_data->terrain);
+                        int32_t destroyed_count = 0;
+                        Vec3 destroyed_positions[64];
+                        Vec3 destroyed_colors[64];
+
+                        for (float dx = -destroy_radius; dx <= destroy_radius; dx += bp_data->terrain->voxel_size)
+                        {
+                            for (float dy = -destroy_radius; dy <= destroy_radius; dy += bp_data->terrain->voxel_size)
+                            {
+                                for (float dz = -destroy_radius; dz <= destroy_radius; dz += bp_data->terrain->voxel_size)
+                                {
+                                    float dist_sq = dx * dx + dy * dy + dz * dz;
+                                    if (dist_sq <= destroy_radius * destroy_radius)
+                                    {
+                                        Vec3 pos = vec3_create(hit_pos.x + dx, hit_pos.y + dy, hit_pos.z + dz);
+                                        uint8_t mat = volume_get_at(bp_data->terrain, pos);
+                                        if (mat != 0)
+                                        {
+                                            volume_edit_set(bp_data->terrain, pos, 0);
+                                            if (destroyed_count < 64)
+                                            {
+                                                destroyed_positions[destroyed_count] = pos;
+                                                destroyed_colors[destroyed_count] = material_get_color(mat);
+                                                destroyed_count++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        volume_edit_end(bp_data->terrain);
+
+                        /* Spawn debris particles */
+                        if (bp_data->particles)
+                        {
+                            for (int32_t i = 0; i < destroyed_count; i++)
+                            {
+                                Vec3 dir = vec3_sub(destroyed_positions[i], hit_pos);
+                                float d = vec3_length(dir);
+                                if (d > 0.001f)
+                                    dir = vec3_scale(dir, 1.0f / d);
+                                else
+                                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+                                float speed = 2.0f + rng_float(&active_scene->rng) * 2.0f;
+                                Vec3 velocity = vec3_scale(dir, speed);
+                                velocity.y += 1.0f;
+                                particle_system_add(bp_data->particles, &active_scene->rng,
+                                                    destroyed_positions[i], velocity,
+                                                    destroyed_colors[i],
+                                                    bp_data->terrain->voxel_size * 0.4f);
+                            }
+                        }
+
+                        /* Wake physics near destruction */
+                        if (bp_data->physics)
+                            physics_world_wake_in_region(bp_data->physics, hit_pos, destroy_radius * 2.0f);
+
+                        /* Run connectivity analysis + detach */
+                        if (bp_data->detach_ready && bp_data->objects)
+                        {
+                            PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
+                            DetachConfig cfg = detach_config_default();
+                            DetachResult detach_result;
+                            detach_terrain_process(bp_data->terrain, bp_data->objects,
+                                                   &cfg, &bp_data->detach_work, &detach_result);
+                            PROFILE_END(PROFILE_SIM_CONNECTIVITY);
+
+                            if (detach_result.bodies_spawned > 0 && bp_data->physics)
+                            {
+                                physics_world_sync_objects(bp_data->physics);
+                                int32_t count = detach_result.bodies_spawned;
+                                if (count > DETACH_MAX_SPAWNED) count = DETACH_MAX_SPAWNED;
+                                for (int32_t i = 0; i < count; i++)
+                                {
+                                    int32_t obj_idx = detach_result.spawned_indices[i];
+                                    VoxelObject *obj = &bp_data->objects->objects[obj_idx];
+                                    if (!obj->active) continue;
+                                    int32_t body_idx = physics_world_find_body_for_object(bp_data->physics, obj_idx);
+                                    if (body_idx < 0) continue;
+                                    Vec3 dir = vec3_sub(obj->position, hit_pos);
+                                    float dist = vec3_length(dir);
+                                    if (dist > 0.001f) dir = vec3_scale(dir, 1.0f / dist);
+                                    else dir = vec3_create(0.0f, 1.0f, 0.0f);
+                                    Vec3 velocity = vec3_scale(dir, 3.0f);
+                                    velocity.y += 1.5f;
+                                    physics_body_set_velocity(bp_data->physics, body_idx, velocity);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         /* Free camera controls */

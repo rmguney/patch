@@ -83,6 +83,12 @@ void debug_info_populate_renderer(DebugInfo *info, const patch::Renderer *render
         info->gpu_shadow_ms = gpu.shadow_pass_ms;
         info->gpu_main_ms = gpu.main_pass_ms;
         info->gpu_total_ms = gpu.total_gpu_ms;
+        info->gpu_gbuffer_ms = gpu.gbuffer_compute_ms;
+        info->gpu_temporal_shadow_ms = gpu.temporal_shadow_ms;
+        info->gpu_ao_ms = gpu.ao_compute_ms;
+        info->gpu_temporal_ao_ms = gpu.temporal_ao_ms;
+        info->gpu_taa_ms = gpu.taa_resolve_ms;
+        info->gpu_denoise_ms = gpu.spatial_denoise_ms;
         info->gpu_timings_valid = true;
     }
 }
@@ -156,8 +162,10 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     fprintf(f, "Device: %s\n", info->gpu_name);
     if (info->gpu_timings_valid)
     {
-        fprintf(f, "GPU: %.2fms total (shadow %.2fms, main %.2fms)\n",
-                info->gpu_total_ms, info->gpu_shadow_ms, info->gpu_main_ms);
+        fprintf(f, "GPU: %.2fms total (gbuf %.2f, shad %.2f, tshad %.2f, ao %.2f, tao %.2f, rend %.2f, taa %.2f, den %.2f)\n",
+                info->gpu_total_ms, info->gpu_gbuffer_ms, info->gpu_shadow_ms,
+                info->gpu_temporal_shadow_ms, info->gpu_ao_ms, info->gpu_temporal_ao_ms,
+                info->gpu_main_ms, info->gpu_taa_ms, info->gpu_denoise_ms);
     }
     fprintf(f, "CPU waits: fence=%.3fms, acquire=%.3fms, present=%.3fms\n\n",
             info->cpu_fence_ms, info->cpu_acquire_ms, info->cpu_present_ms);
@@ -223,6 +231,10 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     /* Header comments for test parser (GPU timings, budget info, trend) */
     fprintf(f, "# GPU Timings: shadow=%.3fms, main=%.3fms, total=%.3fms\n",
             info->gpu_shadow_ms, info->gpu_main_ms, info->gpu_total_ms);
+    fprintf(f, "# GPU Passes: gbuffer=%.3fms, shadow=%.3fms, tshadow=%.3fms, ao=%.3fms, tao=%.3fms, render=%.3fms, taa=%.3fms, denoise=%.3fms\n",
+            info->gpu_gbuffer_ms, info->gpu_shadow_ms, info->gpu_temporal_shadow_ms,
+            info->gpu_ao_ms, info->gpu_temporal_ao_ms, info->gpu_main_ms,
+            info->gpu_taa_ms, info->gpu_denoise_ms);
     fprintf(f, "# Budget: %.1f%% used, %d overruns, %.2fms worst\n",
             info->budget_pct, info->budget_overruns, info->budget_worst_ms);
     fprintf(f, "# Trend: %.2fx (last_third/first_third, >1.5 = degradation)\n",
@@ -333,8 +345,10 @@ bool draw_debug_overlay(patch::Renderer &renderer,
     if (info->gpu_timings_valid)
     {
         y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "GPU: %.2fms (shadow %.2fms, main %.2fms)",
-                 info->gpu_total_ms, info->gpu_shadow_ms, info->gpu_main_ms);
+        snprintf(line, sizeof(line), "GPU: %.1fms  gbuf %.1f shad %.1f ts %.1f ao %.1f ta %.1f rend %.1f taa %.1f den %.1f",
+                 info->gpu_total_ms, info->gpu_gbuffer_ms, info->gpu_shadow_ms,
+                 info->gpu_temporal_shadow_ms, info->gpu_ao_ms, info->gpu_temporal_ao_ms,
+                 info->gpu_main_ms, info->gpu_taa_ms, info->gpu_denoise_ms);
         renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.8f, 0.7f, 1.0f), 1.0f, line);
     }
 

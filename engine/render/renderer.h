@@ -695,8 +695,8 @@ namespace patch
         int32_t deferred_total_chunks_ = 0;
         int32_t deferred_chunks_dim_[3] = {0, 0, 0};
 
-        /* GPU profiling */
-        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 4;
+        /* GPU profiling — 8 pass pairs (start/end) = 16 timestamps */
+        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 16;
         VkQueryPool timestamp_query_pool_;
         float timestamp_period_ns_;
         bool timestamps_supported_;
@@ -797,6 +797,15 @@ namespace patch
             float shadow_pass_ms;
             float main_pass_ms;
             float total_gpu_ms;
+            /* Per-pass breakdown (timestamps 0-15) */
+            float gbuffer_compute_ms;    /* 0-1 */
+            float shadow_compute_ms;     /* 2-3 */
+            float temporal_shadow_ms;    /* 4-5 */
+            float ao_compute_ms;         /* 6-7 */
+            float temporal_ao_ms;        /* 8-9 */
+            float render_pass_ms;        /* 10-11 */
+            float taa_resolve_ms;        /* 12-13 */
+            float spatial_denoise_ms;    /* 14-15 */
         };
 
         bool get_gpu_timings(GPUTimings *out_timings) const;

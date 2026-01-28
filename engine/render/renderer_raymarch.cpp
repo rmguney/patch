@@ -31,6 +31,12 @@ namespace patch
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 0);
+        }
+
         /* Transition all G-buffer images + motion vectors to GENERAL for compute write */
         VkImageMemoryBarrier barriers[GBUFFER_COUNT + 1]{};
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
@@ -127,6 +133,12 @@ namespace patch
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 1);
+        }
+
         /* Transition G-buffer images to COLOR_ATTACHMENT for voxel objects render pass */
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -158,10 +170,8 @@ namespace patch
 
         if (timestamps_supported_)
         {
-            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
-            vkCmdWriteTimestamp(cmd,
-                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                timestamp_query_pool_, query_offset + 0);
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 2);
         }
 
         /* Transition shadow output to GENERAL for compute write.
@@ -252,10 +262,8 @@ namespace patch
 
         if (timestamps_supported_)
         {
-            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
-            vkCmdWriteTimestamp(cmd,
-                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                timestamp_query_pool_, query_offset + 1);
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 3);
         }
 
         /* Transition shadow output to SHADER_READ_ONLY for sampling in lighting pass */
@@ -330,6 +338,12 @@ namespace patch
         VkWriteDescriptorSet writes[2] = {history_write, out_write};
         vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 4);
+        }
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_compute_pipeline_);
         VkDescriptorSet sets[2] = {temporal_shadow_input_sets_[current_frame_], temporal_shadow_output_sets_[current_frame_]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_compute_layout_, 0, 2, sets, 0, nullptr);
@@ -358,6 +372,12 @@ namespace patch
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 5);
+        }
+
         /* Transition resolved image to SHADER_READ_ONLY for lighting pass sampling */
         barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -383,6 +403,12 @@ namespace patch
             return;
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 6);
+        }
 
         /* Transition AO output to GENERAL for compute write */
         VkImageMemoryBarrier barrier{};
@@ -463,6 +489,12 @@ namespace patch
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 7);
+        }
+
         /* Transition AO output to SHADER_READ_ONLY for temporal resolve */
         barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -537,6 +569,12 @@ namespace patch
         VkWriteDescriptorSet writes[2] = {history_write, out_write};
         vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 8);
+        }
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_ao_compute_pipeline_);
         VkDescriptorSet sets[2] = {temporal_ao_input_sets_[current_frame_], temporal_ao_output_sets_[current_frame_]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, temporal_ao_compute_layout_, 0, 2, sets, 0, nullptr);
@@ -564,6 +602,12 @@ namespace patch
         uint32_t group_x = (swapchain_extent_.width + 7) / 8;
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 9);
+        }
 
         /* Transition resolved image to SHADER_READ_ONLY for lighting pass sampling */
         barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -691,6 +735,12 @@ namespace patch
         vkUpdateDescriptorSets(device_, 3, input_writes, 0, nullptr);
         vkUpdateDescriptorSets(device_, 1, &out_write, 0, nullptr);
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 12);
+        }
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, taa_compute_pipeline_);
         VkDescriptorSet sets[2] = {taa_input_sets_[current_frame_], taa_output_sets_[current_frame_]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, taa_compute_layout_, 0, 2, sets, 0, nullptr);
@@ -709,6 +759,12 @@ namespace patch
         uint32_t group_x = (swapchain_extent_.width + 7) / 8;
         uint32_t group_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 13);
+        }
 
         /* Transition TAA output to SHADER_READ_ONLY for denoise sampling */
         barrier.image = taa_history_images_[write_index];
@@ -829,6 +885,12 @@ namespace patch
 
         VkCommandBuffer cmd = command_buffers_[current_frame_];
 
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamp_query_pool_, qo + 14);
+        }
+
         /* Barrier: lit_color to SHADER_READ, denoised_color to GENERAL */
         /* Note: render_pass_ transitions color attachment to PRESENT_SRC_KHR */
         VkImageMemoryBarrier barriers[2]{};
@@ -879,6 +941,12 @@ namespace patch
         uint32_t groups_x = (swapchain_extent_.width + 7) / 8;
         uint32_t groups_y = (swapchain_extent_.height + 7) / 8;
         vkCmdDispatch(cmd, groups_x, groups_y, 1);
+
+        if (timestamps_supported_)
+        {
+            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
+            vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamp_query_pool_, qo + 15);
+        }
 
         /* Barrier: denoised_color ready for transfer */
         VkImageMemoryBarrier transfer_barrier{};

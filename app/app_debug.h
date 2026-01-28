@@ -49,6 +49,13 @@ struct DebugInfo
     float gpu_main_ms;
     float gpu_total_ms;
     bool gpu_timings_valid;
+    /* Per-pass GPU breakdown */
+    float gpu_gbuffer_ms;
+    float gpu_temporal_shadow_ms;
+    float gpu_ao_ms;
+    float gpu_temporal_ao_ms;
+    float gpu_taa_ms;
+    float gpu_denoise_ms;
 
     /* CPU waits */
     float cpu_fence_ms;
