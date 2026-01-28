@@ -89,6 +89,8 @@ set(ENGINE_PHYSICS_SOURCES
     engine/physics/particles.c
     engine/physics/rigidbody.h
     engine/physics/rigidbody.c
+    engine/physics/broadphase.h
+    engine/physics/broadphase.c
     engine/physics/convex_hull.h
     engine/physics/convex_hull.c
     engine/physics/gjk.h

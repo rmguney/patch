@@ -4,6 +4,7 @@
 #include "engine/core/types.h"
 #include "engine/core/math.h"
 #include "engine/voxel/voxel_object.h"
+#include "broadphase.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -85,6 +86,7 @@ extern "C"
         Vec3 gravity;
         CollisionPair collision_pairs[PHYS_MAX_COLLISION_PAIRS];
         int32_t collision_pair_count;
+        SAPBroadphase *broadphase;
     } PhysicsWorld;
 
     PhysicsWorld *physics_world_create(VoxelObjectWorld *objects, VoxelVolume *terrain);

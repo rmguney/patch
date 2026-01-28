@@ -29,13 +29,21 @@ PhysicsWorld *physics_world_create(VoxelObjectWorld *objects, VoxelVolume *terra
         world->bodies[i].next_free = -1;
     }
 
+    world->broadphase = (SAPBroadphase *)calloc(1, sizeof(SAPBroadphase));
+    if (world->broadphase)
+        sap_init(world->broadphase);
+
     return world;
 }
 
 void physics_world_destroy(PhysicsWorld *world)
 {
     if (world)
+    {
+        if (world->broadphase)
+            free(world->broadphase);
         free(world);
+    }
 }
 
 static int32_t find_free_slot(PhysicsWorld *world)
@@ -736,6 +744,42 @@ static void update_sleep_state(PhysicsWorld *world, int32_t body_index)
     }
 }
 
+static void update_broadphase(PhysicsWorld *world)
+{
+    if (!world->broadphase)
+        return;
+
+    int32_t limit = world->max_body_index + 1;
+    VoxelObjectWorld *obj_world = world->objects;
+
+    for (int32_t i = 0; i < limit; i++)
+    {
+        RigidBody *body = &world->bodies[i];
+        bool active = (body->flags & PHYS_FLAG_ACTIVE) != 0;
+
+        if (active)
+        {
+            VoxelObject *obj = &obj_world->objects[body->vobj_index];
+            if (obj->active)
+            {
+                Vec3 he = obj->shape_half_extents;
+                Vec3 pos = obj->position;
+                Vec3 aabb_min = vec3_sub(pos, he);
+                Vec3 aabb_max = vec3_add(pos, he);
+                sap_update_body(world->broadphase, i, aabb_min, aabb_max, true);
+            }
+            else
+            {
+                sap_remove_body(world->broadphase, i);
+            }
+        }
+        else
+        {
+            sap_remove_body(world->broadphase, i);
+        }
+    }
+}
+
 void physics_world_step(PhysicsWorld *world, float dt)
 {
     if (!world || !world->objects)
@@ -789,6 +833,7 @@ void physics_world_step(PhysicsWorld *world, float dt)
             integrate_body(world, i, sub_dt);
         }
 
+        update_broadphase(world);
         physics_process_object_collisions(world, sub_dt);
 
         if (world->terrain)

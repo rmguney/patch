@@ -1,6 +1,7 @@
 #include "collision_object.h"
 #include "convex_hull.h"
 #include "gjk.h"
+#include "broadphase.h"
 #include "engine/core/spatial_hash.h"
 #include <string.h>
 
@@ -382,67 +383,39 @@ int32_t physics_detect_object_pairs(PhysicsWorld *world,
                                     ObjectCollisionPair *pairs,
                                     int32_t max_pairs)
 {
-    if (!world || !world->objects || !pairs)
+    if (!world || !world->objects || !pairs || !world->broadphase)
         return 0;
 
     int32_t pair_count = 0;
     VoxelObjectWorld *obj_world = world->objects;
-    int32_t limit = world->max_body_index + 1;
 
-    int32_t sleeping_indices[PHYS_MAX_BODIES];
-    int32_t sleeping_count = 0;
+    SAPPair sap_pairs[SAP_MAX_PAIRS];
+    int32_t sap_count = sap_query_pairs(world->broadphase, sap_pairs, SAP_MAX_PAIRS);
 
-    for (int32_t i = 0; i < limit; i++)
+    for (int32_t p = 0; p < sap_count && pair_count < max_pairs; p++)
     {
-        RigidBody *body = &world->bodies[i];
-        if ((body->flags & PHYS_FLAG_ACTIVE) && (body->flags & PHYS_FLAG_SLEEPING))
-        {
-            VoxelObject *obj = &obj_world->objects[body->vobj_index];
-            if (obj->active)
-                sleeping_indices[sleeping_count++] = i;
-        }
-    }
+        int32_t i = sap_pairs[p].body_a;
+        int32_t j = sap_pairs[p].body_b;
 
-    for (int32_t i = 0; i < limit && pair_count < max_pairs; i++)
-    {
         RigidBody *body_a = &world->bodies[i];
-        uint8_t flags_a = body_a->flags;
-        if (!(flags_a & PHYS_FLAG_ACTIVE))
+        RigidBody *body_b = &world->bodies[j];
+
+        if (!(body_a->flags & PHYS_FLAG_ACTIVE) || !(body_b->flags & PHYS_FLAG_ACTIVE))
             continue;
-        if (flags_a & PHYS_FLAG_SLEEPING)
+
+        bool a_sleeping = (body_a->flags & PHYS_FLAG_SLEEPING) != 0;
+        bool b_sleeping = (body_b->flags & PHYS_FLAG_SLEEPING) != 0;
+        if (a_sleeping && b_sleeping)
             continue;
 
         VoxelObject *obj_a = &obj_world->objects[body_a->vobj_index];
-        if (!obj_a->active)
+        VoxelObject *obj_b = &obj_world->objects[body_b->vobj_index];
+
+        if (!obj_a->active || !obj_b->active)
             continue;
 
-        for (int32_t j = i + 1; j < limit && pair_count < max_pairs; j++)
-        {
-            RigidBody *body_b = &world->bodies[j];
-            uint8_t flags_b = body_b->flags;
-            if (!(flags_b & PHYS_FLAG_ACTIVE))
-                continue;
-
-            VoxelObject *obj_b = &obj_world->objects[body_b->vobj_index];
-            if (!obj_b->active)
-                continue;
-
-            if (!try_add_collision_pair(world, obj_world, pairs, &pair_count, max_pairs, i, j))
-                break;
-        }
-
-        if (sleeping_count > 0)
-        {
-            for (int32_t k = 0; k < sleeping_count && pair_count < max_pairs; k++)
-            {
-                int32_t j = sleeping_indices[k];
-                if (j >= i)
-                    break;
-
-                if (!try_add_collision_pair(world, obj_world, pairs, &pair_count, max_pairs, i, j))
-                    break;
-            }
-        }
+        if (!try_add_collision_pair(world, obj_world, pairs, &pair_count, max_pairs, i, j))
+            break;
     }
 
     return pair_count;
