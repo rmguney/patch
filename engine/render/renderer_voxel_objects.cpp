@@ -691,6 +691,7 @@ namespace patch
         if (!vobj_resources_initialized_ || !world || !vobj_metadata_mapped_[current_frame_])
         {
             vobj_visible_count_ = 0;
+            vobj_total_count_ = 0;
             return;
         }
 
@@ -703,41 +704,21 @@ namespace patch
         Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
         Frustum frustum = frustum_from_view_proj(view_proj);
 
-        /* First pass: calculate distances and initialize sort indices */
+        /*
+         * Upload ALL objects at their original indices for BVH/compute shader access.
+         * BVH traversal returns original object indices, so the metadata buffer must
+         * contain all objects at their original positions. Inactive objects are marked
+         * with position.w = 0.0 so shaders can skip them.
+         */
+        int32_t visible_count = 0;
         for (int32_t i = 0; i < count; i++)
         {
             const VoxelObject *obj = &world->objects[i];
-            float dx = obj->position.x - camera_position_.x;
-            float dy = obj->position.y - camera_position_.y;
-            float dz = obj->position.z - camera_position_.z;
-            vobj_sort_distances_[i] = dx * dx + dy * dy + dz * dz;
-            vobj_sort_indices_[i] = static_cast<uint32_t>(i);
-        }
-
-        /* Simple insertion sort (fast for nearly-sorted data between frames) */
-        for (int32_t i = 1; i < count; i++)
-        {
-            uint32_t key_idx = vobj_sort_indices_[i];
-            float key_dist = vobj_sort_distances_[key_idx];
-            int32_t j = i - 1;
-            while (j >= 0 && vobj_sort_distances_[vobj_sort_indices_[j]] > key_dist)
-            {
-                vobj_sort_indices_[j + 1] = vobj_sort_indices_[j];
-                j--;
-            }
-            vobj_sort_indices_[j + 1] = key_idx;
-        }
-
-        /* Second pass: upload ONLY visible objects in sorted order (compacted) */
-        int32_t visible_idx = 0;
-        for (int32_t sorted_idx = 0; sorted_idx < count; sorted_idx++)
-        {
-            const int32_t i = static_cast<int32_t>(vobj_sort_indices_[sorted_idx]);
-            const VoxelObject *obj = &world->objects[i];
+            VoxelObjectGPU *gpu = &gpu_data[i];
 
             float vs = obj->voxel_size;
 
-            /* Frustum culling: bounding sphere from actual shape extents */
+            /* Check if object should be rendered (for visible count tracking) */
             float max_half_ext = (std::max)(obj->shape_half_extents.x,
                                            (std::max)(obj->shape_half_extents.y,
                                                       obj->shape_half_extents.z));
@@ -747,29 +728,22 @@ namespace patch
             bool render_ready = obj->render_delay <= 0;
             bool visible = (cull_result != FRUSTUM_OUTSIDE) && obj->active && atlas_ready && render_ready;
 
-            /* Skip invisible objects - only upload visible ones */
-            if (!visible)
+            if (visible)
+                visible_count++;
+
+            /* Always upload at original index for BVH access, but mark inactive with position.w = 0 */
+            if (!obj->active)
+            {
+                memset(gpu, 0, sizeof(VoxelObjectGPU));
+                gpu->position[3] = 0.0f; /* Mark as inactive */
                 continue;
-
-            if (visible_idx >= static_cast<int32_t>(VOBJ_ATLAS_MAX_OBJECTS))
-                break;
-
-            VoxelObjectGPU *gpu = &gpu_data[visible_idx];
+            }
 
             float rot_mat[9];
             quat_to_mat3(obj->orientation, rot_mat);
 
             /* Position is the object center; no center-of-mass offset. */
             const Vec3 translation = obj->position;
-
-            /*
-             * IMPORTANT:
-             * - quat_to_mat3() returns a row-major 3x3.
-             * - GLSL mat4 is column-major.
-             * - local_to_world maps grid units -> world (includes voxel_size scale).
-             * - world_to_local maps world -> local world-units (no scale), so the shader can
-             *   convert to grid units by dividing by voxel_size.
-             */
 
             /* Column-major local_to_world = [R * voxel_size, pos] */
             float world_mat[16] = {
@@ -807,18 +781,19 @@ namespace patch
             gpu->position[0] = obj->position.x;
             gpu->position[1] = obj->position.y;
             gpu->position[2] = obj->position.z;
-            gpu->position[3] = 1.0f; /* Always active since we only upload visible */
+            /* Only mark as active if atlas data is ready - prevents flickering during spawn */
+            bool atlas_ready_for_gpu = !is_vobj_dirty(static_cast<uint32_t>(i));
+            gpu->position[3] = (obj->active && atlas_ready_for_gpu) ? 1.0f : 0.0f;
 
-            /* atlas_slice points to original object index in atlas texture */
+            /* atlas_slice is same as object index since we upload at original indices */
             gpu->atlas_slice = static_cast<uint32_t>(i);
             gpu->material_base = 0;
             gpu->flags = 0;
             gpu->occupancy_mask = static_cast<uint32_t>(obj->occupancy_mask);
-
-            visible_idx++;
         }
 
-        vobj_visible_count_ = visible_idx;
+        vobj_visible_count_ = visible_count;
+        vobj_total_count_ = count;
 
         if (cpu_bvh_ && bvh_buffer_.buffer && bvh_mapped_)
         {
@@ -1026,7 +1001,7 @@ namespace patch
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
         pc.pad1 = 0.0f;
-        pc.object_count = vobj_visible_count_;
+        pc.object_count = vobj_total_count_;
         pc.atlas_dim = static_cast<int32_t>(VOBJ_GRID_DIM);
         pc.near_plane = perspective_near_;
         pc.far_plane = perspective_far_;
@@ -1041,7 +1016,9 @@ namespace patch
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
 
-        uint32_t instance_count = static_cast<uint32_t>(vobj_visible_count_);
+        /* Draw ALL objects by total count - vertex shader culls inactive via position.w.
+         * Using visible_count would skip objects at higher indices since metadata is not compacted. */
+        uint32_t instance_count = static_cast<uint32_t>(vobj_total_count_);
         if (instance_count > vobj_max_objects_)
             instance_count = vobj_max_objects_;
 

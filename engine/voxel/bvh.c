@@ -257,14 +257,16 @@ void bvh_build(BVH *bvh, const VoxelObjectWorld *world)
         int32_t idx = bvh->object_count++;
         bvh->object_indices[idx] = i;
 
+        /* Store AABBs/centroids at WORLD index (i), not BVH-internal index (idx).
+           update_node_bounds reads via object_indices[] which yields world indices. */
         float r = obj->radius;
-        bvh->obj_centroids[idx] = obj->position;
-        bvh->obj_aabb_min[idx][0] = obj->position.x - r;
-        bvh->obj_aabb_min[idx][1] = obj->position.y - r;
-        bvh->obj_aabb_min[idx][2] = obj->position.z - r;
-        bvh->obj_aabb_max[idx][0] = obj->position.x + r;
-        bvh->obj_aabb_max[idx][1] = obj->position.y + r;
-        bvh->obj_aabb_max[idx][2] = obj->position.z + r;
+        bvh->obj_centroids[i] = obj->position;
+        bvh->obj_aabb_min[i][0] = obj->position.x - r;
+        bvh->obj_aabb_min[i][1] = obj->position.y - r;
+        bvh->obj_aabb_min[i][2] = obj->position.z - r;
+        bvh->obj_aabb_max[i][0] = obj->position.x + r;
+        bvh->obj_aabb_max[i][1] = obj->position.y + r;
+        bvh->obj_aabb_max[i][2] = obj->position.z + r;
     }
 
     if (bvh->object_count == 0)
@@ -286,13 +288,14 @@ void bvh_refit(BVH *bvh, const VoxelObjectWorld *world)
         const VoxelObject *obj = &world->objects[world_idx];
         float r = obj->radius;
 
-        bvh->obj_centroids[i] = obj->position;
-        bvh->obj_aabb_min[i][0] = obj->position.x - r;
-        bvh->obj_aabb_min[i][1] = obj->position.y - r;
-        bvh->obj_aabb_min[i][2] = obj->position.z - r;
-        bvh->obj_aabb_max[i][0] = obj->position.x + r;
-        bvh->obj_aabb_max[i][1] = obj->position.y + r;
-        bvh->obj_aabb_max[i][2] = obj->position.z + r;
+        /* Store at WORLD index to match update_node_bounds which reads via object_indices */
+        bvh->obj_centroids[world_idx] = obj->position;
+        bvh->obj_aabb_min[world_idx][0] = obj->position.x - r;
+        bvh->obj_aabb_min[world_idx][1] = obj->position.y - r;
+        bvh->obj_aabb_min[world_idx][2] = obj->position.z - r;
+        bvh->obj_aabb_max[world_idx][0] = obj->position.x + r;
+        bvh->obj_aabb_max[world_idx][1] = obj->position.y + r;
+        bvh->obj_aabb_max[world_idx][2] = obj->position.z + r;
     }
 
     for (int32_t i = bvh->node_count - 1; i >= 0; i--)

@@ -236,7 +236,7 @@ namespace patch
         pc.max_steps = RAYMARCH_MAX_STEPS;
         pc.near_plane = perspective_near_;
         pc.far_plane = perspective_far_;
-        pc.object_count = vobj_visible_count_; /* Use visible count since metadata buffer is compacted */
+        pc.object_count = vobj_total_count_; /* Use total count - metadata is at original indices, BVH handles traversal */
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
         pc.ao_quality = ao_quality_;

@@ -77,7 +77,7 @@ float bvh_trace_object_shadow(vec3 origin, vec3 dir, float max_t) {
 
                 if (!vobj_is_active(obj_idx)) continue;
 
-                HitInfo hit = vobj_march_object(obj_idx, origin, dir, 24, closest_t);
+                HitInfo hit = vobj_march_object(obj_idx, origin, dir, 56, closest_t);
                 if (hit.hit && hit.t < closest_t) {
                     closest_t = hit.t;
                 }

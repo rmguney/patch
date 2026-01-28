@@ -666,6 +666,7 @@ namespace patch
         float vobj_sort_distances_[VOBJ_ATLAS_MAX_OBJECTS] = {};
         bool vobj_resources_initialized_ = false;
         int32_t vobj_visible_count_ = 0; /* Compacted visible object count for GPU dispatch */
+        int32_t vobj_total_count_ = 0;   /* Total object count (active + inactive) for instance draw */
         const VoxelObjectWorld *vobj_last_world_ = nullptr;
         int32_t vobj_prev_object_count_ = 0;
 

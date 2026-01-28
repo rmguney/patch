@@ -281,19 +281,6 @@ void main() {
     /* March terrain */
     HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
 
-    /* Early-out for sky pixels: if terrain missed, skip object loop for upward rays.
-       Objects are typically ground-level; sky rays pointing up won't hit them.
-       This saves ~250 ray-sphere tests per sky pixel (~40% of pixels). */
-    if (!best_hit.hit && ray_dir.y > 0.1) {
-        imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-        imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
-        imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
-        imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
-        imageStore(out_world_pos, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-        imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-        return;
-    }
-
     /* March voxel objects using BVH acceleration
      * BVH reduces O(n) to O(log n) with early-out */
     if (pc.object_count > 0) {
@@ -307,7 +294,8 @@ void main() {
         float candidate_dists[BVH_MAX_CANDIDATES];
         for (int c = 0; c < candidate_count; c++) {
             int idx = candidates[c];
-            if (idx >= 0 && idx < pc.object_count) {
+            /* BVH returns original object indices - check active flag, not visible count */
+            if (idx >= 0 && vobj_is_active(idx)) {
                 vec3 op = vobj_get_world_position(idx);
                 candidate_dists[c] = dot(op - ray_origin, ray_dir);
             } else {
@@ -330,19 +318,12 @@ void main() {
         for (int c = 0; c < candidate_count; c++) {
             int i = candidates[c];
 
-            /* Skip invalid indices or inactive objects */
-            if (i < 0 || i >= pc.object_count) continue;
-            if (!vobj_is_active(i)) continue;
+            /* Skip invalid or inactive objects (BVH returns original indices) */
+            if (i < 0 || !vobj_is_active(i)) continue;
 
             /* Calculate distance to object for LOD */
             vec3 obj_pos = vobj_get_world_position(i);
             float dist = length(obj_pos - pc.camera_pos);
-
-            /* Skip objects beyond reasonable test distance */
-            const float MAX_OBJECT_TEST_DIST = 100.0;
-            if (dist > MAX_OBJECT_TEST_DIST) {
-                continue;
-            }
 
             /* Depth rejection: skip objects entirely behind current best hit */
             float obj_radius = vobj_get_bounding_radius(i);
