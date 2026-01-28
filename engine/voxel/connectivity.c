@@ -443,15 +443,19 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         return;
     }
 
+    memset(result, 0, sizeof(ConnectivityResult));
+
     if (vol->last_edit_count == 0)
     {
-        memset(result, 0, sizeof(ConnectivityResult));
         PROFILE_END(PROFILE_SIM_CONNECTIVITY);
         return;
     }
 
-    int32_t min_cx = vol->chunks_x, min_cy = vol->chunks_y, min_cz = vol->chunks_z;
-    int32_t max_cx = -1, max_cy = -1, max_cz = -1;
+    /* Decode dirty chunk coordinates */
+    int32_t chunk_cx[VOLUME_EDIT_BATCH_MAX_CHUNKS];
+    int32_t chunk_cy[VOLUME_EDIT_BATCH_MAX_CHUNKS];
+    int32_t chunk_cz[VOLUME_EDIT_BATCH_MAX_CHUNKS];
+    int32_t chunk_count = 0;
 
     for (int32_t i = 0; i < vol->last_edit_count; i++)
     {
@@ -459,49 +463,129 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
         if (chunk_idx < 0 || chunk_idx >= vol->total_chunks)
             continue;
 
-        int32_t cx = chunk_idx % vol->chunks_x;
-        int32_t cy = (chunk_idx / vol->chunks_x) % vol->chunks_y;
-        int32_t cz = chunk_idx / (vol->chunks_x * vol->chunks_y);
-
-        if (cx < min_cx)
-            min_cx = cx;
-        if (cy < min_cy)
-            min_cy = cy;
-        if (cz < min_cz)
-            min_cz = cz;
-        if (cx > max_cx)
-            max_cx = cx;
-        if (cy > max_cy)
-            max_cy = cy;
-        if (cz > max_cz)
-            max_cz = cz;
+        chunk_cx[chunk_count] = chunk_idx % vol->chunks_x;
+        chunk_cy[chunk_count] = (chunk_idx / vol->chunks_x) % vol->chunks_y;
+        chunk_cz[chunk_count] = chunk_idx / (vol->chunks_x * vol->chunks_y);
+        chunk_count++;
     }
 
-    if (max_cx < 0)
+    if (chunk_count == 0)
     {
-        memset(result, 0, sizeof(ConnectivityResult));
         PROFILE_END(PROFILE_SIM_CONNECTIVITY);
         return;
     }
 
-    min_cx = (min_cx > 0) ? min_cx - 1 : 0;
-    min_cy = (min_cy > 0) ? min_cy - 1 : 0;
-    min_cz = (min_cz > 0) ? min_cz - 1 : 0;
-    max_cx = (max_cx < vol->chunks_x - 1) ? max_cx + 1 : vol->chunks_x - 1;
-    max_cy = (max_cy < vol->chunks_y - 1) ? max_cy + 1 : vol->chunks_y - 1;
-    max_cz = (max_cz < vol->chunks_z - 1) ? max_cz + 1 : vol->chunks_z - 1;
+    /* Cluster dirty chunks spatially using union-find.
+     * Two chunks are in the same cluster if Chebyshev distance <= 2
+     * (accounts for 1-chunk expansion on each side). */
+    int32_t parent[VOLUME_EDIT_BATCH_MAX_CHUNKS];
+    for (int32_t i = 0; i < chunk_count; i++)
+        parent[i] = i;
+
+    /* Find root with path compression */
+    #define CLUSTER_FIND(p, x) \
+        do { int32_t _r = (x); while ((p)[_r] != _r) { (p)[_r] = (p)[(p)[_r]]; _r = (p)[_r]; } (x) = _r; } while(0)
+
+    for (int32_t i = 0; i < chunk_count; i++)
+    {
+        for (int32_t j = i + 1; j < chunk_count; j++)
+        {
+            int32_t dx = chunk_cx[i] - chunk_cx[j];
+            int32_t dy = chunk_cy[i] - chunk_cy[j];
+            int32_t dz = chunk_cz[i] - chunk_cz[j];
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            if (dz < 0) dz = -dz;
+
+            if (dx <= 2 && dy <= 2 && dz <= 2)
+            {
+                int32_t ri = i, rj = j;
+                CLUSTER_FIND(parent, ri);
+                CLUSTER_FIND(parent, rj);
+                if (ri != rj)
+                    parent[rj] = ri;
+            }
+        }
+    }
+
+    #undef CLUSTER_FIND
 
     float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
-    Vec3 region_min = vec3_create(
-        vol->bounds.min_x + min_cx * chunk_world_size,
-        vol->bounds.min_y + min_cy * chunk_world_size,
-        vol->bounds.min_z + min_cz * chunk_world_size);
-    Vec3 region_max = vec3_create(
-        vol->bounds.min_x + (max_cx + 1) * chunk_world_size,
-        vol->bounds.min_y + (max_cy + 1) * chunk_world_size,
-        vol->bounds.min_z + (max_cz + 1) * chunk_world_size);
 
-    connectivity_analyze_region(vol, region_min, region_max, anchor_y, anchor_material, work, result);
+    /* Process each cluster independently */
+    bool processed[VOLUME_EDIT_BATCH_MAX_CHUNKS] = {false};
+
+    for (int32_t i = 0; i < chunk_count; i++)
+    {
+        /* Find root */
+        int32_t root = i;
+        while (parent[root] != root)
+            root = parent[root];
+
+        if (processed[root])
+            continue;
+        processed[root] = true;
+
+        /* Compute bounding box for this cluster */
+        int32_t min_cx = vol->chunks_x, min_cy = vol->chunks_y, min_cz = vol->chunks_z;
+        int32_t max_cx = -1, max_cy = -1, max_cz = -1;
+
+        for (int32_t j = 0; j < chunk_count; j++)
+        {
+            int32_t jr = j;
+            while (parent[jr] != jr)
+                jr = parent[jr];
+            if (jr != root)
+                continue;
+
+            if (chunk_cx[j] < min_cx) min_cx = chunk_cx[j];
+            if (chunk_cy[j] < min_cy) min_cy = chunk_cy[j];
+            if (chunk_cz[j] < min_cz) min_cz = chunk_cz[j];
+            if (chunk_cx[j] > max_cx) max_cx = chunk_cx[j];
+            if (chunk_cy[j] > max_cy) max_cy = chunk_cy[j];
+            if (chunk_cz[j] > max_cz) max_cz = chunk_cz[j];
+        }
+
+        if (max_cx < 0)
+            continue;
+
+        /* Expand by 1 chunk for boundary connectivity */
+        min_cx = (min_cx > 0) ? min_cx - 1 : 0;
+        min_cy = (min_cy > 0) ? min_cy - 1 : 0;
+        min_cz = (min_cz > 0) ? min_cz - 1 : 0;
+        max_cx = (max_cx < vol->chunks_x - 1) ? max_cx + 1 : vol->chunks_x - 1;
+        max_cy = (max_cy < vol->chunks_y - 1) ? max_cy + 1 : vol->chunks_y - 1;
+        max_cz = (max_cz < vol->chunks_z - 1) ? max_cz + 1 : vol->chunks_z - 1;
+
+        Vec3 region_min = vec3_create(
+            vol->bounds.min_x + min_cx * chunk_world_size,
+            vol->bounds.min_y + min_cy * chunk_world_size,
+            vol->bounds.min_z + min_cz * chunk_world_size);
+        Vec3 region_max = vec3_create(
+            vol->bounds.min_x + (max_cx + 1) * chunk_world_size,
+            vol->bounds.min_y + (max_cy + 1) * chunk_world_size,
+            vol->bounds.min_z + (max_cz + 1) * chunk_world_size);
+
+        ConnectivityResult cluster_result;
+        connectivity_analyze_region(vol, region_min, region_max, anchor_y, anchor_material, work, &cluster_result);
+
+        /* Merge cluster results into output */
+        for (int32_t k = 0; k < cluster_result.island_count; k++)
+        {
+            if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
+                break;
+            result->islands[result->island_count] = cluster_result.islands[k];
+            result->island_count++;
+            if (cluster_result.islands[k].is_floating)
+                result->floating_count++;
+            else
+                result->anchored_count++;
+        }
+        result->total_voxels_checked += cluster_result.total_voxels_checked;
+
+        if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
+            break;
+    }
 
     PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 }

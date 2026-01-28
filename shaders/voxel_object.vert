@@ -90,7 +90,7 @@ void main() {
     
     /* Estimate screen coverage: (object_size / distance)^2 approximates solid angle */
     /* This is cheaper than projecting bounds to clip space */
-    float half_extent = obj.bounds_max.x;
+    float half_extent = max(obj.bounds_max.x, max(obj.bounds_max.y, obj.bounds_max.z));
     float angular_size = half_extent / max(dist, 0.1);
     /* Convert to approximate screen fraction (assuming ~90 degree FOV) */
     out_screen_coverage = clamp(angular_size * angular_size * 4.0, 0.0, 1.0);

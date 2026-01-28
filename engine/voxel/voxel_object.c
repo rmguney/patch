@@ -1,6 +1,7 @@
 #include "voxel_object.h"
 #include "content/materials.h"
 #include "engine/core/profile.h"
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -281,6 +282,14 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     float extent_y = (float)(max_y - min_y + 1) * obj->voxel_size * 0.5f;
     float extent_z = (float)(max_z - min_z + 1) * obj->voxel_size * 0.5f;
     obj->shape_half_extents = vec3_create(extent_x, extent_y, extent_z);
+
+#ifndef NDEBUG
+    /* DEBUG: verify shape extents are valid */
+    float max_extent = half_grid * obj->voxel_size;
+    assert(extent_x > 0.0f && extent_x <= max_extent);
+    assert(extent_y > 0.0f && extent_y <= max_extent);
+    assert(extent_z > 0.0f && extent_z <= max_extent);
+#endif
 
     /* Compute center of mass and total mass using per-material density */
     float mass_sum = 0.0f;
@@ -778,6 +787,90 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
     }
 
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
+    return result;
+}
+
+VoxelObjectPointTest voxel_object_world_test_point(const VoxelObjectWorld *world, Vec3 world_pos)
+{
+    VoxelObjectPointTest result = {0};
+    result.hit = false;
+    result.object_index = -1;
+    result.surface_normal = vec3_create(0.0f, 1.0f, 0.0f);
+
+    if (!world)
+        return result;
+
+    int32_t candidates[VOBJ_RAYCAST_PER_QUERY_MAX];
+    int32_t candidate_count = 0;
+    bool use_grid = world->raycast_grid_valid && world->raycast_grid != NULL;
+
+    if (use_grid)
+    {
+        candidate_count = spatial_hash_query(world->raycast_grid, world_pos,
+                                             0.0f, candidates, VOBJ_RAYCAST_PER_QUERY_MAX);
+    }
+
+    int32_t loop_count = use_grid ? candidate_count : world->object_count;
+
+    for (int32_t loop_i = 0; loop_i < loop_count; loop_i++)
+    {
+        int32_t i = use_grid ? candidates[loop_i] : loop_i;
+        const VoxelObject *obj = &world->objects[i];
+        if (!obj->active || obj->voxel_count == 0)
+            continue;
+
+        Vec3 to_obj = vec3_sub(world_pos, obj->position);
+        if (vec3_length_sq(to_obj) > obj->radius * obj->radius)
+            continue;
+
+        float rot_mat[9], inv_rot_mat[9];
+        quat_to_mat3(obj->orientation, rot_mat);
+        mat3_transpose(rot_mat, inv_rot_mat);
+
+        Vec3 local_pos = mat3_transform_vec3(inv_rot_mat, to_obj);
+        float half_size = obj->voxel_size * (float)VOBJ_GRID_SIZE * 0.5f;
+        local_pos = vec3_add(local_pos, vec3_create(half_size, half_size, half_size));
+
+        int32_t gx = (int32_t)floorf(local_pos.x / obj->voxel_size);
+        int32_t gy = (int32_t)floorf(local_pos.y / obj->voxel_size);
+        int32_t gz = (int32_t)floorf(local_pos.z / obj->voxel_size);
+
+        if (gx < 0 || gx >= VOBJ_GRID_SIZE ||
+            gy < 0 || gy >= VOBJ_GRID_SIZE ||
+            gz < 0 || gz >= VOBJ_GRID_SIZE)
+            continue;
+
+        if (obj->voxels[vobj_index(gx, gy, gz)].material == 0)
+            continue;
+
+        result.hit = true;
+        result.object_index = i;
+
+        /* Estimate surface normal from 6-neighbor probe in local grid */
+        Vec3 local_normal = vec3_zero();
+        if (gx + 1 >= VOBJ_GRID_SIZE || obj->voxels[vobj_index(gx + 1, gy, gz)].material == 0)
+            local_normal.x += 1.0f;
+        if (gx - 1 < 0 || obj->voxels[vobj_index(gx - 1, gy, gz)].material == 0)
+            local_normal.x -= 1.0f;
+        if (gy + 1 >= VOBJ_GRID_SIZE || obj->voxels[vobj_index(gx, gy + 1, gz)].material == 0)
+            local_normal.y += 1.0f;
+        if (gy - 1 < 0 || obj->voxels[vobj_index(gx, gy - 1, gz)].material == 0)
+            local_normal.y -= 1.0f;
+        if (gz + 1 >= VOBJ_GRID_SIZE || obj->voxels[vobj_index(gx, gy, gz + 1)].material == 0)
+            local_normal.z += 1.0f;
+        if (gz - 1 < 0 || obj->voxels[vobj_index(gx, gy, gz - 1)].material == 0)
+            local_normal.z -= 1.0f;
+
+        float len = vec3_length(local_normal);
+        if (len > 0.001f)
+            local_normal = vec3_scale(local_normal, 1.0f / len);
+        else
+            local_normal = vec3_create(0.0f, 1.0f, 0.0f);
+
+        result.surface_normal = mat3_transform_vec3(rot_mat, local_normal);
+        return result;
+    }
+
     return result;
 }
 

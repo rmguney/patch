@@ -1,4 +1,6 @@
 #include "particles.h"
+#include "engine/voxel/volume.h"
+#include "engine/voxel/voxel_object.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -66,12 +68,75 @@ int32_t particle_system_add(ParticleSystem* sys, RngState *rng, Vec3 position, V
     return (int32_t)(p - sys->particles);
 }
 
-static void resolve_particle_boundary(Particle* p, const Bounds3D* bounds, float restitution) {
-    /* Floor collision only - no invisible walls */
-    if (p->position.y - p->radius < bounds->min_y) {
-        p->position.y = bounds->min_y + p->radius;
-        p->velocity.y = -p->velocity.y * restitution;
+static Vec3 estimate_terrain_normal(const VoxelVolume *vol, Vec3 pos, float vs) {
+    Vec3 n = vec3_zero();
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(vs, 0.0f, 0.0f))))  n.x += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(-vs, 0.0f, 0.0f)))) n.x -= 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, vs, 0.0f))))  n.y += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, -vs, 0.0f)))) n.y -= 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, vs))))  n.z += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, -vs)))) n.z -= 1.0f;
+    float len = vec3_length(n);
+    return len > 0.001f ? vec3_scale(n, 1.0f / len) : vec3_create(0.0f, 1.0f, 0.0f);
+}
+
+static void resolve_particle_terrain(Particle *p,
+                                     const VoxelVolume *vol,
+                                     const VoxelObjectWorld *objects,
+                                     float restitution, float friction) {
+    bool hit_terrain = vol && volume_is_solid_at(vol, p->position);
+    bool hit_object = false;
+    Vec3 normal = vec3_create(0.0f, 1.0f, 0.0f);
+
+    if (!hit_terrain && objects)
+    {
+        VoxelObjectPointTest test = voxel_object_world_test_point(objects, p->position);
+        if (test.hit)
+        {
+            hit_object = true;
+            normal = test.surface_normal;
+        }
     }
+
+    if (!hit_terrain && !hit_object)
+        return;
+
+    /* If prev_position is also solid, push upward to escape embedded geometry */
+    if (hit_terrain && vol && volume_is_solid_at(vol, p->prev_position))
+    {
+        float vs = vol->voxel_size;
+        Vec3 escape = p->prev_position;
+        for (int32_t push = 0; push < 5; push++)
+        {
+            escape.y += vs;
+            if (!volume_is_solid_at(vol, escape))
+            {
+                p->position = escape;
+                p->velocity.y = fabsf(p->velocity.y) * 0.3f;
+                return;
+            }
+        }
+        p->active = false;
+        return;
+    }
+
+    p->position = p->prev_position;
+
+    if (hit_terrain && vol)
+        normal = estimate_terrain_normal(vol, p->position, vol->voxel_size);
+
+    float vn = vec3_dot(p->velocity, normal);
+    if (vn < 0.0f)
+    {
+        p->velocity = vec3_sub(p->velocity,
+                               vec3_scale(normal, (1.0f + restitution) * vn));
+    }
+
+    /* Surface friction on tangential component */
+    float vn_after = vec3_dot(p->velocity, normal);
+    Vec3 normal_component = vec3_scale(normal, vn_after);
+    Vec3 tangent_vel = vec3_sub(p->velocity, normal_component);
+    p->velocity = vec3_add(normal_component, vec3_scale(tangent_vel, friction));
 }
 
 static void resolve_particle_collision(Particle* a, Particle* b, float restitution) {
@@ -99,7 +164,9 @@ static void resolve_particle_collision(Particle* a, Particle* b, float restituti
     b->velocity = vec3_sub(b->velocity, impulse);
 }
 
-void particle_system_update(ParticleSystem* sys, float dt) {
+void particle_system_update(ParticleSystem* sys, float dt,
+                            const VoxelVolume *terrain,
+                            const VoxelObjectWorld *objects) {
     /* No compaction needed - circular buffer overwrites oldest particles when at capacity */
 
     /* Safe max velocity to prevent tunneling (based on typical particle radius) */
@@ -145,8 +212,10 @@ void particle_system_update(ParticleSystem* sys, float dt) {
 
         p->velocity = vec3_scale(p->velocity, sys->damping);
 
-        float floor_dist = p->position.y - p->radius - sys->bounds.min_y;
-        if (floor_dist < 0.05f) {
+        /* Surface proximity friction: check if solid below particle */
+        bool near_surface = terrain &&
+            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f)));
+        if (near_surface) {
             p->velocity.x *= sys->floor_friction;
             p->velocity.z *= sys->floor_friction;
             p->angular_velocity = vec3_scale(p->angular_velocity, 0.9f);
@@ -156,8 +225,7 @@ void particle_system_update(ParticleSystem* sys, float dt) {
         p->rotation = vec3_add(p->rotation, vec3_scale(p->angular_velocity, dt));
         p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
 
-        resolve_particle_boundary(p, &sys->bounds, sys->restitution);
-        /* No processed++ here - young particles are unbounded (time-limited to ~1s) */
+        resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
     }
 
     /* Pass 2: Older particles with remaining budget (round-robin) */
@@ -183,8 +251,9 @@ void particle_system_update(ParticleSystem* sys, float dt) {
 
         p->velocity = vec3_scale(p->velocity, sys->damping);
 
-        float floor_dist = p->position.y - p->radius - sys->bounds.min_y;
-        if (floor_dist < 0.05f) {
+        bool near_surface = terrain &&
+            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f)));
+        if (near_surface) {
             p->velocity.x *= sys->floor_friction;
             p->velocity.z *= sys->floor_friction;
             p->angular_velocity = vec3_scale(p->angular_velocity, 0.9f);
@@ -194,7 +263,7 @@ void particle_system_update(ParticleSystem* sys, float dt) {
         p->rotation = vec3_add(p->rotation, vec3_scale(p->angular_velocity, dt));
         p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
 
-        resolve_particle_boundary(p, &sys->bounds, sys->restitution);
+        resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
         processed++;
     }
     sys->update_cursor = cursor;
@@ -233,11 +302,21 @@ void particle_system_update(ParticleSystem* sys, float dt) {
 
     for (int32_t i = 0; i < sys->count; i++) {
         Particle* p = &sys->particles[i];
-        if (!p->active || p->settled) continue;
+        if (!p->active) continue;
+
+        bool near_surface = terrain &&
+            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.02f, 0.0f)));
+
+        if (p->settled) {
+            if (!near_surface) {
+                p->settled = false;
+                p->velocity = vec3_scale(sys->gravity, 0.01f);
+            }
+            continue;
+        }
 
         float speed = vec3_length(p->velocity);
-        float floor_dist = p->position.y - p->radius - sys->bounds.min_y;
-        if (speed < PARTICLE_SETTLE_VELOCITY && floor_dist < 0.02f) {
+        if (speed < PARTICLE_SETTLE_VELOCITY && near_surface) {
             p->settled = true;
             p->velocity = vec3_zero();
         }

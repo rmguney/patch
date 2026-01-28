@@ -102,7 +102,7 @@ TEST(particles_max_capacity)
     for (int32_t tick = 0; tick < TICK_COUNT; tick++)
     {
         PlatformTime tick_start = platform_time_now();
-        particle_system_update(sys, 1.0f / 60.0f);
+        particle_system_update(sys, 1.0f / 60.0f, NULL, NULL);
         PlatformTime tick_end = platform_time_now();
 
         float tick_ms = (float)(platform_time_delta_seconds(tick_start, tick_end) * 1000.0);
@@ -193,7 +193,7 @@ TEST(destruction_burst)
             }
         }
 
-        particle_system_update(particles, 1.0f / 60.0f);
+        particle_system_update(particles, 1.0f / 60.0f, NULL, NULL);
     }
 
     printf("    Destroyed %d voxels in %d bursts (%.3fms total, %.3fms/burst)\n",

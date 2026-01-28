@@ -288,7 +288,7 @@ static void ball_pit_tick(Scene *scene)
     }
 
     PROFILE_BEGIN(PROFILE_SIM_PARTICLES);
-    particle_system_update(data->particles, dt);
+    particle_system_update(data->particles, dt, data->terrain, data->objects);
     PROFILE_END(PROFILE_SIM_PARTICLES);
 
     /* Process deferred voxel object work (budgeted per-frame) */

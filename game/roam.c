@@ -249,7 +249,7 @@ static void roam_tick(Scene *scene)
 
     if (data->particles)
     {
-        particle_system_update(data->particles, dt);
+        particle_system_update(data->particles, dt, data->terrain, data->objects);
         data->stats.particles_active = data->particles->count;
     }
 

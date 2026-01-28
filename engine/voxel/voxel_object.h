@@ -139,6 +139,15 @@ extern "C"
 
     VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, Vec3 dir);
 
+    typedef struct
+    {
+        bool hit;
+        int32_t object_index;
+        Vec3 surface_normal;
+    } VoxelObjectPointTest;
+
+    VoxelObjectPointTest voxel_object_world_test_point(const VoxelObjectWorld *world, Vec3 world_pos);
+
     void voxel_object_recalc_shape(VoxelObject *obj);
     void voxel_object_mark_dirty(VoxelObject *obj);
     void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index);

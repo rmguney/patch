@@ -354,7 +354,7 @@ void main() {
             }
 
             /* Calculate screen coverage for LOD */
-            float half_extent = vobj_get_half_extent(i);
+            float half_extent = vobj_get_max_half_extent(i);
             float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
 
             int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, VOBJ_BASE_STEPS);

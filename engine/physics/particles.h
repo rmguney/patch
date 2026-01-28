@@ -11,6 +11,8 @@
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
 #include "engine/core/spatial_hash.h"
+#include "engine/voxel/volume.h"
+#include "engine/voxel/voxel_object.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -61,7 +63,9 @@ extern "C"
 
     ParticleSystem *particle_system_create(Bounds3D bounds);
     void particle_system_destroy(ParticleSystem *sys);
-    void particle_system_update(ParticleSystem *sys, float dt);
+    void particle_system_update(ParticleSystem *sys, float dt,
+                                const VoxelVolume *terrain,
+                                const VoxelObjectWorld *objects);
     void particle_system_clear(ParticleSystem *sys);
 
     int32_t particle_system_spawn_explosion(ParticleSystem *sys, RngState *rng, Vec3 center, float radius,

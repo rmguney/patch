@@ -737,10 +737,12 @@ namespace patch
             const VoxelObject *obj = &world->objects[i];
 
             float vs = obj->voxel_size;
-            float half_size = vs * static_cast<float>(VOBJ_GRID_SIZE) * 0.5f;
 
-            /* Frustum culling: use bounding sphere (sqrt(3) * half_size for cube diagonal) */
-            float bounding_radius = half_size * 1.732051f;
+            /* Frustum culling: bounding sphere from actual shape extents */
+            float max_half_ext = (std::max)(obj->shape_half_extents.x,
+                                           (std::max)(obj->shape_half_extents.y,
+                                                      obj->shape_half_extents.z));
+            float bounding_radius = max_half_ext * 1.732051f;
             FrustumResult cull_result = frustum_test_sphere(&frustum, obj->position, bounding_radius);
             bool atlas_ready = !is_vobj_dirty(static_cast<uint32_t>(i));
             bool render_ready = obj->render_delay <= 0;
@@ -793,14 +795,14 @@ namespace patch
             memcpy(gpu->local_to_world, world_mat, sizeof(world_mat));
             memcpy(gpu->world_to_local, inv_mat, sizeof(inv_mat));
 
-            gpu->bounds_min[0] = -half_size;
-            gpu->bounds_min[1] = -half_size;
-            gpu->bounds_min[2] = -half_size;
+            gpu->bounds_min[0] = -obj->shape_half_extents.x;
+            gpu->bounds_min[1] = -obj->shape_half_extents.y;
+            gpu->bounds_min[2] = -obj->shape_half_extents.z;
             gpu->bounds_min[3] = vs;
 
-            gpu->bounds_max[0] = half_size;
-            gpu->bounds_max[1] = half_size;
-            gpu->bounds_max[2] = half_size;
+            gpu->bounds_max[0] = obj->shape_half_extents.x;
+            gpu->bounds_max[1] = obj->shape_half_extents.y;
+            gpu->bounds_max[2] = obj->shape_half_extents.z;
             gpu->bounds_max[3] = static_cast<float>(VOBJ_GRID_SIZE);
 
             gpu->position[0] = obj->position.x;
@@ -850,7 +852,8 @@ namespace patch
             for (int32_t vi = 0; vi < visible_idx; vi++)
             {
                 const VoxelObjectGPU *gpu_obj = &gpu_data[vi];
-                float radius = gpu_obj->bounds_max[0] * 1.732051f;
+                float max_ext = (std::max)(gpu_obj->bounds_max[0], (std::max)(gpu_obj->bounds_max[1], gpu_obj->bounds_max[2]));
+                float radius = max_ext * 1.732051f;
 
                 Vec3 obj_min = {gpu_obj->position[0] - radius, gpu_obj->position[1] - radius, gpu_obj->position[2] - radius};
                 Vec3 obj_max = {gpu_obj->position[0] + radius, gpu_obj->position[1] + radius, gpu_obj->position[2] + radius};
@@ -888,7 +891,8 @@ namespace patch
             for (int32_t vi = 0; vi < visible_idx; vi++)
             {
                 const VoxelObjectGPU *gpu_obj = &gpu_data[vi];
-                float radius = gpu_obj->bounds_max[0] * 1.732051f;
+                float max_ext2 = (std::max)(gpu_obj->bounds_max[0], (std::max)(gpu_obj->bounds_max[1], gpu_obj->bounds_max[2]));
+                float radius = max_ext2 * 1.732051f;
 
                 Vec3 obj_min = {gpu_obj->position[0] - radius, gpu_obj->position[1] - radius, gpu_obj->position[2] - radius};
                 Vec3 obj_max = {gpu_obj->position[0] + radius, gpu_obj->position[1] + radius, gpu_obj->position[2] + radius};

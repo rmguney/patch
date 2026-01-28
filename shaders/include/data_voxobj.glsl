@@ -67,8 +67,9 @@ float vobj_get_grid_size(int object_idx) {
     return objects[object_idx].bounds_max.w;
 }
 
-float vobj_get_half_extent(int object_idx) {
-    return objects[object_idx].bounds_max.x;
+float vobj_get_max_half_extent(int object_idx) {
+    vec3 ext = objects[object_idx].bounds_max.xyz;
+    return max(ext.x, max(ext.y, ext.z));
 }
 
 bool vobj_is_active(int object_idx) {
@@ -93,10 +94,10 @@ float vobj_ray_sphere_dist_sq(vec3 ray_origin, vec3 ray_dir, vec3 sphere_center)
 
 /*
  * Calculate bounding sphere radius for a voxel object.
- * Uses sqrt(3) * half_extent for the diagonal of the bounding cube.
+ * Uses sqrt(3) * max_half_extent for the diagonal of the bounding cube.
  */
 float vobj_get_bounding_radius(int object_idx) {
-    float half_ext = vobj_get_half_extent(object_idx);
+    float half_ext = vobj_get_max_half_extent(object_idx);
     return half_ext * 1.732051;  // sqrt(3)
 }
 
@@ -216,10 +217,10 @@ HitInfo vobj_march_object(
 
     float voxel_size = obj.bounds_min.w;
     float grid_size = obj.bounds_max.w;
-    float half_extent = obj.bounds_max.x;
+    float half_grid = grid_size * 0.5;
 
-    vec3 local_min = vec3(-half_extent);
-    vec3 local_max = vec3(half_extent);
+    vec3 local_min = obj.bounds_min.xyz;
+    vec3 local_max = obj.bounds_max.xyz;
 
     vec2 box_t = hdda_intersect_aabb(local_origin, local_dir, local_min, local_max);
     if (box_t.x > box_t.y || box_t.y < 0.0) {
@@ -233,7 +234,7 @@ HitInfo vobj_march_object(
 
     float t_start = max(box_t.x, 0.001);
     vec3 start_local = local_origin + local_dir * t_start;
-    vec3 grid_pos = (start_local + vec3(half_extent)) / voxel_size;
+    vec3 grid_pos = start_local / voxel_size + vec3(half_grid);
     grid_pos = clamp(grid_pos, vec3(0.0), vec3(grid_size) - 0.001);
 
     /* Initialize DDA state (manual init due to world-space ray direction) */
