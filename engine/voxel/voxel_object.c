@@ -1,4 +1,5 @@
 #include "voxel_object.h"
+#include "bvh.h"
 #include "content/materials.h"
 #include "engine/core/profile.h"
 #include <assert.h>
@@ -439,6 +440,8 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     }
     world->raycast_grid_valid = false;
 
+    world->bvh = bvh_create();
+
     return world;
 }
 
@@ -449,6 +452,10 @@ void voxel_object_world_destroy(VoxelObjectWorld *world)
         if (world->raycast_grid)
         {
             free(world->raycast_grid);
+        }
+        if (world->bvh)
+        {
+            bvh_destroy(world->bvh);
         }
         free(world);
     }
@@ -635,42 +642,19 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
 
     int32_t candidates[VOBJ_RAYCAST_MAX_CANDIDATES];
     int32_t candidate_count = 0;
-    bool use_grid = world->raycast_grid_valid && world->raycast_grid != NULL;
+    bool use_bvh = world->bvh != NULL && world->bvh->object_count > 0;
 
-    if (use_grid)
+    if (use_bvh)
     {
-        float step_size = VOBJ_RAYCAST_QUERY_RADIUS * VOBJ_RAYCAST_STEP_MULT;
-
-        for (float t = 0.0f; t < VOBJ_RAYCAST_MAX_DIST && candidate_count < VOBJ_RAYCAST_MAX_CANDIDATES; t += step_size)
-        {
-            Vec3 sample_pos = vec3_add(origin, vec3_scale(dir, t));
-            int32_t found[VOBJ_RAYCAST_PER_QUERY_MAX];
-            int32_t found_count = spatial_hash_query(world->raycast_grid, sample_pos, VOBJ_RAYCAST_QUERY_RADIUS,
-                                                     found, VOBJ_RAYCAST_PER_QUERY_MAX);
-            for (int32_t j = 0; j < found_count && candidate_count < VOBJ_RAYCAST_MAX_CANDIDATES; j++)
-            {
-                bool already_added = false;
-                for (int32_t k = 0; k < candidate_count; k++)
-                {
-                    if (candidates[k] == found[j])
-                    {
-                        already_added = true;
-                        break;
-                    }
-                }
-                if (!already_added)
-                {
-                    candidates[candidate_count++] = found[j];
-                }
-            }
-        }
+        candidate_count = bvh_query_ray_candidates(world->bvh, origin, dir, VOBJ_RAYCAST_MAX_DIST,
+                                                    candidates, VOBJ_RAYCAST_MAX_CANDIDATES);
     }
 
-    int32_t loop_count = use_grid ? candidate_count : world->object_count;
+    int32_t loop_count = use_bvh ? candidate_count : world->object_count;
 
     for (int32_t loop_i = 0; loop_i < loop_count; loop_i++)
     {
-        int32_t i = use_grid ? candidates[loop_i] : loop_i;
+        int32_t i = use_bvh ? candidates[loop_i] : loop_i;
         VoxelObject *obj = &world->objects[i];
         if (!obj->active || obj->voxel_count == 0)
             continue;
@@ -800,21 +784,21 @@ VoxelObjectPointTest voxel_object_world_test_point(const VoxelObjectWorld *world
     if (!world)
         return result;
 
-    int32_t candidates[VOBJ_RAYCAST_PER_QUERY_MAX];
     int32_t candidate_count = 0;
-    bool use_grid = world->raycast_grid_valid && world->raycast_grid != NULL;
+    bool use_bvh = world->bvh != NULL && world->bvh->object_count > 0;
 
-    if (use_grid)
+    BVHQueryResult query_result = {0};
+    if (use_bvh)
     {
-        candidate_count = spatial_hash_query(world->raycast_grid, world_pos,
-                                             0.0f, candidates, VOBJ_RAYCAST_PER_QUERY_MAX);
+        query_result = bvh_query_sphere(world->bvh, world_pos, 0.01f);
+        candidate_count = query_result.count;
     }
 
-    int32_t loop_count = use_grid ? candidate_count : world->object_count;
+    int32_t loop_count = use_bvh ? candidate_count : world->object_count;
 
     for (int32_t loop_i = 0; loop_i < loop_count; loop_i++)
     {
-        int32_t i = use_grid ? candidates[loop_i] : loop_i;
+        int32_t i = use_bvh ? query_result.indices[loop_i] : loop_i;
         const VoxelObject *obj = &world->objects[i];
         if (!obj->active || obj->voxel_count == 0)
             continue;

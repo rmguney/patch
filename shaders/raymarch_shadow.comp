@@ -82,7 +82,12 @@ layout(std430, SET_BINDING(3, 1)) readonly buffer ObjectMetadata {
     VoxelObjectGPU objects[];
 };
 
+#define BVH_SET 3
+#define BVH_BINDING 2
+#include "include/bvh.glsl"
+
 #include "include/data_voxobj.glsl"
+#include "include/bvh_traverse.glsl"
 
 /* G-buffer inputs (set 1) */
 layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
@@ -164,20 +169,9 @@ bool sample_shadow_mip2(ivec3 voxel_pos) {
 }
 
 /* Direct object shadow tracing - traces actual object voxels for accurate rotated shadows.
-   Uses the same vobj_march_object as G-buffer pass for identical transform math. */
+   Uses BVH traversal for O(log n) performance instead of iterating all objects. */
 float trace_object_shadow(vec3 origin, vec3 dir, float max_t) {
-    const int SHADOW_OBJ_STEPS = 24;
-
-    for (int i = 0; i < pc.object_count; i++) {
-        if (!vobj_is_active(i)) continue;
-        if (!vobj_ray_could_hit(origin, dir, i)) continue;
-
-        HitInfo hit = vobj_march_object(i, origin, dir, SHADOW_OBJ_STEPS, max_t);
-        if (hit.hit) {
-            max_t = min(max_t, hit.t);
-        }
-    }
-    return max_t;
+    return bvh_trace_object_shadow(origin, dir, max_t);
 }
 
 /* Trace shadow ray through terrain volume, returns hit distance (max_dist if no hit) */

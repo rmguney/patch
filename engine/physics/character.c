@@ -1,5 +1,6 @@
 #include "character.h"
 #include "rigidbody.h"
+#include "engine/voxel/bvh.h"
 #include <math.h>
 
 void character_init(Character *character, Vec3 start_position)
@@ -68,11 +69,17 @@ static bool check_terrain_collision(VoxelVolume *terrain, Vec3 point, Vec3 *out_
 
 static bool check_object_collision(VoxelObjectWorld *objects, Vec3 point, Vec3 *out_normal)
 {
-    if (!objects)
+    if (!objects || !objects->bvh || objects->bvh->node_count <= 0)
         return false;
 
-    for (int32_t i = 0; i < objects->object_count; i++)
+    BVHQueryResult candidates = bvh_query_sphere(objects->bvh, point, CHAR_CAPSULE_RADIUS);
+
+    for (int32_t c = 0; c < candidates.count; c++)
     {
+        int32_t i = candidates.indices[c];
+        if (i < 0 || i >= objects->object_count)
+            continue;
+
         VoxelObject *obj = &objects->objects[i];
         if (!obj->active)
             continue;

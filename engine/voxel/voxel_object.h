@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+typedef struct BVH BVH;
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -74,7 +76,7 @@ extern "C"
 #define VOBJ_MAX_SPLITS_PER_TICK 4
 #define VOBJ_MAX_RECALCS_PER_TICK 8
 
-    typedef struct
+    typedef struct VoxelObjectWorld
     {
         VoxelObject objects[VOBJ_MAX_OBJECTS];
         int32_t object_count;
@@ -96,9 +98,12 @@ extern "C"
         int32_t split_queue_head;
         int32_t split_queue_tail;
 
-        /* Spatial hash for raycast acceleration */
+        /* Spatial hash for raycast acceleration (legacy) */
         SpatialHashGrid *raycast_grid;
         bool raycast_grid_valid;
+
+        /* BVH for accelerated object queries */
+        BVH *bvh;
     } VoxelObjectWorld;
 
     typedef struct

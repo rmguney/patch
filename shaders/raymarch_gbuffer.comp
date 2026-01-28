@@ -82,8 +82,12 @@ layout(std430, SET_BINDING(1, 1)) readonly buffer ObjectMetadata {
     VoxelObjectGPU objects[];
 };
 
+#define BVH_SET 1
+#define BVH_BINDING 2
+#include "include/bvh.glsl"
+
 #include "include/data_voxobj.glsl"
-#include "include/spatial_grid.glsl"
+#include "include/bvh_traverse.glsl"
 
 /* G-buffer outputs (set 2) - see gbuffer_sample.glsl for downstream sampling */
 layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
@@ -290,19 +294,17 @@ void main() {
         return;
     }
 
-    /* March voxel objects using spatial grid acceleration
-     * Grid reduces O(n) to O(k) where k = objects along ray path */
+    /* March voxel objects using BVH acceleration
+     * BVH reduces O(n) to O(log n) with early-out */
     if (pc.object_count > 0) {
         float terrain_t = best_hit.t;
-        int objects_marched = 0;
 
-        /* Collect candidate objects from spatial grid along ray */
-        int candidates[GRID_MAX_CANDIDATES];
-        int candidate_count;
-        grid_collect_candidates(ray_origin, ray_dir, terrain_t, candidates, candidate_count);
+        /* Collect candidate objects from BVH along ray */
+        int candidates[BVH_MAX_CANDIDATES];
+        int candidate_count = bvh_collect_ray_candidates(ray_origin, ray_dir, terrain_t, candidates);
 
         /* Sort candidates by distance (nearest first) for early depth rejection */
-        float candidate_dists[GRID_MAX_CANDIDATES];
+        float candidate_dists[BVH_MAX_CANDIDATES];
         for (int c = 0; c < candidate_count; c++) {
             int idx = candidates[c];
             if (idx >= 0 && idx < pc.object_count) {
@@ -328,13 +330,9 @@ void main() {
         for (int c = 0; c < candidate_count; c++) {
             int i = candidates[c];
 
-            /* Skip invalid indices */
+            /* Skip invalid indices or inactive objects */
             if (i < 0 || i >= pc.object_count) continue;
-
-            /* Quick ray-sphere rejection */
-            if (!vobj_ray_could_hit(ray_origin, ray_dir, i)) {
-                continue;
-            }
+            if (!vobj_is_active(i)) continue;
 
             /* Calculate distance to object for LOD */
             vec3 obj_pos = vobj_get_world_position(i);

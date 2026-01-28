@@ -508,12 +508,12 @@ namespace patch
 
             vkUpdateDescriptorSets(device_, 4, terrain_writes, 0, nullptr);
 
-            /* Set 1: Voxel objects + spatial grid
+            /* Set 1: Voxel objects + BVH
              * Must always write valid descriptors (shadow shader binds this set unconditionally).
              * Use fallback resources when vobj isn't ready - shader uses object_count=0 to skip tracing. */
             VkDescriptorImageInfo atlas_info{};
             VkDescriptorBufferInfo vobj_meta_info{};
-            VkDescriptorBufferInfo spatial_grid_info{};
+            VkDescriptorBufferInfo bvh_info{};
 
             if (vobj_atlas_view_ && vobj_atlas_sampler_)
             {
@@ -525,9 +525,9 @@ namespace patch
                 vobj_meta_info.offset = 0;
                 vobj_meta_info.range = VK_WHOLE_SIZE;
 
-                spatial_grid_info.buffer = spatial_grid_buffer_.buffer;
-                spatial_grid_info.offset = 0;
-                spatial_grid_info.range = sizeof(GPUSpatialGridBuffer);
+                bvh_info.buffer = bvh_buffer_.buffer;
+                bvh_info.offset = 0;
+                bvh_info.range = sizeof(GPUBVHBuffer);
             }
             else
             {
@@ -540,9 +540,9 @@ namespace patch
                 vobj_meta_info.offset = 0;
                 vobj_meta_info.range = VK_WHOLE_SIZE;
 
-                spatial_grid_info.buffer = voxel_data_buffer_.buffer;
-                spatial_grid_info.offset = 0;
-                spatial_grid_info.range = VK_WHOLE_SIZE;
+                bvh_info.buffer = voxel_data_buffer_.buffer;
+                bvh_info.offset = 0;
+                bvh_info.range = VK_WHOLE_SIZE;
             }
 
             VkWriteDescriptorSet vobj_writes[3]{};
@@ -565,7 +565,7 @@ namespace patch
             vobj_writes[2].dstBinding = 2;
             vobj_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             vobj_writes[2].descriptorCount = 1;
-            vobj_writes[2].pBufferInfo = &spatial_grid_info;
+            vobj_writes[2].pBufferInfo = &bvh_info;
 
             vkUpdateDescriptorSets(device_, 3, vobj_writes, 0, nullptr);
 

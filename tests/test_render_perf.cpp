@@ -747,11 +747,13 @@ int main(int argc, char *argv[])
     printf("Generated: %s\n", time_str);
     printf("Executable: %s\n", exe_path);
 
-    /* GPU warmup run - first launch always has shader compilation overhead */
+    /* GPU warmup run - first launch always has shader compilation overhead
+     * Run with 50 objects for 30 frames to match baseline test and ensure
+     * BVH construction + atlas uploads are warmed up */
     printf("\n[Warming up GPU...]\n");
     char warmup_args[256];
-    snprintf(warmup_args, sizeof(warmup_args), "--scene 0 --test-frames 10 --profile-csv NUL");
-    launch_app(exe_path, warmup_args, LAUNCH_WAIT_MS, 10);
+    snprintf(warmup_args, sizeof(warmup_args), "--scene 0 --test-frames 30 --profile-csv NUL");
+    launch_app(exe_path, warmup_args, LAUNCH_WAIT_MS, 50);
     Sleep(500); /* Brief pause after warmup */
 
     run_perf_test(exe_path, "BASELINE (50 objects)", 30, 50,

@@ -67,6 +67,8 @@ set(ENGINE_VOXEL_SOURCES
     engine/voxel/voxel_object.c
     engine/voxel/unified_volume.h
     engine/voxel/unified_volume.c
+    engine/voxel/bvh.h
+    engine/voxel/bvh.c
 )
 
 add_library(engine_voxel STATIC ${ENGINE_VOXEL_SOURCES})
@@ -224,8 +226,6 @@ set(ENGINE_RENDER_SOURCES
     engine/render/gpu_memory.cpp
     engine/render/gpu_chunk.h
     engine/render/gpu_volume.h
-    engine/render/gpu_spatial_grid.h
-    engine/render/gpu_spatial_grid.cpp
     engine/render/voxel_push_constants.h
     engine/render/draw_list.h
 )

@@ -9,7 +9,7 @@
 #include "engine/voxel/voxel_object.h"
 #include "engine/render/draw_list.h"
 #include "engine/render/voxel_push_constants.h"
-#include "engine/render/gpu_spatial_grid.h"
+#include "engine/render/gpu_bvh.h"
 #include "engine/render/gpu_memory.h"
 #include "engine/platform/window.h"
 #include <cstdint>
@@ -647,11 +647,11 @@ namespace patch
         void *vobj_staging_mapped_;
         uint64_t vobj_upload_pending_[MAX_FRAMES_IN_FLIGHT] = {};
 
-        /* GPU spatial grid for object acceleration */
-        VulkanBuffer spatial_grid_buffer_;
-        void *spatial_grid_mapped_ = nullptr;
-        GPUSpatialGridBuffer spatial_grid_data_;
-        bool spatial_grid_valid_ = false;
+        /* GPU BVH for object acceleration */
+        VulkanBuffer bvh_buffer_;
+        void *bvh_mapped_ = nullptr;
+        GPUBVHBuffer bvh_data_;
+        BVH *cpu_bvh_ = nullptr;
 
         VkPipeline vobj_pipeline_;
         VkPipelineLayout vobj_pipeline_layout_;
