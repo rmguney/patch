@@ -1,4 +1,5 @@
 #include "game/ball_pit.h"
+#include "game/terrain_gen.h"
 #include "engine/platform/platform.h"
 #include "engine/core/profile.h"
 #include "engine/core/math.h"
@@ -22,7 +23,8 @@ static uint8_t pick_pastel_material(RngState *rng)
     return s_pastel_materials[rng_range_u32(rng, (uint32_t)s_pastel_count)];
 }
 
-static void spawn_gary_on_floor(VoxelObjectWorld *world, Bounds3D bounds, float floor_y)
+static void spawn_gary_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
+                                   float amplitude, float frequency, uint32_t seed)
 {
     const VoxelShape *gary = voxel_shape_get(SHAPE_GARY);
     if (!gary)
@@ -38,8 +40,8 @@ static void spawn_gary_on_floor(VoxelObjectWorld *world, Bounds3D bounds, float 
     float cx = (bounds.min_x + bounds.max_x) * 0.5f;
     float cz = (bounds.min_z + bounds.max_z) * 0.5f;
     float x = cx + 3.0f;
-    float y = floor_y;
     float z = cz + 3.0f;
+    float y = TERRAIN_BASE_HEIGHT + terrain_gen_height(x, z, amplitude, frequency, seed);
 
     Vec3 origin = vec3_create(x, y, z);
 
@@ -143,59 +145,6 @@ static void throw_random_shape(BallPitData *data, Scene *scene, Vec3 target)
     data->stats.spawn_count++;
 }
 
-static void create_terrain_floor(VoxelVolume *vol, float floor_thickness)
-{
-    Vec3 min_corner = vec3_create(vol->bounds.min_x, vol->bounds.min_y,
-                                  vol->bounds.min_z);
-    Vec3 max_corner = vec3_create(vol->bounds.max_x, vol->bounds.min_y + floor_thickness,
-                                  vol->bounds.max_z);
-
-    volume_fill_box(vol, min_corner, max_corner, MAT_WHITE);
-}
-
-static void create_terrain_features(VoxelVolume *vol, float floor_y)
-{
-    float cx = (vol->bounds.min_x + vol->bounds.max_x) * 0.5f;
-    float cz = (vol->bounds.min_z + vol->bounds.max_z) * 0.5f;
-    float wall_height = 4.0f;
-
-    /* Chrome floor section (metallic material) */
-    Vec3 chrome_min = vec3_create(cx - 2.0f, floor_y - 0.1f, cz - 2.0f);
-    Vec3 chrome_max = vec3_create(cx + 2.0f, floor_y + 0.1f, cz + 2.0f);
-    volume_fill_box(vol, chrome_min, chrome_max, MAT_CHROME);
-
-    /* Yellow pillar in center */
-    float pillar_size = 0.5f;
-    Vec3 pillar_min = vec3_create(cx - pillar_size, floor_y, cz - pillar_size);
-    Vec3 pillar_max = vec3_create(cx + pillar_size, floor_y + wall_height, cz + pillar_size);
-    volume_fill_box(vol, pillar_min, pillar_max, MAT_YELLOW);
-
-    /* Red wall (front) */
-    Vec3 front_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
-    Vec3 front_wall_max = vec3_create(vol->bounds.max_x, floor_y + wall_height, vol->bounds.min_z + 0.5f);
-    volume_fill_box(vol, front_wall_min, front_wall_max, MAT_RED);
-
-    /* Green wall (left) */
-    Vec3 left_wall_min = vec3_create(vol->bounds.min_x, floor_y, vol->bounds.min_z);
-    Vec3 left_wall_max = vec3_create(vol->bounds.min_x + 0.5f, floor_y + wall_height, vol->bounds.max_z);
-    volume_fill_box(vol, left_wall_min, left_wall_max, MAT_GREEN);
-
-    /* Emissive glow blocks */
-    /* Corner light near red/green wall intersection */
-    Vec3 glow1_min = vec3_create(vol->bounds.min_x + 0.6f, floor_y + 1.0f, vol->bounds.min_z + 0.6f);
-    Vec3 glow1_max = vec3_create(vol->bounds.min_x + 1.2f, floor_y + 1.6f, vol->bounds.min_z + 1.2f);
-    volume_fill_box(vol, glow1_min, glow1_max, MAT_GLOW);
-
-    /* Second glow block on the green wall */
-    Vec3 glow2_min = vec3_create(vol->bounds.min_x + 0.6f, floor_y + 2.0f, cz - 0.3f);
-    Vec3 glow2_max = vec3_create(vol->bounds.min_x + 1.0f, floor_y + 2.6f, cz + 0.3f);
-    volume_fill_box(vol, glow2_min, glow2_max, MAT_GLOW);
-
-    /* Third glow block on the red wall */
-    Vec3 glow3_min = vec3_create(cx - 0.3f, floor_y + 2.0f, vol->bounds.min_z + 0.6f);
-    Vec3 glow3_max = vec3_create(cx + 0.3f, floor_y + 2.6f, vol->bounds.min_z + 1.0f);
-    volume_fill_box(vol, glow3_min, glow3_max, MAT_GLOW);
-}
 
 static void ball_pit_init(Scene *scene)
 {
@@ -208,8 +157,10 @@ static void ball_pit_init(Scene *scene)
     data->terrain = volume_create_dims(desc->chunks_x, desc->chunks_y, desc->chunks_z,
                                        origin, data->voxel_size);
 
-    create_terrain_floor(data->terrain, 0.5f);
-    create_terrain_features(data->terrain, data->terrain->bounds.min_y + 0.5f);
+    terrain_gen_heightmap(data->terrain, data->voxel_size,
+                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+    terrain_gen_pillars(data->terrain, data->voxel_size,
+                        p->num_pillars, p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
 
     volume_rebuild_all_occupancy(data->terrain);
 
@@ -218,8 +169,8 @@ static void ball_pit_init(Scene *scene)
     data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
     voxel_object_world_set_terrain(data->objects, data->terrain);
 
-    float floor_y = data->terrain->bounds.min_y + 0.5f;
-    spawn_gary_on_floor(data->objects, scene->bounds, floor_y);
+    spawn_gary_on_terrain(data->objects, scene->bounds,
+                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
 
     data->particles = particle_system_create(scene->bounds);
     data->physics = physics_world_create(data->objects, data->terrain);
@@ -557,6 +508,9 @@ BallPitParams ball_pit_default_params(void)
     p.spawn_interval = 1.0f;
     p.spawn_batch = 1;
     p.max_spawns = 0; /* Automatic spawning disabled - use right-click to throw objects */
+    p.num_pillars = 60;
+    p.terrain_amplitude = 3.0f;
+    p.terrain_frequency = 0.1f;
     return p;
 }
 

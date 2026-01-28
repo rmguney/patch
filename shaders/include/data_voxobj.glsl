@@ -244,7 +244,25 @@ HitInfo vobj_march_object(
     dda.step_dir = ivec3(sign(local_dir));
     dda.side_dist = (sign(local_dir) * (vec3(dda.map_pos) - grid_pos) +
                      sign(local_dir) * 0.5 + 0.5) * dda.delta_dist;
-    dda.last_mask = bvec3(false, true, false);
+
+    /* Compute initial entry face (same as terrain) */
+    if (box_t.x > 0.0) {
+        vec3 inv_ld = 1.0 / local_dir;
+        vec3 t0 = (local_min - local_origin) * inv_ld;
+        vec3 t1 = (local_max - local_origin) * inv_ld;
+        vec3 tmin = min(t0, t1);
+        float max_tmin = max(max(tmin.x, tmin.y), tmin.z);
+        dda.last_mask = bvec3(
+            abs(tmin.x - max_tmin) < 0.0001,
+            abs(tmin.y - max_tmin) < 0.0001,
+            abs(tmin.z - max_tmin) < 0.0001
+        );
+    } else {
+        vec3 frac_pos = fract(grid_pos);
+        vec3 dist_to_face = mix(frac_pos, 1.0 - frac_pos, greaterThan(local_dir, vec3(0.0)));
+        float min_dist = min(min(dist_to_face.x, dist_to_face.y), dist_to_face.z);
+        dda.last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
+    }
 
     uint atlas_z_base = obj.atlas_slice * uint(grid_size);
     uint occupancy = obj.occupancy_mask;
@@ -272,6 +290,7 @@ HitInfo vobj_march_object(
                 cells_to_exit.z = (dda.step_dir.z > 0) ? (region_max.z - dda.map_pos.z + 1) : (dda.map_pos.z - region_min.z + 1);
                 vec3 t_exit = dda.side_dist + vec3(cells_to_exit - 1) * dda.delta_dist;
                 bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
+                dda.last_mask = mask;
                 ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
                 int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
                 dda.map_pos += ivec3(mask) * dda.step_dir * cells_to_exit;
@@ -295,13 +314,9 @@ HitInfo vobj_march_object(
                so hit_t_local equals world t-value. Compute world pos directly on world ray. */
             vec3 hit_world = world_origin + world_dir * hit_t_local;
 
-            /* Transform normal from local to world space via rotation matrix */
+            /* Transform normal from local to world space */
             vec3 local_normal = hdda_compute_normal(dda.last_mask, local_dir);
-            vec3 R_col0 = normalize(obj.local_to_world[0].xyz);
-            vec3 R_col1 = normalize(obj.local_to_world[1].xyz);
-            vec3 R_col2 = normalize(obj.local_to_world[2].xyz);
-            mat3 R = mat3(R_col0, R_col1, R_col2);
-            vec3 world_normal = normalize(R * local_normal);
+            vec3 world_normal = normalize((obj.local_to_world * vec4(local_normal, 0.0)).xyz);
 
             info.hit = true;
             info.material_id = mat;

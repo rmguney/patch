@@ -90,7 +90,7 @@ TEST(ball_pit_spawn_timer_works)
 
 TEST(ball_pit_custom_params)
 {
-    BallPitParams params;
+    BallPitParams params = ball_pit_default_params();
     params.initial_spawns = 10;
     params.spawn_interval = 2.0f;
     params.spawn_batch = 3;

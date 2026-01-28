@@ -7,7 +7,6 @@
 #include "app/app_ui.h"
 #include "app/app_debug.h"
 #include "game/ball_pit.h"
-#include "game/roam.h"
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
 #include "content/materials.h"
@@ -31,7 +30,7 @@ static constexpr int TERRAIN_DEBUG_MODE_COUNT = 14;
 
 static BallPitParams params_from_settings(const AppSettings *s)
 {
-    BallPitParams p;
+    BallPitParams p = ball_pit_default_params();
     p.initial_spawns = s->initial_spawns;
     p.spawn_interval = s->spawn_interval_ms / 1000.0f;
     p.spawn_batch = s->spawn_batch;
@@ -51,8 +50,7 @@ enum class AppState
 enum class ActiveScene
 {
     None,
-    BallPit,
-    Roam
+    BallPit
 };
 
 int patch_main(int argc, char *argv[])
@@ -173,11 +171,6 @@ int patch_main(int argc, char *argv[])
             active_scene = ball_pit_scene_create(desc->bounds, desc->voxel_size, nullptr);
             current_scene = ActiveScene::BallPit;
             break;
-        case SCENE_TYPE_ROAM:
-            desc = scene_get_descriptor(SCENE_TYPE_ROAM);
-            active_scene = roam_scene_create(desc->bounds, desc->voxel_size, nullptr);
-            current_scene = ActiveScene::Roam;
-            break;
         }
         if (active_scene)
         {
@@ -198,15 +191,6 @@ int patch_main(int argc, char *argv[])
             if (current_scene == ActiveScene::BallPit)
             {
                 VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
-                if (terrain)
-                {
-                    renderer.init_volume_for_raymarching(terrain);
-                }
-                renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
-            }
-            else if (current_scene == ActiveScene::Roam)
-            {
-                VoxelVolume *terrain = roam_get_terrain(active_scene);
                 if (terrain)
                 {
                     renderer.init_volume_for_raymarching(terrain);
@@ -421,40 +405,11 @@ int patch_main(int argc, char *argv[])
             current_scene = ActiveScene::BallPit;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
-            renderer.set_orthographic(20.0f, 20.0f, DEFAULT_FAR);
-            if (free_camera_active)
-                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-
-            VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
-            if (terrain)
-            {
-                renderer.init_volume_for_raymarching(terrain);
-            }
-            renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
-
-            printf("Started: %s\n", scene_get_name(active_scene));
-            break;
-        }
-
-        case APP_ACTION_START_ROAM:
-        {
-            if (active_scene)
-            {
-                renderer.prepare_for_scene_switch();
-                scene_destroy(active_scene);
-            }
-            const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_ROAM);
-            active_scene = roam_scene_create(desc->bounds, desc->voxel_size, nullptr);
-            rng_seed(&active_scene->rng, rng_seed_value++);
-            scene_init(active_scene);
-            current_scene = ActiveScene::Roam;
-            app_state = AppState::Playing;
-            app_ui_hide(&ui);
             renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
             if (free_camera_active)
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
 
-            VoxelVolume *terrain = roam_get_terrain(active_scene);
+            VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             if (terrain)
             {
                 renderer.init_volume_for_raymarching(terrain);
@@ -540,12 +495,6 @@ int patch_main(int argc, char *argv[])
             if (current_scene == ActiveScene::BallPit)
             {
                 ball_pit_set_ray(active_scene, ray_origin, ray_dir);
-                scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
-                                   window.mouse().left_down, window.mouse().right_down);
-            }
-            else if (current_scene == ActiveScene::Roam)
-            {
-                roam_set_ray(active_scene, ray_origin, ray_dir);
                 scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
                                    window.mouse().left_down, window.mouse().right_down);
             }
@@ -638,16 +587,6 @@ int patch_main(int argc, char *argv[])
             renderer.set_look_at(test_camera_pos, center);
         }
         else if (active_scene && current_scene == ActiveScene::BallPit)
-        {
-            float content_y = active_scene->bounds.min_y + 2.0f;
-            Vec3 center = vec3_create(
-                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
-                content_y,
-                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
-
-            renderer.set_view_angle_at(45.0f, 20.0f, center, dt);
-        }
-        else if (active_scene && current_scene == ActiveScene::Roam)
         {
             float content_y = active_scene->bounds.min_y + 2.0f;
             Vec3 center = vec3_create(
@@ -779,83 +718,6 @@ int patch_main(int argc, char *argv[])
             renderer.render_deferred_lighting(image_index);
             PROFILE_END(PROFILE_RENDER_LIGHTING);
         }
-        else if (active_scene && current_scene == ActiveScene::Roam)
-        {
-            VoxelVolume *terrain = roam_get_terrain(active_scene);
-            VoxelObjectWorld *objects = roam_get_objects(active_scene);
-            ParticleSystem *particles = roam_get_particles(active_scene);
-
-            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
-                                            (particles && particles->count > 0);
-
-            if (particles)
-            {
-                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f)
-                    interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f)
-                    interp_alpha = 1.0f;
-                renderer.set_interp_alpha(interp_alpha);
-            }
-
-            if (terrain)
-            {
-                PROFILE_BEGIN(PROFILE_RENDER_VOLUME_BEGIN);
-                volume_begin_frame(terrain);
-                PROFILE_END(PROFILE_RENDER_VOLUME_BEGIN);
-
-                PROFILE_BEGIN(PROFILE_RENDER_CHUNK_UPLOAD);
-                int32_t dirty_indices[VOLUME_MAX_DIRTY_PER_FRAME];
-                int32_t uploaded = renderer.upload_dirty_chunks(terrain, dirty_indices, VOLUME_MAX_DIRTY_PER_FRAME);
-                if (uploaded > 0)
-                {
-                    dbg_total_uploaded += uploaded;
-                    volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
-                }
-                PROFILE_END(PROFILE_RENDER_CHUNK_UPLOAD);
-
-                if (uploaded > 0 || has_objects_or_particles)
-                {
-                    PROFILE_BEGIN(PROFILE_RENDER_SHADOW_VOLUME);
-                    renderer.update_shadow_volume(terrain, objects, particles);
-                    PROFILE_END(PROFILE_RENDER_SHADOW_VOLUME);
-                }
-            }
-
-            if (terrain)
-            {
-                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
-                bool need_depth_prime = (objects && objects->object_count > 0) || particles;
-                renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
-                PROFILE_END(PROFILE_RENDER_GBUFFER);
-            }
-
-            renderer.begin_gbuffer_pass();
-
-            if (terrain)
-            {
-                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
-                renderer.render_gbuffer_terrain(terrain);
-                PROFILE_END(PROFILE_RENDER_GBUFFER);
-            }
-
-            if (objects)
-            {
-                PROFILE_BEGIN(PROFILE_RENDER_OBJECTS);
-                renderer.render_voxel_objects_raymarched(objects);
-                PROFILE_END(PROFILE_RENDER_OBJECTS);
-            }
-
-            if (particles)
-            {
-                renderer.render_particles_raymarched(particles);
-            }
-
-            renderer.end_gbuffer_pass();
-            PROFILE_BEGIN(PROFILE_RENDER_LIGHTING);
-            renderer.render_deferred_lighting(image_index);
-            PROFILE_END(PROFILE_RENDER_LIGHTING);
-        }
         else
         {
             renderer.begin_main_pass(image_index);
@@ -879,18 +741,6 @@ int patch_main(int argc, char *argv[])
             {
                 dbg_info.spawn_count = data->stats.spawn_count;
                 dbg_info.tick_count = data->stats.tick_count;
-            }
-        }
-        else if (active_scene && current_scene == ActiveScene::Roam)
-        {
-            dbg_info.scene_name = "Roam";
-            dbg_terrain = roam_get_terrain(active_scene);
-            dbg_objects = roam_get_objects(active_scene);
-            dbg_particles = roam_get_particles(active_scene);
-            const RoamStats *roam_stats = roam_get_stats(active_scene);
-            if (roam_stats)
-            {
-                dbg_info.particle_count = roam_stats->particles_active;
             }
         }
 

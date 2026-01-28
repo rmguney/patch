@@ -29,7 +29,7 @@ static const PerfThreshold THRESHOLD_250 = {9.0f, 10.5f, 12.0f};
 static const PerfThreshold THRESHOLD_500 = {13.0f, 16.0f, 20.0f};
 static const PerfThreshold THRESHOLD_1000 = {14.0f, 17.0f, 22.0f};
 static const PerfThreshold THRESHOLD_CLOSEUP = {10.0f, 12.0f, 15.0f};         /* Close-up 250 objects */
-static const PerfThreshold THRESHOLD_ROAM_CLOSEUP = {11.0f, 13.0f, 16.0f};    /* Roam terrain close-up */
+static const PerfThreshold THRESHOLD_TERRAIN_CLOSEUP = {11.0f, 13.0f, 16.0f};  /* Terrain close-up */
 static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {11.0f, 14.0f, 18.0f}; /* Extreme close-up (nearly touching) */
 static const PerfThreshold THRESHOLD_TOPDOWN = {14.0f, 18.0f, 25.0f};          /* Looking straight down into object pile */
 static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {10.0f, 13.0f, 18.0f};  /* Distance scaling tests */
@@ -591,7 +591,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
 static bool run_approach_test(const char *exe_path, const char *test_name, int frames,
                                const float *camera_start, const float *camera_end,
                                const PerfThreshold &threshold,
-                               int *passed, int *warned, int *failed, int scene_id = 1)
+                               int *passed, int *warned, int *failed, int scene_id = 0)
 {
     char args[512];
     snprintf(args, sizeof(args),
@@ -768,26 +768,26 @@ int main(int argc, char *argv[])
     run_perf_test(exe_path, "CLOSE-UP STRESS (250 objects)", 30, 250,
                   THRESHOLD_CLOSEUP, &passed, &warned, &failed, closeup_camera, 0);
 
-    /* Roam scene close-up test: camera close to terrain surface (scene 1) */
-    float roam_closeup_camera[3] = {2.0f, 4.0f, 2.0f};
-    run_perf_test(exe_path, "ROAM TERRAIN CLOSE-UP", 30, 0,
-                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, roam_closeup_camera, 1);
+    /* Terrain close-up test: camera close to terrain surface */
+    float terrain_closeup_camera[3] = {2.0f, 4.0f, 2.0f};
+    run_perf_test(exe_path, "TERRAIN CLOSE-UP", 30, 0,
+                  THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, terrain_closeup_camera);
 
     /* Ground-level test: camera very close to terrain (y=1.5) */
     float ground_level_camera[3] = {5.0f, 1.5f, 5.0f};
     run_perf_test(exe_path, "GROUND LEVEL (touching terrain)", 30, 0,
-                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, ground_level_camera, 1);
+                  THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, ground_level_camera);
 
     /* Mid-range culling test: catches negative hit distance bug at specific distances */
     float midrange_camera[3] = {4.0f, 3.0f, 4.0f};
     run_perf_test(exe_path, "MID-RANGE CULLING CHECK", 30, 0,
-                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, midrange_camera, 1);
+                  THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, midrange_camera);
 
     /* Delayed spike test: runs 180 frames (~3s) to catch spikes */
     /* Uses exact camera position from debug report where culling/spikes occur */
     float delayed_spike_camera[3] = {-4.42f, 13.41f, 1.60f};
     run_perf_test(exe_path, "DELAYED SPIKE TEST", 180, 0,
-                  THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, delayed_spike_camera, 1);
+                  THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, delayed_spike_camera);
 
     /* Extreme close-up test: camera nearly touching objects */
     float extreme_closeup_camera[3] = {1.5f, 2.0f, 1.5f};
@@ -803,20 +803,20 @@ int main(int argc, char *argv[])
     float approach_start_far[3] = {30.0f, 20.0f, 30.0f};
     float approach_end_close[3] = {2.0f, 3.0f, 2.0f};
     run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", 180, approach_start_far, approach_end_close,
-                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
+                      THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed);
 
     float orbit_start[3] = {4.0f, 3.0f, 0.0f};
     float orbit_end[3] = {0.0f, 3.0f, 4.0f};
     run_approach_test(exe_path, "ORBIT CLOSEUP (lateral)", 120, orbit_start, orbit_end,
-                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
+                      THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed);
 
     float descent_start[3] = {10.0f, 15.0f, 10.0f};
     float descent_end[3] = {5.0f, 2.0f, 5.0f};
     run_approach_test(exe_path, "SPIRAL DESCENT (high->low)", 180, descent_start, descent_end,
-                      THRESHOLD_ROAM_CLOSEUP, &passed, &warned, &failed, 1);
+                      THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed);
 
     /* Distance scaling test series: verify performance scales linearly with distance */
-    /* Uses scene 1 (roam terrain) with 0 objects to isolate pure terrain performance */
+    /* Uses scene 0 with 0 objects to isolate pure terrain performance */
     printf("\n");
     printf("================================================================================\n");
     printf("  DISTANCE SCALING TEST SERIES (pure terrain)\n");
@@ -836,9 +836,9 @@ int main(int argc, char *argv[])
         char test_name[64];
         snprintf(test_name, sizeof(test_name), "DISTANCE %.0f units", dist);
 
-        /* Run the test - scene 1 (roam terrain), 0 objects for pure terrain test */
+        /* Run the test - scene 0, 0 objects for pure terrain test */
         char args[512];
-        snprintf(args, sizeof(args), "--scene 1 --test-frames 15 --profile-csv %s --camera-pos %.1f %.1f %.1f",
+        snprintf(args, sizeof(args), "--scene 0 --test-frames 15 --profile-csv %s --camera-pos %.1f %.1f %.1f",
                  TEMP_CSV, dist_camera[0], dist_camera[1], dist_camera[2]);
 
         DeleteFileA(TEMP_CSV);

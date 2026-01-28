@@ -15,7 +15,6 @@ extern "C"
     typedef enum
     {
         SCENE_TYPE_BALL_PIT,
-        SCENE_TYPE_ROAM,
         SCENE_TYPE_COUNT
     } SceneType;
 
@@ -70,7 +69,6 @@ extern "C"
  * Predefined scene IDs matching registration order in scenes.c.
  */
 #define SCENE_ID_BALL_PIT 0
-#define SCENE_ID_ROAM 1
 
 #ifdef __cplusplus
 }

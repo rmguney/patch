@@ -145,10 +145,17 @@ static inline void unpack_voxel_pos(int32_t packed,
     *lz = packed & 0x1F;          /* 5 bits */
 }
 
+typedef struct {
+    int32_t min_cx, min_cy, min_cz;
+    int32_t max_cx, max_cy, max_cz;
+    bool bounded;
+} FloodFillBounds;
+
 static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *work,
                               int32_t start_cx, int32_t start_cy, int32_t start_cz,
                               int32_t start_lx, int32_t start_ly, int32_t start_lz,
-                              uint8_t island_id, IslandInfo *island, float anchor_y, uint8_t anchor_mat)
+                              uint8_t island_id, IslandInfo *island, float anchor_y, uint8_t anchor_mat,
+                              const FloodFillBounds *bounds)
 {
     work->stack_top = 0;
     bool stack_overflowed = false;
@@ -273,6 +280,19 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
                 continue;
             }
 
+            /* If bounded and neighbor is outside the analysis region,
+             * it connects to terrain we didn't destroy — anchor this island. */
+            if (bounds->bounded &&
+                (ncx < bounds->min_cx || ncx > bounds->max_cx ||
+                 ncy < bounds->min_cy || ncy > bounds->max_cy ||
+                 ncz < bounds->min_cz || ncz > bounds->max_cz))
+            {
+                Chunk *neighbor_chunk = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
+                if (neighbor_chunk && chunk_get(neighbor_chunk, nx, ny, nz) != 0)
+                    island->anchor = ANCHOR_FLOOR;
+                continue;
+            }
+
             int32_t neighbor_global = global_voxel_index(vol, ncx, ncy, ncz, nx, ny, nz);
             if (is_visited(work, neighbor_global))
                 continue;
@@ -344,6 +364,12 @@ void connectivity_analyze_region(const VoxelVolume *vol,
     if (end_cz >= vol->chunks_z)
         end_cz = vol->chunks_z - 1;
 
+    FloodFillBounds bounds = {
+        .min_cx = start_cx, .min_cy = start_cy, .min_cz = start_cz,
+        .max_cx = end_cx, .max_cy = end_cy, .max_cz = end_cz,
+        .bounded = true
+    };
+
     uint8_t next_island_id = 1;
 
     for (int32_t cz = start_cz; cz <= end_cz; cz++)
@@ -392,7 +418,8 @@ void connectivity_analyze_region(const VoxelVolume *vol,
                             island->voxel_max_z = INT32_MIN;
 
                             flood_fill_island(vol, work, cx, cy, cz, lx, ly, lz,
-                                              next_island_id, island, anchor_y, anchor_material);
+                                              next_island_id, island, anchor_y, anchor_material,
+                                              &bounds);
 
                             if (island->is_floating)
                                 result->floating_count++;

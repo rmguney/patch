@@ -22,7 +22,6 @@ extern "C"
     {
         APP_ACTION_NONE = 0,
         APP_ACTION_START_BALL_PIT,
-        APP_ACTION_START_ROAM,
         APP_ACTION_RESUME,
         APP_ACTION_MAIN_MENU,
         APP_ACTION_QUIT,

@@ -259,10 +259,10 @@ endif()
 # Static library: game (C++ for renderers, C for rest)
 # -----------------------------------------------------------------------------
 set(GAME_C_SOURCES
+    game/terrain_gen.h
+    game/terrain_gen.c
     game/ball_pit.h
     game/ball_pit.c
-    game/roam.h
-    game/roam.c
 )
 
 add_library(game STATIC ${GAME_C_SOURCES})

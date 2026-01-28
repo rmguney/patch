@@ -19,6 +19,9 @@ extern "C"
         float spawn_interval;
         int32_t spawn_batch;
         int32_t max_spawns;
+        int32_t num_pillars;
+        float terrain_amplitude;
+        float terrain_frequency;
     } BallPitParams;
 
     typedef struct
