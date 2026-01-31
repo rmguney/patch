@@ -58,6 +58,7 @@ extern "C"
         SpatialHashGrid collision_grid;
 
         int32_t update_cursor;  /* Round-robin cursor for budgeted updates */
+        int32_t settle_cursor;  /* Round-robin cursor for settled wake-up checks */
         int32_t active_count;   /* Tracked count to avoid O(n) scans */
     } ParticleSystem;
 

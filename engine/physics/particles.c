@@ -68,6 +68,22 @@ int32_t particle_system_add(ParticleSystem* sys, RngState *rng, Vec3 position, V
     return (int32_t)(p - sys->particles);
 }
 
+static bool particle_near_surface(const Particle *p,
+                                  const VoxelVolume *terrain,
+                                  const VoxelObjectWorld *objects)
+{
+    Vec3 below = vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f));
+    if (terrain && volume_is_solid_at(terrain, below))
+        return true;
+    if (objects)
+    {
+        VoxelObjectPointTest test = voxel_object_world_test_point(objects, below);
+        if (test.hit)
+            return true;
+    }
+    return false;
+}
+
 static Vec3 estimate_terrain_normal(const VoxelVolume *vol, Vec3 pos, float vs) {
     Vec3 n = vec3_zero();
     if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(vs, 0.0f, 0.0f))))  n.x += 1.0f;
@@ -132,8 +148,15 @@ static void resolve_particle_terrain(Particle *p,
                                vec3_scale(normal, (1.0f + restitution) * vn));
     }
 
-    /* Surface friction on tangential component */
+    /* Kill micro-bounces: if reflected normal velocity is tiny, zero it */
     float vn_after = vec3_dot(p->velocity, normal);
+    if (vn_after > 0.0f && vn_after < PARTICLE_SETTLE_VELOCITY)
+    {
+        p->velocity = vec3_sub(p->velocity, vec3_scale(normal, vn_after));
+    }
+
+    /* Surface friction on tangential component */
+    vn_after = vec3_dot(p->velocity, normal);
     Vec3 normal_component = vec3_scale(normal, vn_after);
     Vec3 tangent_vel = vec3_sub(p->velocity, normal_component);
     p->velocity = vec3_add(normal_component, vec3_scale(tangent_vel, friction));
@@ -202,6 +225,14 @@ void particle_system_update(ParticleSystem* sys, float dt,
         if (!p->active || p->settled) continue;
         if (p->lifetime > PARTICLE_YOUNG_AGE_THRESHOLD) continue;
 
+        /* Pre-gravity settlement: check velocity from last frame before gravity re-energizes it */
+        float pre_speed = vec3_length(p->velocity);
+        if (pre_speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
+            p->settled = true;
+            p->velocity = vec3_zero();
+            continue;
+        }
+
         p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
 
         float speed_sq = vec3_length_sq(p->velocity);
@@ -212,9 +243,7 @@ void particle_system_update(ParticleSystem* sys, float dt,
 
         p->velocity = vec3_scale(p->velocity, sys->damping);
 
-        /* Surface proximity friction: check if solid below particle */
-        bool near_surface = terrain &&
-            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f)));
+        bool near_surface = particle_near_surface(p, terrain, objects);
         if (near_surface) {
             p->velocity.x *= sys->floor_friction;
             p->velocity.z *= sys->floor_friction;
@@ -226,6 +255,12 @@ void particle_system_update(ParticleSystem* sys, float dt,
         p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
 
         resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
+
+        float speed = vec3_length(p->velocity);
+        if (speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
+            p->settled = true;
+            p->velocity = vec3_zero();
+        }
     }
 
     /* Pass 2: Older particles with remaining budget (round-robin) */
@@ -241,6 +276,14 @@ void particle_system_update(ParticleSystem* sys, float dt,
         /* Skip inactive, settled, or young (already processed) */
         if (!p->active || p->settled || p->lifetime <= PARTICLE_YOUNG_AGE_THRESHOLD) continue;
 
+        /* Pre-gravity settlement: check velocity from last frame before gravity re-energizes it */
+        float pre_speed = vec3_length(p->velocity);
+        if (pre_speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
+            p->settled = true;
+            p->velocity = vec3_zero();
+            continue;
+        }
+
         p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
 
         float speed_sq = vec3_length_sq(p->velocity);
@@ -251,8 +294,7 @@ void particle_system_update(ParticleSystem* sys, float dt,
 
         p->velocity = vec3_scale(p->velocity, sys->damping);
 
-        bool near_surface = terrain &&
-            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f)));
+        bool near_surface = particle_near_surface(p, terrain, objects);
         if (near_surface) {
             p->velocity.x *= sys->floor_friction;
             p->velocity.z *= sys->floor_friction;
@@ -264,6 +306,13 @@ void particle_system_update(ParticleSystem* sys, float dt,
         p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
 
         resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
+
+        float speed = vec3_length(p->velocity);
+        if (speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
+            p->settled = true;
+            p->velocity = vec3_zero();
+        }
+
         processed++;
     }
     sys->update_cursor = cursor;
@@ -300,26 +349,27 @@ void particle_system_update(ParticleSystem* sys, float dt,
         }
     }
 
-    for (int32_t i = 0; i < sys->count; i++) {
-        Particle* p = &sys->particles[i];
-        if (!p->active) continue;
+    /* Budgeted wake-up pass: check settled particles for surface loss.
+     * Settlement detection is now handled inline in passes 1/2 above.
+     * This pass only wakes settled particles whose surface disappeared. */
+    {
+        int32_t wake_budget = 4096;
+        int32_t wake_cursor = sys->settle_cursor;
+        int32_t wake_checked = 0;
+        while (wake_checked < sys->count && wake_budget > 0) {
+            if (wake_cursor >= sys->count) wake_cursor = 0;
+            Particle *p = &sys->particles[wake_cursor++];
+            wake_checked++;
 
-        bool near_surface = terrain &&
-            volume_is_solid_at(terrain, vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.02f, 0.0f)));
+            if (!p->active || !p->settled) continue;
 
-        if (p->settled) {
-            if (!near_surface) {
+            if (!particle_near_surface(p, terrain, objects)) {
                 p->settled = false;
                 p->velocity = vec3_scale(sys->gravity, 0.01f);
             }
-            continue;
+            wake_budget--;
         }
-
-        float speed = vec3_length(p->velocity);
-        if (speed < PARTICLE_SETTLE_VELOCITY && near_surface) {
-            p->settled = true;
-            p->velocity = vec3_zero();
-        }
+        sys->settle_cursor = wake_cursor;
     }
 }
 
