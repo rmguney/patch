@@ -112,9 +112,14 @@ void detach_terrain_process(VoxelVolume *vol,
     float anchor_y = vol->bounds.min_y + config->anchor_y_offset;
     ConnectivityResult conn_result;
 
-    /* Only analyze the region around recently edited chunks to avoid
-     * scanning the entire volume (which is O(total_voxels) per tick
-     * and can cause false fragmentation via BFS stack overflow). */
+    /* Consume all pending dirty chunks accumulated across edit batches.
+     * This ensures analysis covers ALL chunks modified since last analysis,
+     * not just the last frame's edits. */
+    volume_consume_pending_analysis(vol);
+
+    /* Dirty-chunk analysis: scan all voxels in affected region (dirty chunks
+     * + 1 chunk expansion), flood-fill each connected component. Uses bounded
+     * BFS with anchor detection: solid neighbor outside bounds = anchored. */
     connectivity_analyze_dirty(vol, anchor_y, 0, work, &conn_result);
 
     int32_t processed = 0;
@@ -148,7 +153,7 @@ void detach_terrain_process(VoxelVolume *vol,
         /* Oversized islands: BFS-based subdivision into organic 32³ chunks */
         if (ext_size_x > VOBJ_GRID_SIZE || ext_size_y > VOBJ_GRID_SIZE || ext_size_z > VOBJ_GRID_SIZE)
         {
-            uint8_t target_id = (uint8_t)island->island_id;
+            uint16_t target_id = (uint16_t)island->island_id;
             bool any_spawned = false;
             int32_t chunks_x = vol->chunks_x;
             int32_t chunks_xy = vol->chunks_x * vol->chunks_y;
@@ -158,9 +163,9 @@ void detach_terrain_process(VoxelVolume *vol,
             if (work->generation == 0)
             {
                 work->generation = 1;
-                memset(work->visited_gen, 0, (size_t)work->visited_size);
+                memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
             }
-            uint8_t consumed_gen = work->generation;
+            uint16_t consumed_gen = work->generation;
 
             /* Scan island for seed voxels, BFS each into a bounded sub-group */
             for (int32_t seed_z = island->voxel_min_z; seed_z <= island->voxel_max_z; seed_z++)
@@ -189,9 +194,9 @@ void detach_terrain_process(VoxelVolume *vol,
                         if (work->generation == 0)
                         {
                             work->generation = 1;
-                            memset(work->visited_gen, 0, (size_t)work->visited_size);
+                            memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
                         }
-                        uint8_t group_gen = work->generation;
+                        uint16_t group_gen = work->generation;
 
                         int32_t gmin_x = seed_x, gmax_x = seed_x;
                         int32_t gmin_y = seed_y, gmax_y = seed_y;

@@ -15,7 +15,7 @@ extern "C"
 #define CONNECTIVITY_MAX_VOXELS_PER_ISLAND 8192
 #define CONNECTIVITY_MIN_STACK_SIZE 65536
 #define CONNECTIVITY_MAX_STACK_SIZE 1048576
-
+#define CONNECTIVITY_BUDGET_PER_TICK 200000
 typedef enum
 {
     ANCHOR_NONE = 0,
@@ -58,12 +58,15 @@ typedef struct
     int32_t stack_top;
 
     /* Generation-based visited tracking (avoids memset on each call) */
-    uint8_t *visited_gen;    /* Per-voxel generation stamp */
+    uint16_t *visited_gen;   /* Per-voxel generation stamp */
     int32_t visited_size;    /* Number of voxels (not bytes) */
-    uint8_t generation;      /* Current generation (0 = needs full clear) */
+    uint16_t generation;     /* Current generation (0 = needs full clear) */
 
-    uint8_t *island_ids;
+    uint16_t *island_ids;
     int32_t island_ids_size;
+
+    int32_t deferred_seed_start;
+    bool has_deferred_work;
 } ConnectivityWorkBuffer;
 
 bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol);
@@ -85,6 +88,11 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
                                  float anchor_y, uint8_t anchor_material,
                                  ConnectivityWorkBuffer *work,
                                  ConnectivityResult *result);
+
+void connectivity_analyze_boundary(const VoxelVolume *vol,
+                                    float anchor_y, uint8_t anchor_material,
+                                    ConnectivityWorkBuffer *work,
+                                    ConnectivityResult *result);
 
 int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
                                               const IslandInfo *island,

@@ -27,7 +27,7 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
 
     /* Generation-based visited: 1 byte per voxel instead of 1 bit */
     work->visited_size = total_voxels;
-    work->visited_gen = (uint8_t *)calloc(1, (size_t)work->visited_size);
+    work->visited_gen = (uint16_t *)calloc((size_t)work->visited_size, sizeof(uint16_t));
     if (!work->visited_gen)
     {
         free(work->stack);
@@ -38,7 +38,7 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
     work->generation = 1;  /* Start at 1; 0 means "never visited" */
 
     work->island_ids_size = total_voxels;
-    work->island_ids = (uint8_t *)calloc(1, (size_t)work->island_ids_size);
+    work->island_ids = (uint16_t *)calloc((size_t)work->island_ids_size, sizeof(uint16_t));
     if (!work->island_ids)
     {
         free(work->stack);
@@ -47,6 +47,9 @@ bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol
         work->visited_gen = NULL;
         return false;
     }
+
+    work->deferred_seed_start = 0;
+    work->has_deferred_work = false;
 
     return true;
 }
@@ -85,11 +88,11 @@ void connectivity_work_clear(ConnectivityWorkBuffer *work)
         /* Wrapped around - must do full clear */
         work->generation = 1;
         if (work->visited_gen)
-            memset(work->visited_gen, 0, (size_t)work->visited_size);
+            memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
     }
 
     if (work->island_ids)
-        memset(work->island_ids, 0, (size_t)work->island_ids_size);
+        memset(work->island_ids, 0, (size_t)work->island_ids_size * sizeof(uint16_t));
     work->stack_top = 0;
 }
 
@@ -111,9 +114,14 @@ static inline void set_visited(ConnectivityWorkBuffer *work, int32_t global_idx)
     work->visited_gen[global_idx] = work->generation;
 }
 
-static inline void set_island_id(ConnectivityWorkBuffer *work, int32_t global_idx, uint8_t island_id)
+static inline void set_island_id(ConnectivityWorkBuffer *work, int32_t global_idx, uint16_t island_id)
 {
     work->island_ids[global_idx] = island_id;
+}
+
+static inline uint16_t get_island_id(const ConnectivityWorkBuffer *work, int32_t global_idx)
+{
+    return work->island_ids[global_idx];
 }
 
 static const int32_t NEIGHBOR_OFFSETS[6][3] = {
@@ -151,11 +159,83 @@ typedef struct {
     bool bounded;
 } FloodFillBounds;
 
+/* Fast neighbor expansion used for both main BFS and anchor drain.
+ * Pushes unvisited solid neighbors onto the stack, marks visited+island_id.
+ * Returns true if any neighbor outside bounds was solid (boundary anchor).
+ * If anchored_ids is non-NULL, also checks visited neighbors for anchor
+ * inheritance (sets *inherited_anchor = true). */
+static bool expand_neighbors(const VoxelVolume *vol, ConnectivityWorkBuffer *work,
+                             int32_t cx, int32_t cy, int32_t cz,
+                             int32_t lx, int32_t ly, int32_t lz,
+                             uint16_t island_id, const FloodFillBounds *bounds,
+                             bool *stack_overflowed,
+                             const bool *anchored_ids, bool *inherited_anchor)
+{
+    bool boundary_anchor = false;
+
+    for (int32_t n = 0; n < 6; n++)
+    {
+        int32_t nx = lx + NEIGHBOR_OFFSETS[n][0];
+        int32_t ny = ly + NEIGHBOR_OFFSETS[n][1];
+        int32_t nz = lz + NEIGHBOR_OFFSETS[n][2];
+        int32_t ncx = cx, ncy = cy, ncz = cz;
+
+        if (nx < 0) { ncx--; nx = CHUNK_SIZE - 1; }
+        else if (nx >= CHUNK_SIZE) { ncx++; nx = 0; }
+        if (ny < 0) { ncy--; ny = CHUNK_SIZE - 1; }
+        else if (ny >= CHUNK_SIZE) { ncy++; ny = 0; }
+        if (nz < 0) { ncz--; nz = CHUNK_SIZE - 1; }
+        else if (nz >= CHUNK_SIZE) { ncz++; nz = 0; }
+
+        if (ncx < 0 || ncx >= vol->chunks_x ||
+            ncy < 0 || ncy >= vol->chunks_y ||
+            ncz < 0 || ncz >= vol->chunks_z)
+            continue;
+
+        if (bounds->bounded &&
+            (ncx < bounds->min_cx || ncx > bounds->max_cx ||
+             ncy < bounds->min_cy || ncy > bounds->max_cy ||
+             ncz < bounds->min_cz || ncz > bounds->max_cz))
+        {
+            Chunk *nc = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
+            if (nc && chunk_get(nc, nx, ny, nz) != 0)
+                boundary_anchor = true;
+            continue;
+        }
+
+        int32_t ngi = global_voxel_index(vol, ncx, ncy, ncz, nx, ny, nz);
+        if (is_visited(work, ngi))
+        {
+            if (anchored_ids && inherited_anchor)
+            {
+                uint16_t nid = work->island_ids[ngi];
+                if (nid > 0 && nid <= CONNECTIVITY_MAX_ISLANDS && anchored_ids[nid])
+                    *inherited_anchor = true;
+            }
+            continue;
+        }
+
+        Chunk *nc = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
+        if (!nc || chunk_get(nc, nx, ny, nz) == 0)
+            continue;
+
+        set_visited(work, ngi);
+        set_island_id(work, ngi, island_id);
+
+        if (work->stack_top < work->stack_capacity)
+            work->stack[work->stack_top++] = pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
+        else
+            *stack_overflowed = true;
+    }
+
+    return boundary_anchor;
+}
+
 static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *work,
                               int32_t start_cx, int32_t start_cy, int32_t start_cz,
                               int32_t start_lx, int32_t start_ly, int32_t start_lz,
-                              uint8_t island_id, IslandInfo *island, float anchor_y, uint8_t anchor_mat,
-                              const FloodFillBounds *bounds)
+                              uint16_t island_id, IslandInfo *island, float anchor_y, uint8_t anchor_mat,
+                              const FloodFillBounds *bounds, const bool *anchored_ids)
 {
     work->stack_top = 0;
     bool stack_overflowed = false;
@@ -192,131 +272,45 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         com_sum = vec3_add(com_sum, world_pos);
         mass_sum += 1.0f;
 
-        if (world_pos.x < island->min_corner.x)
-            island->min_corner.x = world_pos.x;
-        if (world_pos.y < island->min_corner.y)
-            island->min_corner.y = world_pos.y;
-        if (world_pos.z < island->min_corner.z)
-            island->min_corner.z = world_pos.z;
-        if (world_pos.x > island->max_corner.x)
-            island->max_corner.x = world_pos.x;
-        if (world_pos.y > island->max_corner.y)
-            island->max_corner.y = world_pos.y;
-        if (world_pos.z > island->max_corner.z)
-            island->max_corner.z = world_pos.z;
+        if (world_pos.x < island->min_corner.x) island->min_corner.x = world_pos.x;
+        if (world_pos.y < island->min_corner.y) island->min_corner.y = world_pos.y;
+        if (world_pos.z < island->min_corner.z) island->min_corner.z = world_pos.z;
+        if (world_pos.x > island->max_corner.x) island->max_corner.x = world_pos.x;
+        if (world_pos.y > island->max_corner.y) island->max_corner.y = world_pos.y;
+        if (world_pos.z > island->max_corner.z) island->max_corner.z = world_pos.z;
 
-        int32_t global_vx = cx * CHUNK_SIZE + lx;
-        int32_t global_vy = cy * CHUNK_SIZE + ly;
-        int32_t global_vz = cz * CHUNK_SIZE + lz;
+        int32_t gvx = cx * CHUNK_SIZE + lx;
+        int32_t gvy = cy * CHUNK_SIZE + ly;
+        int32_t gvz = cz * CHUNK_SIZE + lz;
 
-        if (global_vx < island->voxel_min_x)
-            island->voxel_min_x = global_vx;
-        if (global_vy < island->voxel_min_y)
-            island->voxel_min_y = global_vy;
-        if (global_vz < island->voxel_min_z)
-            island->voxel_min_z = global_vz;
-        if (global_vx > island->voxel_max_x)
-            island->voxel_max_x = global_vx;
-        if (global_vy > island->voxel_max_y)
-            island->voxel_max_y = global_vy;
-        if (global_vz > island->voxel_max_z)
-            island->voxel_max_z = global_vz;
+        if (gvx < island->voxel_min_x) island->voxel_min_x = gvx;
+        if (gvy < island->voxel_min_y) island->voxel_min_y = gvy;
+        if (gvz < island->voxel_min_z) island->voxel_min_z = gvz;
+        if (gvx > island->voxel_max_x) island->voxel_max_x = gvx;
+        if (gvy > island->voxel_max_y) island->voxel_max_y = gvy;
+        if (gvz > island->voxel_max_z) island->voxel_max_z = gvz;
 
-        /* Anchor to floor if any voxel is at or below the anchor height */
         if (world_pos.y <= anchor_y + vol->voxel_size)
-        {
             island->anchor = ANCHOR_FLOOR;
-        }
-        /* Anchor to specific material if specified */
         if (anchor_mat != 0 && mat == anchor_mat)
-        {
             island->anchor = ANCHOR_MATERIAL;
-        }
 
-        for (int32_t n = 0; n < 6; n++)
-        {
-            int32_t nx = lx + NEIGHBOR_OFFSETS[n][0];
-            int32_t ny = ly + NEIGHBOR_OFFSETS[n][1];
-            int32_t nz = lz + NEIGHBOR_OFFSETS[n][2];
-            int32_t ncx = cx;
-            int32_t ncy = cy;
-            int32_t ncz = cz;
+        bool inherited = false;
+        bool boundary = expand_neighbors(vol, work, cx, cy, cz, lx, ly, lz,
+                                         island_id, bounds, &stack_overflowed,
+                                         anchored_ids, &inherited);
+        if (boundary)
+            island->anchor = ANCHOR_FLOOR;
+        if (inherited)
+            island->anchor = ANCHOR_FLOOR;
 
-            if (nx < 0)
-            {
-                ncx--;
-                nx = CHUNK_SIZE - 1;
-            }
-            else if (nx >= CHUNK_SIZE)
-            {
-                ncx++;
-                nx = 0;
-            }
-            if (ny < 0)
-            {
-                ncy--;
-                ny = CHUNK_SIZE - 1;
-            }
-            else if (ny >= CHUNK_SIZE)
-            {
-                ncy++;
-                ny = 0;
-            }
-            if (nz < 0)
-            {
-                ncz--;
-                nz = CHUNK_SIZE - 1;
-            }
-            else if (nz >= CHUNK_SIZE)
-            {
-                ncz++;
-                nz = 0;
-            }
-
-            if (ncx < 0 || ncx >= vol->chunks_x ||
-                ncy < 0 || ncy >= vol->chunks_y ||
-                ncz < 0 || ncz >= vol->chunks_z)
-            {
-                continue;
-            }
-
-            /* If bounded and neighbor is outside the analysis region,
-             * it connects to terrain we didn't destroy — anchor this island. */
-            if (bounds->bounded &&
-                (ncx < bounds->min_cx || ncx > bounds->max_cx ||
-                 ncy < bounds->min_cy || ncy > bounds->max_cy ||
-                 ncz < bounds->min_cz || ncz > bounds->max_cz))
-            {
-                Chunk *neighbor_chunk = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
-                if (neighbor_chunk && chunk_get(neighbor_chunk, nx, ny, nz) != 0)
-                    island->anchor = ANCHOR_FLOOR;
-                continue;
-            }
-
-            int32_t neighbor_global = global_voxel_index(vol, ncx, ncy, ncz, nx, ny, nz);
-            if (is_visited(work, neighbor_global))
-                continue;
-
-            Chunk *neighbor_chunk = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
-            if (!neighbor_chunk)
-                continue;
-
-            if (chunk_get(neighbor_chunk, nx, ny, nz) == 0)
-                continue;
-
-            set_visited(work, neighbor_global);
-            set_island_id(work, neighbor_global, island_id);
-
-            if (work->stack_top < work->stack_capacity)
-            {
-                int32_t neighbor_packed = pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
-                work->stack[work->stack_top++] = neighbor_packed;
-            }
-            else
-            {
-                stack_overflowed = true;
-            }
-        }
+        /* Early anchor break: only when anchored_ids is provided (dirty
+         * analysis path). Items on stack are already marked visited+island_id.
+         * Future seeds will inherit anchor via anchored_ids lookup.
+         * When anchored_ids is NULL (full volume scan), complete the BFS
+         * to get accurate island counts and bounds. */
+        if (anchored_ids && island->anchor != ANCHOR_NONE)
+            break;
     }
 
     if (mass_sum > 0.0f)
@@ -325,52 +319,39 @@ static void flood_fill_island(const VoxelVolume *vol, ConnectivityWorkBuffer *wo
         island->total_mass = mass_sum;
     }
 
-    /* If BFS stack overflowed, the island is incomplete — unexplored neighbors
-     * will become false "floating" islands in the outer loop. Force-anchor this
-     * island to prevent false fragmentation of connected terrain. */
     if (stack_overflowed)
         island->anchor = ANCHOR_FLOOR;
 
     island->is_floating = (island->anchor == ANCHOR_NONE);
 }
 
-void connectivity_analyze_region(const VoxelVolume *vol,
-                                 Vec3 region_min, Vec3 region_max,
-                                 float anchor_y, uint8_t anchor_material,
-                                 ConnectivityWorkBuffer *work,
-                                 ConnectivityResult *result)
+/* Internal: scan a bounded region for islands, appending to result.
+ * Does NOT clear work buffer or result — caller manages initialization.
+ * next_island_id is passed by pointer so it persists across multiple calls. */
+static void analyze_region_internal(const VoxelVolume *vol,
+                                     Vec3 region_min, Vec3 region_max,
+                                     float anchor_y, uint8_t anchor_material,
+                                     ConnectivityWorkBuffer *work,
+                                     ConnectivityResult *result,
+                                     uint16_t *next_island_id)
 {
-    if (!vol || !work || !result)
-        return;
-
-    memset(result, 0, sizeof(ConnectivityResult));
-    connectivity_work_clear(work);
-
     int32_t start_cx, start_cy, start_cz;
     int32_t end_cx, end_cy, end_cz;
     volume_world_to_chunk(vol, region_min, &start_cx, &start_cy, &start_cz);
     volume_world_to_chunk(vol, region_max, &end_cx, &end_cy, &end_cz);
 
-    if (start_cx < 0)
-        start_cx = 0;
-    if (start_cy < 0)
-        start_cy = 0;
-    if (start_cz < 0)
-        start_cz = 0;
-    if (end_cx >= vol->chunks_x)
-        end_cx = vol->chunks_x - 1;
-    if (end_cy >= vol->chunks_y)
-        end_cy = vol->chunks_y - 1;
-    if (end_cz >= vol->chunks_z)
-        end_cz = vol->chunks_z - 1;
+    if (start_cx < 0) start_cx = 0;
+    if (start_cy < 0) start_cy = 0;
+    if (start_cz < 0) start_cz = 0;
+    if (end_cx >= vol->chunks_x) end_cx = vol->chunks_x - 1;
+    if (end_cy >= vol->chunks_y) end_cy = vol->chunks_y - 1;
+    if (end_cz >= vol->chunks_z) end_cz = vol->chunks_z - 1;
 
     FloodFillBounds bounds = {
         .min_cx = start_cx, .min_cy = start_cy, .min_cz = start_cz,
         .max_cx = end_cx, .max_cy = end_cy, .max_cz = end_cz,
         .bounded = true
     };
-
-    uint8_t next_island_id = 1;
 
     for (int32_t cz = start_cz; cz <= end_cz; cz++)
     {
@@ -407,7 +388,7 @@ void connectivity_analyze_region(const VoxelVolume *vol,
 
                             IslandInfo *island = &result->islands[result->island_count];
                             memset(island, 0, sizeof(IslandInfo));
-                            island->island_id = next_island_id;
+                            island->island_id = *next_island_id;
                             island->min_corner = vec3_create(1e30f, 1e30f, 1e30f);
                             island->max_corner = vec3_create(-1e30f, -1e30f, -1e30f);
                             island->voxel_min_x = INT32_MAX;
@@ -418,8 +399,8 @@ void connectivity_analyze_region(const VoxelVolume *vol,
                             island->voxel_max_z = INT32_MIN;
 
                             flood_fill_island(vol, work, cx, cy, cz, lx, ly, lz,
-                                              next_island_id, island, anchor_y, anchor_material,
-                                              &bounds);
+                                              *next_island_id, island, anchor_y, anchor_material,
+                                              &bounds, NULL);
 
                             if (island->is_floating)
                                 result->floating_count++;
@@ -427,13 +408,30 @@ void connectivity_analyze_region(const VoxelVolume *vol,
                                 result->anchored_count++;
 
                             result->island_count++;
-                            next_island_id++;
+                            (*next_island_id)++;
                         }
                     }
                 }
             }
         }
     }
+}
+
+void connectivity_analyze_region(const VoxelVolume *vol,
+                                 Vec3 region_min, Vec3 region_max,
+                                 float anchor_y, uint8_t anchor_material,
+                                 ConnectivityWorkBuffer *work,
+                                 ConnectivityResult *result)
+{
+    if (!vol || !work || !result)
+        return;
+
+    memset(result, 0, sizeof(ConnectivityResult));
+    connectivity_work_clear(work);
+
+    uint16_t next_island_id = 1;
+    analyze_region_internal(vol, region_min, region_max, anchor_y, anchor_material,
+                            work, result, &next_island_id);
 }
 
 void connectivity_analyze_volume(const VoxelVolume *vol,
@@ -537,83 +535,214 @@ void connectivity_analyze_dirty(const VoxelVolume *vol,
 
     #undef CLUSTER_FIND
 
-    float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
+    /* Single clear for all clusters — fixes island_ids wipe between clusters */
+    connectivity_work_clear(work);
+    uint16_t next_island_id = 1;
 
-    /* Process each cluster independently */
-    bool processed[VOLUME_EDIT_BATCH_MAX_CHUNKS] = {false};
+    /* Track which island IDs are confirmed anchored. Subsequent BFS seeds
+     * that encounter visited territory from an anchored island inherit
+     * anchor status, avoiding false floating classification. */
+    bool anchored_ids[CONNECTIVITY_MAX_ISLANDS + 2];
+    memset(anchored_ids, 0, sizeof(anchored_ids));
 
-    for (int32_t i = 0; i < chunk_count; i++)
+    /* Unbounded BFS: each seed explores freely through the entire volume.
+     * Anchor is detected by floor check (y <= anchor_y) or by inheritance
+     * from adjacent anchored islands. BFS breaks immediately on anchor,
+     * so anchored terrain BFS is fast. */
+    FloodFillBounds bounds = { .bounded = false };
+
+    /* Seed BFS from cut boundary voxels — only voxels adjacent to destroyed area.
+     * This avoids scanning all 32K voxels per dirty chunk. If cut boundary
+     * overflowed, fall back to scanning dirty chunks (rare worst case). */
+    const CutBoundaryBuffer *boundary = &vol->last_cut_boundary;
+    bool use_boundary_seeds = !boundary->overflow && boundary->count > 0;
+
+    if (use_boundary_seeds)
     {
-        /* Find root */
-        int32_t root = i;
-        while (parent[root] != root)
-            root = parent[root];
+        /* Collect unique seed positions from cut boundary.
+         * A seed may be stale (destroyed by later frames), so also check
+         * neighbors of empty boundary voxels for solid seeds. */
+        int32_t seed_packed[VOLUME_MAX_CUT_BOUNDARY * 2];
+        int32_t seed_count = 0;
 
-        if (processed[root])
-            continue;
-        processed[root] = true;
-
-        /* Compute bounding box for this cluster */
-        int32_t min_cx = vol->chunks_x, min_cy = vol->chunks_y, min_cz = vol->chunks_z;
-        int32_t max_cx = -1, max_cy = -1, max_cz = -1;
-
-        for (int32_t j = 0; j < chunk_count; j++)
+        for (int32_t i = 0; i < boundary->count; i++)
         {
-            int32_t jr = j;
-            while (parent[jr] != jr)
-                jr = parent[jr];
-            if (jr != root)
+            int32_t packed = boundary->packed_positions[i];
+            int32_t cx = (packed >> 26) & 0x3F;
+            int32_t cy = (packed >> 21) & 0x1F;
+            int32_t cz = (packed >> 15) & 0x3F;
+            int32_t lx = (packed >> 10) & 0x1F;
+            int32_t ly = (packed >> 5) & 0x1F;
+            int32_t lz = packed & 0x1F;
+
+            if (cx < 0 || cx >= vol->chunks_x ||
+                cy < 0 || cy >= vol->chunks_y ||
+                cz < 0 || cz >= vol->chunks_z)
                 continue;
 
-            if (chunk_cx[j] < min_cx) min_cx = chunk_cx[j];
-            if (chunk_cy[j] < min_cy) min_cy = chunk_cy[j];
-            if (chunk_cz[j] < min_cz) min_cz = chunk_cz[j];
-            if (chunk_cx[j] > max_cx) max_cx = chunk_cx[j];
-            if (chunk_cy[j] > max_cy) max_cy = chunk_cy[j];
-            if (chunk_cz[j] > max_cz) max_cz = chunk_cz[j];
+            Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
+            if (!chunk)
+                continue;
+
+            if (chunk_get(chunk, lx, ly, lz) != 0)
+            {
+                if (seed_count < VOLUME_MAX_CUT_BOUNDARY * 2)
+                    seed_packed[seed_count++] = packed;
+            }
+            else
+            {
+                /* Stale seed: destroyed by later frames. Check neighbors. */
+                for (int32_t d = 0; d < 6; d++)
+                {
+                    int32_t nlx = lx + NEIGHBOR_OFFSETS[d][0];
+                    int32_t nly = ly + NEIGHBOR_OFFSETS[d][1];
+                    int32_t nlz = lz + NEIGHBOR_OFFSETS[d][2];
+                    int32_t ncx = cx, ncy = cy, ncz = cz;
+
+                    if (nlx < 0) { ncx--; nlx = CHUNK_SIZE - 1; }
+                    else if (nlx >= CHUNK_SIZE) { ncx++; nlx = 0; }
+                    if (nly < 0) { ncy--; nly = CHUNK_SIZE - 1; }
+                    else if (nly >= CHUNK_SIZE) { ncy++; nly = 0; }
+                    if (nlz < 0) { ncz--; nlz = CHUNK_SIZE - 1; }
+                    else if (nlz >= CHUNK_SIZE) { ncz++; nlz = 0; }
+
+                    if (ncx < 0 || ncx >= vol->chunks_x ||
+                        ncy < 0 || ncy >= vol->chunks_y ||
+                        ncz < 0 || ncz >= vol->chunks_z)
+                        continue;
+
+                    Chunk *nc = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
+                    if (nc && chunk_get(nc, nlx, nly, nlz) != 0)
+                    {
+                        if (seed_count < VOLUME_MAX_CUT_BOUNDARY * 2)
+                            seed_packed[seed_count++] = pack_voxel_pos(ncx, ncy, ncz, nlx, nly, nlz);
+                    }
+                }
+            }
         }
 
-        if (max_cx < 0)
-            continue;
-
-        /* Expand by 1 chunk for boundary connectivity */
-        min_cx = (min_cx > 0) ? min_cx - 1 : 0;
-        min_cy = (min_cy > 0) ? min_cy - 1 : 0;
-        min_cz = (min_cz > 0) ? min_cz - 1 : 0;
-        max_cx = (max_cx < vol->chunks_x - 1) ? max_cx + 1 : vol->chunks_x - 1;
-        max_cy = (max_cy < vol->chunks_y - 1) ? max_cy + 1 : vol->chunks_y - 1;
-        max_cz = (max_cz < vol->chunks_z - 1) ? max_cz + 1 : vol->chunks_z - 1;
-
-        Vec3 region_min = vec3_create(
-            vol->bounds.min_x + min_cx * chunk_world_size,
-            vol->bounds.min_y + min_cy * chunk_world_size,
-            vol->bounds.min_z + min_cz * chunk_world_size);
-        Vec3 region_max = vec3_create(
-            vol->bounds.min_x + (max_cx + 1) * chunk_world_size,
-            vol->bounds.min_y + (max_cy + 1) * chunk_world_size,
-            vol->bounds.min_z + (max_cz + 1) * chunk_world_size);
-
-        ConnectivityResult cluster_result;
-        connectivity_analyze_region(vol, region_min, region_max, anchor_y, anchor_material, work, &cluster_result);
-
-        /* Merge cluster results into output */
-        for (int32_t k = 0; k < cluster_result.island_count; k++)
+        /* BFS from each unique seed */
+        for (int32_t i = 0; i < seed_count; i++)
         {
+            int32_t packed = seed_packed[i];
+            int32_t cx = (packed >> 26) & 0x3F;
+            int32_t cy = (packed >> 21) & 0x1F;
+            int32_t cz = (packed >> 15) & 0x3F;
+            int32_t lx = (packed >> 10) & 0x1F;
+            int32_t ly = (packed >> 5) & 0x1F;
+            int32_t lz = packed & 0x1F;
+
+
+            int32_t global_idx = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
+
+            if (is_visited(work, global_idx))
+                continue;
+
+            result->total_voxels_checked++;
+
             if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
-                break;
-            result->islands[result->island_count] = cluster_result.islands[k];
-            result->island_count++;
-            if (cluster_result.islands[k].is_floating)
+                goto done;
+
+            IslandInfo *island = &result->islands[result->island_count];
+            memset(island, 0, sizeof(IslandInfo));
+            island->island_id = next_island_id;
+            island->min_corner = vec3_create(1e30f, 1e30f, 1e30f);
+            island->max_corner = vec3_create(-1e30f, -1e30f, -1e30f);
+            island->voxel_min_x = INT32_MAX;
+            island->voxel_min_y = INT32_MAX;
+            island->voxel_min_z = INT32_MAX;
+            island->voxel_max_x = INT32_MIN;
+            island->voxel_max_y = INT32_MIN;
+            island->voxel_max_z = INT32_MIN;
+
+            flood_fill_island(vol, work, cx, cy, cz, lx, ly, lz,
+                              next_island_id, island, anchor_y, anchor_material,
+                              &bounds, anchored_ids);
+
+            if (island->is_floating)
                 result->floating_count++;
             else
+            {
                 result->anchored_count++;
-        }
-        result->total_voxels_checked += cluster_result.total_voxels_checked;
+                if (next_island_id <= CONNECTIVITY_MAX_ISLANDS)
+                    anchored_ids[next_island_id] = true;
+            }
 
-        if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
-            break;
+            result->island_count++;
+            next_island_id++;
+        }
+    }
+    else
+    {
+        /* Fallback: scan dirty chunks when cut boundary overflowed */
+        for (int32_t i = 0; i < chunk_count; i++)
+        {
+            int32_t cx = chunk_cx[i];
+            int32_t cy = chunk_cy[i];
+            int32_t cz = chunk_cz[i];
+
+            Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
+            if (!chunk || !chunk->occupancy.has_any)
+                continue;
+
+            for (int32_t lz = 0; lz < CHUNK_SIZE; lz++)
+            {
+                for (int32_t ly = 0; ly < CHUNK_SIZE; ly++)
+                {
+                    for (int32_t lx = 0; lx < CHUNK_SIZE; lx++)
+                    {
+            
+                        int32_t global_idx = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
+
+                        if (is_visited(work, global_idx))
+                            continue;
+
+                        uint8_t mat = chunk_get(chunk, lx, ly, lz);
+                        if (mat == 0)
+                        {
+                            set_visited(work, global_idx);
+                            continue;
+                        }
+
+                        result->total_voxels_checked++;
+
+                        if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
+                            goto done;
+
+                        IslandInfo *island = &result->islands[result->island_count];
+                        memset(island, 0, sizeof(IslandInfo));
+                        island->island_id = next_island_id;
+                        island->min_corner = vec3_create(1e30f, 1e30f, 1e30f);
+                        island->max_corner = vec3_create(-1e30f, -1e30f, -1e30f);
+                        island->voxel_min_x = INT32_MAX;
+                        island->voxel_min_y = INT32_MAX;
+                        island->voxel_min_z = INT32_MAX;
+                        island->voxel_max_x = INT32_MIN;
+                        island->voxel_max_y = INT32_MIN;
+                        island->voxel_max_z = INT32_MIN;
+
+                        flood_fill_island(vol, work, cx, cy, cz, lx, ly, lz,
+                                          next_island_id, island, anchor_y, anchor_material,
+                                          &bounds, anchored_ids);
+
+                        if (island->is_floating)
+                            result->floating_count++;
+                        else
+                        {
+                            result->anchored_count++;
+                            if (next_island_id <= CONNECTIVITY_MAX_ISLANDS)
+                                anchored_ids[next_island_id] = true;
+                        }
+
+                        result->island_count++;
+                        next_island_id++;
+                    }
+                }
+            }
+        }
     }
 
+done:
     PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 }
 
@@ -643,7 +772,7 @@ int32_t connectivity_extract_island_with_ids(const VoxelVolume *vol,
         out_origin->z = vol->bounds.min_z + island->voxel_min_z * vol->voxel_size;
     }
 
-    uint8_t target_id = (uint8_t)island->island_id;
+    uint16_t target_id = (uint16_t)island->island_id;
     int32_t copied = 0;
 
     for (int32_t gz = island->voxel_min_z; gz <= island->voxel_max_z; gz++)
@@ -696,7 +825,7 @@ void connectivity_remove_island(VoxelVolume *vol, const IslandInfo *island,
     if (!vol || !island || !work || !work->island_ids)
         return;
 
-    uint8_t target_id = (uint8_t)island->island_id;
+    uint16_t target_id = (uint16_t)island->island_id;
     if (target_id == 0)
         return;
 
@@ -736,4 +865,358 @@ void connectivity_remove_island(VoxelVolume *vol, const IslandInfo *island,
     }
 
     volume_edit_end(vol);
+}
+
+static void boundary_bfs(const VoxelVolume *vol, ConnectivityWorkBuffer *work,
+                          int32_t start_packed, uint16_t island_id,
+                          IslandInfo *island, float anchor_y, uint8_t anchor_mat,
+                          int32_t *budget_remaining, bool *found_anchor,
+                          const bool *anchored_ids)
+{
+    *found_anchor = false;
+    work->stack_top = 0;
+
+    int32_t cx, cy, cz, lx, ly, lz;
+    unpack_voxel_pos(start_packed, &cx, &cy, &cz, &lx, &ly, &lz);
+
+    if (cx < 0 || cx >= vol->chunks_x ||
+        cy < 0 || cy >= vol->chunks_y ||
+        cz < 0 || cz >= vol->chunks_z)
+        return;
+
+    int32_t global_idx = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
+    if (global_idx < 0 || global_idx >= work->visited_size)
+        return;
+
+    if (is_visited(work, global_idx))
+        return;
+
+    Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
+    if (!chunk || chunk_get(chunk, lx, ly, lz) == 0)
+        return;
+
+    set_visited(work, global_idx);
+    set_island_id(work, global_idx, island_id);
+    work->stack[work->stack_top++] = start_packed;
+
+    island->min_corner = vec3_create(1e30f, 1e30f, 1e30f);
+    island->max_corner = vec3_create(-1e30f, -1e30f, -1e30f);
+    island->voxel_min_x = INT32_MAX;
+    island->voxel_min_y = INT32_MAX;
+    island->voxel_min_z = INT32_MAX;
+    island->voxel_max_x = INT32_MIN;
+    island->voxel_max_y = INT32_MIN;
+    island->voxel_max_z = INT32_MIN;
+
+    Vec3 com_sum = vec3_zero();
+    float mass_sum = 0.0f;
+    bool anchor_found = false;
+
+    while (work->stack_top > 0 && *budget_remaining > 0)
+    {
+        int32_t packed = work->stack[--work->stack_top];
+        unpack_voxel_pos(packed, &cx, &cy, &cz, &lx, &ly, &lz);
+        (*budget_remaining)--;
+
+        chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
+        if (!chunk)
+            continue;
+
+        uint8_t mat = chunk_get(chunk, lx, ly, lz);
+        if (mat == 0)
+            continue;
+
+        island->voxel_count++;
+
+        Vec3 world_pos = volume_voxel_to_world(vol, cx, cy, cz, lx, ly, lz);
+
+        com_sum = vec3_add(com_sum, world_pos);
+        mass_sum += 1.0f;
+
+        if (world_pos.x < island->min_corner.x) island->min_corner.x = world_pos.x;
+        if (world_pos.y < island->min_corner.y) island->min_corner.y = world_pos.y;
+        if (world_pos.z < island->min_corner.z) island->min_corner.z = world_pos.z;
+        if (world_pos.x > island->max_corner.x) island->max_corner.x = world_pos.x;
+        if (world_pos.y > island->max_corner.y) island->max_corner.y = world_pos.y;
+        if (world_pos.z > island->max_corner.z) island->max_corner.z = world_pos.z;
+
+        int32_t global_vx = cx * CHUNK_SIZE + lx;
+        int32_t global_vy = cy * CHUNK_SIZE + ly;
+        int32_t global_vz = cz * CHUNK_SIZE + lz;
+
+        if (global_vx < island->voxel_min_x) island->voxel_min_x = global_vx;
+        if (global_vy < island->voxel_min_y) island->voxel_min_y = global_vy;
+        if (global_vz < island->voxel_min_z) island->voxel_min_z = global_vz;
+        if (global_vx > island->voxel_max_x) island->voxel_max_x = global_vx;
+        if (global_vy > island->voxel_max_y) island->voxel_max_y = global_vy;
+        if (global_vz > island->voxel_max_z) island->voxel_max_z = global_vz;
+
+        if (world_pos.y <= anchor_y + vol->voxel_size)
+            anchor_found = true;
+        if (anchor_mat != 0 && mat == anchor_mat)
+            anchor_found = true;
+
+        for (int32_t n = 0; n < 6; n++)
+        {
+            int32_t nx = lx + NEIGHBOR_OFFSETS[n][0];
+            int32_t ny = ly + NEIGHBOR_OFFSETS[n][1];
+            int32_t nz = lz + NEIGHBOR_OFFSETS[n][2];
+            int32_t ncx = cx, ncy = cy, ncz = cz;
+
+            if (nx < 0) { ncx--; nx = CHUNK_SIZE - 1; }
+            else if (nx >= CHUNK_SIZE) { ncx++; nx = 0; }
+            if (ny < 0) { ncy--; ny = CHUNK_SIZE - 1; }
+            else if (ny >= CHUNK_SIZE) { ncy++; ny = 0; }
+            if (nz < 0) { ncz--; nz = CHUNK_SIZE - 1; }
+            else if (nz >= CHUNK_SIZE) { ncz++; nz = 0; }
+
+            if (ncx < 0 || ncx >= vol->chunks_x ||
+                ncy < 0 || ncy >= vol->chunks_y ||
+                ncz < 0 || ncz >= vol->chunks_z)
+                continue;
+
+            int32_t neighbor_global = global_voxel_index(vol, ncx, ncy, ncz, nx, ny, nz);
+            if (neighbor_global < 0 || neighbor_global >= work->visited_size)
+                continue;
+
+            if (is_visited(work, neighbor_global))
+            {
+                uint16_t nid = work->island_ids[neighbor_global];
+                if (nid > 0 && nid <= CONNECTIVITY_MAX_ISLANDS && anchored_ids[nid])
+                    anchor_found = true;
+                continue;
+            }
+
+            Chunk *neighbor_chunk = volume_get_chunk((VoxelVolume *)vol, ncx, ncy, ncz);
+            if (!neighbor_chunk)
+                continue;
+            if (chunk_get(neighbor_chunk, nx, ny, nz) == 0)
+                continue;
+
+            set_visited(work, neighbor_global);
+            set_island_id(work, neighbor_global, island_id);
+
+            if (work->stack_top < work->stack_capacity)
+            {
+                int32_t neighbor_packed = pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
+                work->stack[work->stack_top++] = neighbor_packed;
+            }
+        }
+
+        /* Break AFTER neighbor expansion so the anchor voxel's neighbors
+         * are all marked visited, creating wider coverage near the cut. */
+        if (anchor_found)
+            break;
+    }
+
+    /* If BFS didn't complete (budget exhausted or stack still has items) and no
+     * anchor was found, conservatively force-anchor to prevent false floating
+     * classification of large connected terrain. */
+    if (work->stack_top > 0 && !anchor_found)
+        anchor_found = true;
+
+    *found_anchor = anchor_found;
+
+    if (mass_sum > 0.0f && !anchor_found)
+    {
+        island->center_of_mass = vec3_scale(com_sum, 1.0f / mass_sum);
+        island->total_mass = mass_sum;
+    }
+
+    island->is_floating = !anchor_found;
+}
+
+void connectivity_analyze_boundary(const VoxelVolume *vol,
+                                    float anchor_y, uint8_t anchor_material,
+                                    ConnectivityWorkBuffer *work,
+                                    ConnectivityResult *result)
+{
+    PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
+
+    if (!vol || !work || !result)
+    {
+        PROFILE_END(PROFILE_SIM_CONNECTIVITY);
+        return;
+    }
+
+    memset(result, 0, sizeof(ConnectivityResult));
+
+    const CutBoundaryBuffer *boundary = &vol->last_cut_boundary;
+
+    /* If no cut boundary and no deferred work, check dirty chunks as fallback */
+    if (boundary->count == 0 && !boundary->overflow && !work->has_deferred_work)
+    {
+        /* No destruction edits occurred — nothing to analyze */
+        if (vol->last_edit_count == 0)
+        {
+            PROFILE_END(PROFILE_SIM_CONNECTIVITY);
+            return;
+        }
+        /* Edits happened but no cut boundary (e.g., only additions).
+         * Fall through to dirty chunk fallback. */
+        connectivity_analyze_dirty(vol, anchor_y, anchor_material, work, result);
+        PROFILE_END(PROFILE_SIM_CONNECTIVITY);
+        return;
+    }
+
+    int32_t start_idx = 0;
+    bool resuming = work->has_deferred_work;
+
+    if (resuming)
+    {
+        start_idx = work->deferred_seed_start;
+        work->has_deferred_work = false;
+    }
+    else
+    {
+        /* Fresh analysis: bump generation */
+        work->generation++;
+        if (work->generation == 0)
+        {
+            work->generation = 1;
+            memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
+        }
+    }
+
+    uint16_t next_island_id = 1;
+    int32_t budget = CONNECTIVITY_BUDGET_PER_TICK;
+
+    /* Track which island IDs are confirmed anchored, so subsequent BFS
+     * seeds on partially-explored anchored components can inherit anchor
+     * status via visited neighbor lookup. */
+    bool anchored_ids[CONNECTIVITY_MAX_ISLANDS + 2];
+    memset(anchored_ids, 0, sizeof(anchored_ids));
+
+    if (!boundary->overflow)
+    {
+        /* Fast path: seed from cut boundary voxels */
+        int32_t i;
+        for (i = start_idx; i < boundary->count && budget > 0; i++)
+        {
+            int32_t packed = boundary->packed_positions[i];
+
+            int32_t cx, cy, cz, lx, ly, lz;
+            unpack_voxel_pos(packed, &cx, &cy, &cz, &lx, &ly, &lz);
+
+            if (cx < 0 || cx >= vol->chunks_x ||
+                cy < 0 || cy >= vol->chunks_y ||
+                cz < 0 || cz >= vol->chunks_z)
+                continue;
+
+            int32_t gi = global_voxel_index(vol, cx, cy, cz, lx, ly, lz);
+            if (gi < 0 || gi >= work->visited_size)
+                continue;
+            if (is_visited(work, gi))
+                continue;
+
+            if (result->island_count >= CONNECTIVITY_MAX_ISLANDS)
+                break;
+
+            IslandInfo *island = &result->islands[result->island_count];
+            memset(island, 0, sizeof(IslandInfo));
+            island->island_id = next_island_id;
+
+            bool found_anchor = false;
+            boundary_bfs(vol, work, packed, next_island_id,
+                         island, anchor_y, anchor_material,
+                         &budget, &found_anchor, anchored_ids);
+
+            if (island->voxel_count == 0)
+                continue;
+
+            if (found_anchor)
+            {
+                island->is_floating = false;
+                island->anchor = ANCHOR_FLOOR;
+                result->anchored_count++;
+                if (next_island_id <= CONNECTIVITY_MAX_ISLANDS)
+                    anchored_ids[next_island_id] = true;
+
+                /* Sweep remaining boundary seeds: mark any that are adjacent
+                 * to visited-anchored territory as visited. This prevents
+                 * thousands of redundant BFS calls on the anchored side of
+                 * the cut, preserving budget for floating island detection. */
+                for (int32_t j = i + 1; j < boundary->count; j++)
+                {
+                    int32_t sp = boundary->packed_positions[j];
+                    int32_t scx, scy, scz, slx, sly, slz;
+                    unpack_voxel_pos(sp, &scx, &scy, &scz, &slx, &sly, &slz);
+
+                    if (scx < 0 || scx >= vol->chunks_x ||
+                        scy < 0 || scy >= vol->chunks_y ||
+                        scz < 0 || scz >= vol->chunks_z)
+                        continue;
+
+                    int32_t sgi = global_voxel_index(vol, scx, scy, scz, slx, sly, slz);
+                    if (sgi < 0 || sgi >= work->visited_size)
+                        continue;
+                    if (is_visited(work, sgi))
+                        continue;
+
+                    Chunk *sc = volume_get_chunk((VoxelVolume *)vol, scx, scy, scz);
+                    if (!sc || chunk_get(sc, slx, sly, slz) == 0)
+                        continue;
+
+                    for (int32_t n = 0; n < 6; n++)
+                    {
+                        int32_t snx = slx + NEIGHBOR_OFFSETS[n][0];
+                        int32_t sny = sly + NEIGHBOR_OFFSETS[n][1];
+                        int32_t snz = slz + NEIGHBOR_OFFSETS[n][2];
+                        int32_t sncx = scx, sncy = scy, sncz = scz;
+
+                        if (snx < 0) { sncx--; snx = CHUNK_SIZE - 1; }
+                        else if (snx >= CHUNK_SIZE) { sncx++; snx = 0; }
+                        if (sny < 0) { sncy--; sny = CHUNK_SIZE - 1; }
+                        else if (sny >= CHUNK_SIZE) { sncy++; sny = 0; }
+                        if (snz < 0) { sncz--; snz = CHUNK_SIZE - 1; }
+                        else if (snz >= CHUNK_SIZE) { sncz++; snz = 0; }
+
+                        if (sncx < 0 || sncx >= vol->chunks_x ||
+                            sncy < 0 || sncy >= vol->chunks_y ||
+                            sncz < 0 || sncz >= vol->chunks_z)
+                            continue;
+
+                        int32_t ngi = global_voxel_index(vol, sncx, sncy, sncz, snx, sny, snz);
+                        if (ngi < 0 || ngi >= work->visited_size)
+                            continue;
+                        if (!is_visited(work, ngi))
+                            continue;
+
+                        uint16_t nid = work->island_ids[ngi];
+                        if (nid > 0 && nid <= CONNECTIVITY_MAX_ISLANDS && anchored_ids[nid])
+                        {
+                            set_visited(work, sgi);
+                            set_island_id(work, sgi, nid);
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                island->is_floating = true;
+                island->anchor = ANCHOR_NONE;
+                result->floating_count++;
+            }
+
+            result->island_count++;
+            result->total_voxels_checked += island->voxel_count;
+            next_island_id++;
+        }
+
+        /* If budget exhausted before processing all seeds, defer */
+        if (i < boundary->count && budget <= 0)
+        {
+            work->deferred_seed_start = i;
+            work->has_deferred_work = true;
+        }
+    }
+    else
+    {
+        /* Overflow fallback: use dirty chunk analysis with early-anchor BFS.
+         * Reuse existing dirty analysis but fix multi-cluster island_ids wipe. */
+        connectivity_analyze_dirty(vol, anchor_y, anchor_material, work, result);
+    }
+
+    PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 }

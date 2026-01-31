@@ -25,6 +25,14 @@ extern "C"
 #define VOLUME_EDIT_BATCH_MAX_CHUNKS 64
 #define VOLUME_CHUNK_BITMAP_SIZE ((VOLUME_MAX_CHUNKS + 63) / 64)
 #define VOLUME_SHADOW_DIRTY_MAX 256
+#define VOLUME_MAX_CUT_BOUNDARY 4096
+
+    typedef struct
+    {
+        int32_t packed_positions[VOLUME_MAX_CUT_BOUNDARY];
+        int32_t count;
+        bool overflow;
+    } CutBoundaryBuffer;
 
     typedef struct
     {
@@ -60,6 +68,17 @@ extern "C"
 
         int32_t last_edit_chunks[VOLUME_EDIT_BATCH_MAX_CHUNKS];
         int32_t last_edit_count;
+
+        /* Cumulative dirty tracking: persists across edit batches until consumed */
+        int32_t pending_analysis_chunks[VOLUME_EDIT_BATCH_MAX_CHUNKS];
+        int32_t pending_analysis_count;
+        uint64_t pending_analysis_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
+
+        CutBoundaryBuffer cut_boundary;
+        CutBoundaryBuffer last_cut_boundary;
+
+        /* Cumulative cut boundary: persists across edit batches until consumed */
+        CutBoundaryBuffer pending_cut_boundary;
 
         uint64_t dirty_bitmap[VOLUME_CHUNK_BITMAP_SIZE];
         int32_t dirty_bitmap_scan_pos;
@@ -222,6 +241,7 @@ extern "C"
     void volume_edit_begin(VoxelVolume *vol);
     void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material);
     int32_t volume_edit_end(VoxelVolume *vol);
+    void volume_consume_pending_analysis(VoxelVolume *vol);
 
     bool volume_ray_hits_any_occupancy(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist);
 

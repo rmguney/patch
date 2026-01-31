@@ -1,0 +1,101 @@
+================================================================================
+                         PATCH DEBUG REPORT
+================================================================================
+Generated: Sat Jan 31 13:15:49 2026
+
+--- Scene ---
+Name: Ball Pit
+
+--- Performance ---
+FPS: 30 current, 76 avg
+Frame: 13.23ms avg, 182.54ms max, 22.29ms p99
+Budget: 197% used, 495 overruns, 182.54ms worst
+
+--- GPU ---
+Device: NVIDIA GeForce RTX 4050 Laptop GPU
+GPU: 10.75ms total (gbuf 4.42, shad 4.04, tshad 0.18, ao 0.24, tao 0.10, rend 6.27, taa 0.17, den 0.07)
+CPU waits: fence=0.005ms, acquire=0.005ms, present=0.080ms
+
+--- Sim Timing ---
+Tick: 5.85ms (physics 0.37ms, particles 6.26ms, collision 0.04ms)
+
+--- Render Timing ---
+Total: 2.09ms
+G-buffer: 0.02ms, Objects: 0.03ms
+Shadow: 0.01ms, Main: 0.58ms (max: 4.63ms)
+  Main breakdown: vol_begin=0.000ms, chunk_upload=0.027ms, shadow_vol=0.341ms
+Lighting: 0.03ms, AO: 0.01ms, Denoise: 0.01ms
+UI Overlay: 1.47ms
+
+--- Content ---
+Objects: 124
+Particles: 14584
+Spawns: 11, Ticks: 3569
+Chunks: 1536 (active: 486)
+Solid voxels: 6297045
+Dirty queue: 0
+Total uploaded: 1677
+Dirty overflow: no
+
+--- Renderer State ---
+G-buffer init: yes
+G-buffer pipeline: yes
+G-buffer descriptors: yes
+Voxel resources init: yes
+Vobj resources init: yes
+Terrain debug mode: 0
+Terrain draw count: 1
+
+--- Volume ---
+Chunks: 16 x 6 x 16 = 1536
+Voxel size: 0.1000
+Grid size: 512 x 192 x 512 voxels
+
+--- Bounds ---
+Min: -25.60, 0.00, -25.60
+Max: 25.60, 19.20, 25.60
+Size: 51.20 x 19.20 x 51.20
+
+--- Camera ---
+Position: -34.26, 7.71, 0.54
+Forward: 0.753, -0.332, 0.568
+
+================================================================================
+                         PROFILE DATA (CSV)
+================================================================================
+
+# GPU Timings: shadow=4.044ms, main=6.266ms, total=10.748ms
+# GPU Passes: gbuffer=4.422ms, shadow=4.044ms, tshadow=0.180ms, ao=0.238ms, tao=0.103ms, render=6.266ms, taa=0.169ms, denoise=0.068ms
+# Budget: 197.1% used, 495 overruns, 182.54ms worst
+# Trend: 1.15x (last_third/first_third, >1.5 = degradation)
+category,avg_ms,max_ms,min_ms,p50_ms,p95_ms,samples
+frame_total,13.229,182.539,1.506,12.266,16.056,4543
+sim_tick,5.852,118.517,0.001,12.570,17.307,8010
+sim_physics,0.372,106.827,0.001,1.041,2.228,3544
+sim_collision,0.045,0.692,0.001,0.034,0.109,4543
+sim_voxel_update,0.001,0.561,0.000,0.000,0.392,7092
+sim_connectivity,0.115,35.396,0.000,0.000,0.001,4571
+sim_particles,6.261,13.178,0.015,9.618,12.547,3544
+voxel_raycast,0.004,0.207,0.001,0.004,0.006,2585
+voxel_edit,0.000,0.000,0.000,0.000,0.000,0
+voxel_occupancy,0.000,0.000,0.000,0.000,0.000,0
+voxel_upload,0.027,0.657,0.000,0.000,0.000,4544
+render_total,2.089,6.040,0.831,1.641,2.710,4543
+render_shadow,0.012,0.178,0.004,0.010,0.018,4544
+render_main,0.582,4.635,0.059,0.456,0.744,4544
+render_ui_overlay,1.467,3.126,0.738,1.137,1.678,4544
+render_ui,0.003,0.372,0.000,0.000,0.222,4543
+volume_init,0.000,0.000,0.000,0.000,0.000,0
+prop_spawn,0.000,0.000,0.000,0.000,0.000,0
+render_gbuffer,0.020,0.285,0.000,0.019,0.036,9088
+render_objects,0.029,0.600,0.010,0.037,0.073,4544
+render_lighting,0.031,0.222,0.012,0.023,0.038,4544
+render_ao,0.008,0.181,0.003,0.005,0.008,4544
+render_denoise,0.012,0.144,0.004,0.008,0.014,4544
+render_volume_begin,0.000,0.045,0.000,0.000,0.000,4544
+render_chunk_upload,0.027,0.659,0.000,0.000,0.001,4544
+render_shadow_volume,0.341,3.561,0.001,0.215,0.376,4544
+shadow_terrain_pack,0.043,1.516,0.000,0.000,0.000,4544
+shadow_object_stamp,0.000,0.000,0.000,0.000,0.000,0
+shadow_mip_regen,0.017,1.279,0.000,0.000,0.000,4544
+shadow_upload,0.131,1.181,0.000,0.000,0.000,4544

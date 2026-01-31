@@ -133,6 +133,58 @@ static void volume_push_dirty_ring(VoxelVolume *vol, int32_t chunk_index)
     vol->dirty_ring_head = next_head;
 }
 
+static inline int32_t volume_pack_voxel_pos(int32_t cx, int32_t cy, int32_t cz,
+                                             int32_t lx, int32_t ly, int32_t lz)
+{
+    return (cx << 26) | (cy << 21) | (cz << 15) | (lx << 10) | (ly << 5) | lz;
+}
+
+static void volume_record_cut_boundary(VoxelVolume *vol,
+                                        int32_t cx, int32_t cy, int32_t cz,
+                                        int32_t lx, int32_t ly, int32_t lz)
+{
+    if (vol->cut_boundary.overflow)
+        return;
+
+    static const int32_t OFFSETS[6][3] = {
+        {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
+
+    for (int32_t n = 0; n < 6; n++)
+    {
+        int32_t nx = lx + OFFSETS[n][0];
+        int32_t ny = ly + OFFSETS[n][1];
+        int32_t nz = lz + OFFSETS[n][2];
+        int32_t ncx = cx, ncy = cy, ncz = cz;
+
+        if (nx < 0) { ncx--; nx = CHUNK_SIZE - 1; }
+        else if (nx >= CHUNK_SIZE) { ncx++; nx = 0; }
+        if (ny < 0) { ncy--; ny = CHUNK_SIZE - 1; }
+        else if (ny >= CHUNK_SIZE) { ncy++; ny = 0; }
+        if (nz < 0) { ncz--; nz = CHUNK_SIZE - 1; }
+        else if (nz >= CHUNK_SIZE) { ncz++; nz = 0; }
+
+        if (ncx < 0 || ncx >= vol->chunks_x ||
+            ncy < 0 || ncy >= vol->chunks_y ||
+            ncz < 0 || ncz >= vol->chunks_z)
+            continue;
+
+        Chunk *neighbor_chunk = volume_get_chunk(vol, ncx, ncy, ncz);
+        if (!neighbor_chunk || chunk_get(neighbor_chunk, nx, ny, nz) == 0)
+            continue;
+
+        if (vol->cut_boundary.count < VOLUME_MAX_CUT_BOUNDARY)
+        {
+            vol->cut_boundary.packed_positions[vol->cut_boundary.count++] =
+                volume_pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
+        }
+        else
+        {
+            vol->cut_boundary.overflow = true;
+            return;
+        }
+    }
+}
+
 VoxelVolume *volume_create(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z, Bounds3D bounds)
 {
     float width = bounds.max_x - bounds.min_x;
@@ -621,6 +673,8 @@ void volume_edit_begin(VoxelVolume *vol)
     vol->edit_budget_bypass = false;
     vol->edit_count = 0;
     vol->edit_touched_count = 0;
+    vol->cut_boundary.count = 0;
+    vol->cut_boundary.overflow = false;
 
     /* Clear bitmap for O(1) dedup during this edit batch */
     bitmap_clear_all(vol->edit_touched_bitmap, VOLUME_CHUNK_BITMAP_SIZE);
@@ -655,6 +709,12 @@ void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material)
     /* Perform the edit */
     chunk_set(chunk, lx, ly, lz, material);
     vol->edit_count++;
+
+    /* Record cut boundary for connectivity analysis (only for destruction, not island removal) */
+    if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY && !vol->edit_budget_bypass)
+    {
+        volume_record_cut_boundary(vol, cx, cy, cz, lx, ly, lz);
+    }
 
     /* Track solid voxel delta */
     if (old_mat == MATERIAL_EMPTY && material != MATERIAL_EMPTY)
@@ -701,11 +761,43 @@ int32_t volume_edit_end(VoxelVolume *vol)
 
     vol->edit_batch_active = false;
 
-    /* Preserve touched chunks for connectivity analysis (before clearing) */
+    /* Preserve touched chunks and cut boundary for connectivity analysis */
     vol->last_edit_count = vol->edit_touched_count;
     for (int32_t i = 0; i < vol->edit_touched_count; i++)
     {
         vol->last_edit_chunks[i] = vol->edit_touched_chunks[i];
+    }
+    vol->last_cut_boundary = vol->cut_boundary;
+
+    /* Accumulate cut boundaries into pending buffer */
+    if (!vol->pending_cut_boundary.overflow)
+    {
+        for (int32_t i = 0; i < vol->cut_boundary.count; i++)
+        {
+            if (vol->pending_cut_boundary.count < VOLUME_MAX_CUT_BOUNDARY)
+                vol->pending_cut_boundary.packed_positions[vol->pending_cut_boundary.count++] =
+                    vol->cut_boundary.packed_positions[i];
+            else
+            {
+                vol->pending_cut_boundary.overflow = true;
+                break;
+            }
+        }
+        if (vol->cut_boundary.overflow)
+            vol->pending_cut_boundary.overflow = true;
+    }
+
+    /* Accumulate touched chunks into pending analysis buffer (deduped via bitmap).
+     * This persists across edit batches until consumed by connectivity analysis. */
+    for (int32_t i = 0; i < vol->edit_touched_count; i++)
+    {
+        int32_t ci = vol->edit_touched_chunks[i];
+        if (!bitmap_test(vol->pending_analysis_bitmap, ci))
+        {
+            bitmap_set(vol->pending_analysis_bitmap, ci);
+            if (vol->pending_analysis_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
+                vol->pending_analysis_chunks[vol->pending_analysis_count++] = ci;
+        }
     }
 
     /* Rebuild occupancy and mark dirty for all touched chunks */
@@ -737,6 +829,23 @@ int32_t volume_edit_end(VoxelVolume *vol)
     vol->edit_touched_count = 0;
 
     return total_edits;
+}
+
+void volume_consume_pending_analysis(VoxelVolume *vol)
+{
+    if (!vol || (vol->pending_analysis_count == 0 && vol->pending_cut_boundary.count == 0))
+        return;
+
+    vol->last_edit_count = vol->pending_analysis_count;
+    for (int32_t i = 0; i < vol->pending_analysis_count; i++)
+        vol->last_edit_chunks[i] = vol->pending_analysis_chunks[i];
+
+    vol->last_cut_boundary = vol->pending_cut_boundary;
+
+    vol->pending_analysis_count = 0;
+    bitmap_clear_all(vol->pending_analysis_bitmap, VOLUME_CHUNK_BITMAP_SIZE);
+    vol->pending_cut_boundary.count = 0;
+    vol->pending_cut_boundary.overflow = false;
 }
 
 /* volume_ray_hits_any_occupancy moved to volume_raycast.c */
