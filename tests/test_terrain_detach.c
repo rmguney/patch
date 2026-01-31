@@ -350,11 +350,11 @@ TEST(determinism)
     Vec3 max_corner = {3.0f, 13.0f, 3.0f};
 
     volume_edit_begin(vol1);
-    volume_fill_box(vol1, min_corner, max_corner, MAT_WOOD);
+    volume_fill_box(vol1, min_corner, max_corner, MAT_STONE);
     volume_edit_end(vol1);
 
     volume_edit_begin(vol2);
-    volume_fill_box(vol2, min_corner, max_corner, MAT_WOOD);
+    volume_fill_box(vol2, min_corner, max_corner, MAT_STONE);
     volume_edit_end(vol2);
 
     DetachConfig cfg = detach_config_default();

@@ -29,7 +29,7 @@ TEST(volume_edit_determinism)
         {1.5f, 2.0f, 1.5f},
         {-0.5f, 3.0f, -0.5f},
     };
-    uint8_t materials[] = {MAT_STONE, MAT_BRICK, MAT_WOOD};
+    uint8_t materials[] = {MAT_STONE, MAT_DIRT, MAT_GRASS};
 
     volume_edit_begin(vol1);
     volume_edit_begin(vol2);
@@ -62,7 +62,7 @@ TEST(volume_fill_box)
 
     Vec3 min_corner = {-2.0f, 0.0f, -2.0f};
     Vec3 max_corner = {2.0f, 4.0f, 2.0f};
-    volume_fill_box(vol, min_corner, max_corner, MAT_CONCRETE);
+    volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
 
     Vec3 inside = {0.0f, 2.0f, 0.0f};
     Vec3 outside = {10.0f, 2.0f, 10.0f};
@@ -70,7 +70,7 @@ TEST(volume_fill_box)
     uint8_t mat_inside = volume_get_at(vol, inside);
     uint8_t mat_outside = volume_get_at(vol, outside);
 
-    ASSERT(mat_inside == MAT_CONCRETE);
+    ASSERT(mat_inside == MAT_STONE);
     ASSERT(mat_outside == MAT_AIR);
 
     volume_destroy(vol);

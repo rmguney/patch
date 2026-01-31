@@ -44,7 +44,7 @@ layout(SET_BINDING(0, 4)) uniform sampler2D ao_history;
 layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_ao_resolved;
 
 const float HISTORY_BLEND_MAX = 0.75;
-const float HISTORY_BLEND_MIN = 0.15;
+const float HISTORY_BLEND_MIN = 0.45;
 const float DEPTH_REJECT_THRESHOLD = 0.02;
 const float NORMAL_REJECT_THRESHOLD = 0.9;
 
@@ -87,7 +87,7 @@ void main() {
     }
 
     float motion_len = length(motion * vec2(size));
-    float velocity_weight = clamp(motion_len / 1.0, 0.0, 1.0);
+    float velocity_weight = clamp(motion_len / 4.0, 0.0, 1.0);
     float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
 
     float history_ao = texture(ao_history, prev_uv).r;

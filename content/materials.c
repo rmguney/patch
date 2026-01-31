@@ -34,15 +34,7 @@ extern const MaterialDescriptor g_mat_air;
 extern const MaterialDescriptor g_mat_stone;
 extern const MaterialDescriptor g_mat_dirt;
 extern const MaterialDescriptor g_mat_grass;
-extern const MaterialDescriptor g_mat_sand;
-extern const MaterialDescriptor g_mat_wood;
-extern const MaterialDescriptor g_mat_brick;
-extern const MaterialDescriptor g_mat_concrete;
 extern const MaterialDescriptor g_mat_metal;
-extern const MaterialDescriptor g_mat_glass;
-extern const MaterialDescriptor g_mat_water;
-extern const MaterialDescriptor g_mat_flesh;
-extern const MaterialDescriptor g_mat_bone;
 extern const MaterialDescriptor g_mat_pink;
 extern const MaterialDescriptor g_mat_cyan;
 extern const MaterialDescriptor g_mat_peach;
@@ -54,12 +46,6 @@ extern const MaterialDescriptor g_mat_coral;
 extern const MaterialDescriptor g_mat_cloud;
 extern const MaterialDescriptor g_mat_rose;
 extern const MaterialDescriptor g_mat_orange;
-extern const MaterialDescriptor g_mat_white;
-extern const MaterialDescriptor g_mat_yellow;
-extern const MaterialDescriptor g_mat_glow;
-extern const MaterialDescriptor g_mat_chrome;
-extern const MaterialDescriptor g_mat_red;
-extern const MaterialDescriptor g_mat_green;
 
 /*
  * Global material registration table.
@@ -70,15 +56,7 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_STONE] = &g_mat_stone,
     [MAT_DIRT] = &g_mat_dirt,
     [MAT_GRASS] = &g_mat_grass,
-    [MAT_SAND] = &g_mat_sand,
-    [MAT_WOOD] = &g_mat_wood,
-    [MAT_BRICK] = &g_mat_brick,
-    [MAT_CONCRETE] = &g_mat_concrete,
     [MAT_METAL] = &g_mat_metal,
-    [MAT_GLASS] = &g_mat_glass,
-    [MAT_WATER] = &g_mat_water,
-    [MAT_FLESH] = &g_mat_flesh,
-    [MAT_BONE] = &g_mat_bone,
     [MAT_PINK] = &g_mat_pink,
     [MAT_CYAN] = &g_mat_cyan,
     [MAT_PEACH] = &g_mat_peach,
@@ -90,15 +68,9 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_CLOUD] = &g_mat_cloud,
     [MAT_ROSE] = &g_mat_rose,
     [MAT_ORANGE] = &g_mat_orange,
-    [MAT_WHITE] = &g_mat_white,
-    [MAT_YELLOW] = &g_mat_yellow,
-    [MAT_GLOW] = &g_mat_glow,
-    [MAT_CHROME] = &g_mat_chrome,
-    [MAT_RED] = &g_mat_red,
-    [MAT_GREEN] = &g_mat_green,
 };
 
-const int32_t g_material_count = 30;
+const int32_t g_material_count = 16;
 
-static_assert(MAT_GREEN + 1 == 30, "Material count must match g_material_count");
-static_assert(MAT_GREEN < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+static_assert(MAT_ORANGE + 1 == 16, "Material count must match g_material_count");
+static_assert(MAT_ORANGE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

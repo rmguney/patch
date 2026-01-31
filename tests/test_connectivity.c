@@ -87,7 +87,7 @@ TEST(multiple_islands)
 
     Vec3 floating_min = {4.0f, 10.0f, -2.0f};
     Vec3 floating_max = {8.0f, 14.0f, 2.0f};
-    volume_fill_box(vol, floating_min, floating_max, MAT_BRICK);
+    volume_fill_box(vol, floating_min, floating_max, MAT_STONE);
 
     ConnectivityWorkBuffer work;
     ASSERT(connectivity_work_init(&work, vol));
@@ -112,7 +112,7 @@ TEST(island_extraction)
 
     Vec3 min_corner = {0.0f, 10.0f, 0.0f};
     Vec3 max_corner = {2.0f, 12.0f, 2.0f};
-    volume_fill_box(vol, min_corner, max_corner, MAT_WOOD);
+    volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
 
     ConnectivityWorkBuffer work;
     ASSERT(connectivity_work_init(&work, vol));
@@ -283,7 +283,7 @@ TEST(analyze_region_subset)
 
     Vec3 block2_min = {16.0f, 10.0f, -2.0f};
     Vec3 block2_max = {20.0f, 14.0f, 2.0f};
-    volume_fill_box(vol, block2_min, block2_max, MAT_BRICK);
+    volume_fill_box(vol, block2_min, block2_max, MAT_STONE);
 
     ConnectivityWorkBuffer work;
     ASSERT(connectivity_work_init(&work, vol));

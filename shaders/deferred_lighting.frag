@@ -151,15 +151,28 @@ void main() {
     float spec_fill = pow(max(dot(N, H_fill), 0.0), spec_power * 0.5) * spec_strength * 0.3;
     specular += vec3(spec_fill) * fill_color * fill_dot;
 
+    /* Metallic specular tinting: metals reflect their own albedo color */
+    vec3 spec_tint = mix(vec3(1.0), g.albedo, g.metallic);
+    specular *= spec_tint;
+
+    /* Environment-tinted specular (R6.6): reflection-vector hemisphere sampling */
+    vec3 R = reflect(-V, N);
+    vec3 env_color = mix(vec3(0.38, 0.32, 0.28), vec3(0.55, 0.68, 0.95), R.y * 0.5 + 0.5);
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    float f0 = mix(0.04, 1.0, g.metallic);
+    float F = f0 + (1.0 - f0) * fresnel;
+    float env_weight = (1.0 - g.roughness) * 0.35;
+    vec3 env_spec = env_color * env_weight * F * ao;
+
     float floor_y = pc.bounds_min.y;
     float ground_dist = g.world_pos.y - floor_y;
     float ground_ao = smoothstep(0.0, 1.0, ground_dist) * 0.5 + 0.5;
 
-    vec3 color = (g.albedo * ambient_light + diffuse + specular) * ground_ao;
+    vec3 color = (g.albedo * ambient_light + diffuse + specular + env_spec) * ground_ao;
 
     float rim = 1.0 - max(dot(N, V), 0.0);
     rim = pow(rim, 4.0) * 0.08;
-    color += rim * vec3(0.7, 0.8, 1.0);
+    color += rim * env_color;
 
     vec3 emissive_color = g.albedo * g.emissive * 2.0;
     color += emissive_color;

@@ -336,13 +336,16 @@ void main() {
     } else {
         surface_dist = length(g.world_pos - pc.camera_pos);
     }
-    int shadow_steps = BASE_SHADOW_STEPS;
+    int shadow_steps;
     if (surface_dist > SHADOW_DIST_VERY_FAR) {
-        shadow_steps = SHADOW_STEPS_VERY_FAR;   /* Very far: half steps */
+        shadow_steps = SHADOW_STEPS_VERY_FAR;   /* >100m: half steps */
     } else if (surface_dist > SHADOW_DIST_FAR) {
-        shadow_steps = SHADOW_STEPS_FAR;   /* Far: 75% steps */
+        shadow_steps = SHADOW_STEPS_FAR;   /* >60m: 75% steps */
+    } else {
+        shadow_steps = BASE_SHADOW_STEPS;
     }
-    /* Close/mid (<60m): keep full 128 steps */
+
+    float effective_max_dist = SHADOW_MAX_DIST;
 
     float shadow = 1.0;
 
@@ -362,7 +365,8 @@ void main() {
         float normal_bias = pc.voxel_size * 0.3 / angle_factor;
         vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
-        /* Sample count: quality-based with reduction for far surfaces */
+        /* Sample count: quality-based with distance scaling.
+           Far surfaces reduce — artifacts less visible at distance. */
         int base_samples = 3 + pc.shadow_quality;
         int num_samples = base_samples;
         if (surface_dist > SHADOW_SAMPLE_DIST_FAR) {
@@ -378,11 +382,11 @@ void main() {
 
         if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
             /* Contact hardening: trace center ray to find occluder distance */
-            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, SHADOW_MAX_DIST, shadow_steps);
+            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, effective_max_dist, shadow_steps);
 
             /* Scale penumbra: near occluder = sharper, far = softer
                If center ray misses, use full penumbra (jittered rays may still hit) */
-            if (occluder_dist < SHADOW_MAX_DIST) {
+            if (occluder_dist < effective_max_dist) {
                 float contact_factor = smoothstep(0.0, 8.0, occluder_dist) * 0.7 + 0.3;
                 penumbra = base_penumbra * contact_factor;
             }
@@ -403,7 +407,7 @@ void main() {
             vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
             vec3 jittered_light = normalize(SUN_DIR + jitter);
 
-            shadow_sum += trace_shadow_hdda(shadow_origin, jittered_light, SHADOW_MAX_DIST, shadow_steps);
+            shadow_sum += trace_shadow_hdda(shadow_origin, jittered_light, effective_max_dist, shadow_steps);
         }
 
         shadow = shadow_sum / float(num_samples);

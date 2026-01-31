@@ -201,32 +201,18 @@ static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
 #define MAT_STONE 1
 #define MAT_DIRT 2
 #define MAT_GRASS 3
-#define MAT_SAND 4
-#define MAT_WOOD 5
-#define MAT_BRICK 6
-#define MAT_CONCRETE 7
-#define MAT_METAL 8
-#define MAT_GLASS 9
-#define MAT_WATER 10
-#define MAT_FLESH 11
-#define MAT_BONE 12
-#define MAT_PINK 13
-#define MAT_CYAN 14
-#define MAT_PEACH 15
-#define MAT_MINT 16
-#define MAT_LAVENDER 17
-#define MAT_SKY 18
-#define MAT_TEAL 19
-#define MAT_CORAL 20
-#define MAT_CLOUD 21
-#define MAT_ROSE 22
-#define MAT_ORANGE 23
-#define MAT_WHITE 24
-#define MAT_YELLOW 25
-#define MAT_GLOW 26
-#define MAT_CHROME 27
-#define MAT_RED 28
-#define MAT_GREEN 29
+#define MAT_METAL 4
+#define MAT_PINK 5
+#define MAT_CYAN 6
+#define MAT_PEACH 7
+#define MAT_MINT 8
+#define MAT_LAVENDER 9
+#define MAT_SKY 10
+#define MAT_TEAL 11
+#define MAT_CORAL 12
+#define MAT_CLOUD 13
+#define MAT_ROSE 14
+#define MAT_ORANGE 15
 
 #ifdef __cplusplus
 }

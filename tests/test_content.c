@@ -100,9 +100,6 @@ TEST(predefined_materials_in_range)
     ASSERT(MAT_STONE < g_material_count);
     ASSERT(MAT_DIRT < g_material_count);
     ASSERT(MAT_GRASS < g_material_count);
-    ASSERT(MAT_WOOD < g_material_count);
-    ASSERT(MAT_BRICK < g_material_count);
-    ASSERT(MAT_CONCRETE < g_material_count);
     ASSERT(MAT_METAL < g_material_count);
     ASSERT(MAT_PINK < g_material_count);
     ASSERT(MAT_ROSE < g_material_count);
