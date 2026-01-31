@@ -437,7 +437,8 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
             {
                 DetachConfig cfg = detach_config_default();
                 DetachResult detach_result;
-                detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, &detach_result);
+                detach_terrain_process(data->terrain, data->objects, &cfg, &data->detach_work, &detach_result,
+                                       data->particles, &scene->rng);
 
                 /* Apply outward velocity to newly spawned islands */
                 if (detach_result.bodies_spawned > 0 && data->physics)

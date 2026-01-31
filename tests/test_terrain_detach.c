@@ -4,6 +4,8 @@
 #include "engine/voxel/connectivity.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/sim/detach.h"
+#include "engine/physics/particles.h"
+#include "engine/core/rng.h"
 #include "engine/platform/platform.h"
 #include "content/materials.h"
 #include "test_common.h"
@@ -43,7 +45,7 @@ TEST(no_detach_when_disabled)
     cfg.enabled = false;
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* Nothing should be spawned */
     ASSERT(result.bodies_spawned == 0);
@@ -137,7 +139,7 @@ TEST(floating_island_spawns_object)
     ASSERT(cfg.min_voxels_per_island <= 8);
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* Floating island should be spawned as an object */
     ASSERT(result.bodies_spawned >= 1);
@@ -178,7 +180,7 @@ TEST(anchored_island_stays)
     DetachConfig cfg = detach_config_default();
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* Anchored island should NOT become an object */
     ASSERT(result.bodies_spawned == 0);
@@ -216,7 +218,7 @@ TEST(small_islands_deleted)
     cfg.min_voxels_per_island = 10; /* Set high threshold */
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* Small island should be deleted, not converted */
     ASSERT(result.bodies_spawned == 0);
@@ -254,7 +256,7 @@ TEST(large_island_split)
     DetachConfig cfg = detach_config_default();
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* Oversized island: subdivided into multiple objects */
     ASSERT(result.bodies_spawned >= 2);
@@ -308,7 +310,7 @@ TEST(detach_performance)
     PlatformTime start = platform_time_now();
 
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     PlatformTime end = platform_time_now();
     float ms = platform_time_delta_seconds(start, end) * 1000.0f;
@@ -358,8 +360,8 @@ TEST(determinism)
     DetachConfig cfg = detach_config_default();
 
     DetachResult result1, result2;
-    detach_terrain_process(vol1, obj_world1, &cfg, &work1, &result1);
-    detach_terrain_process(vol2, obj_world2, &cfg, &work2, &result2);
+    detach_terrain_process(vol1, obj_world1, &cfg, &work1, &result1, NULL, NULL);
+    detach_terrain_process(vol2, obj_world2, &cfg, &work2, &result2, NULL, NULL);
 
     /* Results must be identical */
     ASSERT(result1.islands_processed == result2.islands_processed);
@@ -424,7 +426,7 @@ TEST(multi_cluster_detach)
 
     DetachConfig cfg = detach_config_default();
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* BOTH floating tops should be detected and spawned */
     ASSERT(result.bodies_spawned >= 2);
@@ -484,7 +486,7 @@ TEST(boundary_seeded_performance)
 
     PlatformTime start = platform_time_now();
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
     PlatformTime end = platform_time_now();
     float ms = platform_time_delta_seconds(start, end) * 1000.0f;
 
@@ -546,7 +548,7 @@ TEST(large_floating_island_detaches)
 
     DetachConfig cfg = detach_config_default();
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* The large floating portion above the cut should be detected */
     ASSERT(result.bodies_spawned >= 1);
@@ -609,7 +611,7 @@ TEST(destruction_then_detach)
 
     DetachConfig cfg = detach_config_default();
     DetachResult result;
-    detach_terrain_process(vol, obj_world, &cfg, &work, &result);
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, NULL, NULL);
 
     /* The shelf should detach as a floating island */
     ASSERT(result.bodies_spawned >= 1);
@@ -623,6 +625,60 @@ TEST(destruction_then_detach)
     ASSERT(volume_get_at(vol, col_check) == MAT_STONE);
 
     connectivity_work_destroy(&work);
+    voxel_object_world_destroy(obj_world);
+    volume_destroy(vol);
+    return 1;
+}
+
+TEST(small_island_spawns_particles)
+{
+    Bounds3D bounds = {-16.0f, 16.0f, 0.0f, 32.0f, -16.0f, 16.0f};
+    VoxelVolume *vol = volume_create(2, 2, 2, bounds);
+    ASSERT(vol != NULL);
+
+    VoxelObjectWorld *obj_world = voxel_object_world_create(bounds, vol->voxel_size);
+    ASSERT(obj_world != NULL);
+
+    ParticleSystem *psys = particle_system_create(bounds);
+    ASSERT(psys != NULL);
+
+    RngState rng;
+    rng_seed(&rng, 42);
+
+    ConnectivityWorkBuffer work;
+    ASSERT(connectivity_work_init(&work, vol));
+
+    /* Create a small floating block: 2x2x2 = 8 voxels (under 64 threshold) */
+    volume_edit_begin(vol);
+    Vec3 min_corner = {0.0f, 10.0f, 0.0f};
+    Vec3 max_corner = {2.0f, 12.0f, 2.0f};
+    volume_fill_box(vol, min_corner, max_corner, MAT_STONE);
+    volume_edit_end(vol);
+
+    Vec3 check_pos = {1.0f, 11.0f, 1.0f};
+    ASSERT(volume_get_at(vol, check_pos) == MAT_STONE);
+
+    int32_t initial_particle_count = psys->count;
+
+    DetachConfig cfg = detach_config_default();
+    ASSERT(cfg.particle_voxel_threshold == 64);
+
+    DetachResult result;
+    detach_terrain_process(vol, obj_world, &cfg, &work, &result, psys, &rng);
+
+    /* Should spawn particles, not bodies */
+    ASSERT(result.particles_spawned > 0);
+    ASSERT(result.bodies_spawned == 0);
+    ASSERT(obj_world->object_count == 0);
+
+    /* Particles should have been added */
+    ASSERT(psys->count > initial_particle_count);
+
+    /* Voxels should be removed from volume */
+    ASSERT(volume_get_at(vol, check_pos) == 0);
+
+    connectivity_work_destroy(&work);
+    particle_system_destroy(psys);
     voxel_object_world_destroy(obj_world);
     volume_destroy(vol);
     return 1;
@@ -645,6 +701,7 @@ int main(void)
     RUN_TEST(boundary_seeded_performance);
     RUN_TEST(large_floating_island_detaches);
     RUN_TEST(destruction_then_detach);
+    RUN_TEST(small_island_spawns_particles);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;

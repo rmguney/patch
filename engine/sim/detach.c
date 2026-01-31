@@ -1,4 +1,5 @@
 #include "detach.h"
+#include "content/materials.h"
 #include "engine/core/profile.h"
 #include <string.h>
 
@@ -87,11 +88,70 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
     return destroyed_count;
 }
 
+static void detach_spawn_island_particles(const VoxelVolume *vol,
+                                          const IslandInfo *island,
+                                          const ConnectivityWorkBuffer *work,
+                                          ParticleSystem *particles,
+                                          RngState *rng)
+{
+    int32_t chunks_x = vol->chunks_x;
+    int32_t chunks_xy = vol->chunks_x * vol->chunks_y;
+    uint16_t target_id = (uint16_t)island->island_id;
+    float vs = vol->voxel_size;
+
+    for (int32_t z = island->voxel_min_z; z <= island->voxel_max_z; z++)
+    {
+        for (int32_t y = island->voxel_min_y; y <= island->voxel_max_y; y++)
+        {
+            for (int32_t x = island->voxel_min_x; x <= island->voxel_max_x; x++)
+            {
+                int32_t cx = x / CHUNK_SIZE, lx = x % CHUNK_SIZE;
+                int32_t cy = y / CHUNK_SIZE, ly = y % CHUNK_SIZE;
+                int32_t cz = z / CHUNK_SIZE, lz = z % CHUNK_SIZE;
+                int32_t gi = (cx + cy * chunks_x + cz * chunks_xy) * CHUNK_VOXEL_COUNT +
+                              lx + ly * CHUNK_SIZE + lz * CHUNK_SIZE * CHUNK_SIZE;
+                if (gi < 0 || gi >= work->island_ids_size)
+                    continue;
+                if (work->island_ids[gi] != target_id)
+                    continue;
+
+                Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
+                if (!chunk)
+                    continue;
+                uint8_t mat = chunk_get(chunk, lx, ly, lz);
+                if (mat == 0)
+                    continue;
+
+                Vec3 pos = vec3_create(
+                    vol->bounds.min_x + ((float)x + 0.5f) * vs,
+                    vol->bounds.min_y + ((float)y + 0.5f) * vs,
+                    vol->bounds.min_z + ((float)z + 0.5f) * vs);
+
+                Vec3 dir = vec3_sub(pos, island->center_of_mass);
+                float dist = vec3_length(dir);
+                if (dist > 0.001f)
+                    dir = vec3_scale(dir, 1.0f / dist);
+                else
+                    dir = vec3_create(0.0f, 1.0f, 0.0f);
+
+                float speed = 1.0f + rng_float(rng) * 1.5f;
+                Vec3 velocity = vec3_scale(dir, speed);
+                velocity.y += 0.5f;
+
+                Vec3 color = material_get_color(mat);
+                particle_system_add(particles, rng, pos, velocity, color, vs * 0.4f);
+            }
+        }
+    }
+}
+
 void detach_terrain_process(VoxelVolume *vol,
                             VoxelObjectWorld *obj_world,
                             const DetachConfig *config,
                             ConnectivityWorkBuffer *work,
-                            DetachResult *result)
+                            DetachResult *result,
+                            ParticleSystem *particles,
+                            RngState *rng)
 {
     DetachResult local_result = {0};
 
@@ -139,6 +199,15 @@ void detach_terrain_process(VoxelVolume *vol,
             continue;
         }
 
+        if (island->voxel_count <= config->particle_voxel_threshold && particles && rng)
+        {
+            detach_spawn_island_particles(vol, island, work, particles, rng);
+            connectivity_remove_island(vol, island, work);
+            local_result.particles_spawned += island->voxel_count;
+            local_result.voxels_removed += island->voxel_count;
+            processed++;
+            continue;
+        }
 
         if (active_bodies >= config->max_bodies_alive)
         {

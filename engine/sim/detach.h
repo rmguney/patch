@@ -6,6 +6,8 @@
 #include "engine/voxel/volume.h"
 #include "engine/voxel/connectivity.h"
 #include "engine/voxel/voxel_object.h"
+#include "engine/physics/particles.h"
+#include "engine/core/rng.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -29,6 +31,7 @@ typedef struct
     int32_t max_islands_per_tick;
     int32_t min_voxels_per_island;
     int32_t max_bodies_alive;
+    int32_t particle_voxel_threshold;
     float anchor_y_offset;
 } DetachConfig;
 
@@ -41,6 +44,7 @@ typedef struct
     int32_t bodies_spawned;
     int32_t voxels_removed;
     int32_t islands_skipped;
+    int32_t particles_spawned;
     int32_t spawned_indices[DETACH_MAX_SPAWNED];
 } DetachResult;
 
@@ -52,6 +56,7 @@ static inline DetachConfig detach_config_default(void)
     cfg.max_islands_per_tick = 64;
     cfg.min_voxels_per_island = 4;
     cfg.max_bodies_alive = VOBJ_MAX_OBJECTS - 8;
+    cfg.particle_voxel_threshold = 64;
     cfg.anchor_y_offset = 0.1f;
     return cfg;
 }
@@ -78,7 +83,9 @@ void detach_terrain_process(VoxelVolume *vol,
                             VoxelObjectWorld *obj_world,
                             const DetachConfig *config,
                             ConnectivityWorkBuffer *work,
-                            DetachResult *result);
+                            DetachResult *result,
+                            ParticleSystem *particles,
+                            RngState *rng);
 
 #ifdef __cplusplus
 }

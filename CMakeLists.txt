@@ -128,7 +128,7 @@ set(ENGINE_SIM_SOURCES
 )
 
 add_library(engine_sim STATIC ${ENGINE_SIM_SOURCES})
-target_link_libraries(engine_sim PUBLIC engine_core engine_voxel)
+target_link_libraries(engine_sim PUBLIC engine_core engine_voxel engine_physics)
 set_property(TARGET engine_sim PROPERTY C_STANDARD 23)
 set_property(TARGET engine_sim PROPERTY C_STANDARD_REQUIRED ON)
 set_property(TARGET engine_sim PROPERTY C_EXTENSIONS OFF)
@@ -543,7 +543,7 @@ set_property(TARGET test_connectivity PROPERTY C_STANDARD 23)
 add_test(NAME connectivity COMMAND test_connectivity)
 
 add_executable(test_terrain_detach tests/test_terrain_detach.c)
-target_link_libraries(test_terrain_detach PRIVATE engine_sim engine_voxel content engine_platform)
+target_link_libraries(test_terrain_detach PRIVATE engine_sim engine_physics engine_voxel content engine_platform)
 set_property(TARGET test_terrain_detach PROPERTY C_STANDARD 23)
 add_test(NAME terrain_detach COMMAND test_terrain_detach)
 

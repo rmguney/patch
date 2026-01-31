@@ -604,7 +604,8 @@ int patch_main(int argc, char *argv[])
                             DetachConfig cfg = detach_config_default();
                             DetachResult detach_result;
                             detach_terrain_process(bp_data->terrain, bp_data->objects,
-                                                   &cfg, &bp_data->detach_work, &detach_result);
+                                                   &cfg, &bp_data->detach_work, &detach_result,
+                                                   bp_data->particles, &active_scene->rng);
                             PROFILE_END(PROFILE_SIM_CONNECTIVITY);
 
                             if (detach_result.bodies_spawned > 0 && bp_data->physics)
