@@ -52,6 +52,35 @@ static void spawn_gary_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
     free(voxels);
 }
 
+static void spawn_metal_cube_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
+                                         float amplitude, float frequency, uint32_t seed)
+{
+    const VoxelShape *cube = voxel_shape_get(SHAPE_CUBE);
+    if (!cube)
+        return;
+
+    int32_t total = cube->size_x * cube->size_y * cube->size_z;
+    uint8_t *voxels = (uint8_t *)malloc((size_t)total);
+    if (!voxels)
+        return;
+
+    for (int32_t i = 0; i < total; i++)
+        voxels[i] = cube->voxels[i] ? MAT_METAL : 0;
+
+    float cx = (bounds.min_x + bounds.max_x) * 0.5f;
+    float cz = (bounds.min_z + bounds.max_z) * 0.5f;
+    float x = cx + 6.0f;
+    float z = cz + 3.0f;
+    float y = TERRAIN_BASE_HEIGHT + terrain_gen_height(x, z, amplitude, frequency, seed);
+
+    Vec3 origin = vec3_create(x, y, z);
+
+    voxel_object_world_add_from_voxels(world, voxels,
+                                       cube->size_x, cube->size_y, cube->size_z,
+                                       origin, world->voxel_size);
+    free(voxels);
+}
+
 static void spawn_random_shape(VoxelObjectWorld *world, Bounds3D bounds, RngState *rng)
 {
     if (g_voxel_shape_count <= 0)
@@ -171,6 +200,8 @@ static void ball_pit_init(Scene *scene)
 
     spawn_gary_on_terrain(data->objects, scene->bounds,
                           p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+    spawn_metal_cube_on_terrain(data->objects, scene->bounds,
+                                p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
 
     data->particles = particle_system_create(scene->bounds);
     data->physics = physics_world_create(data->objects, data->terrain);

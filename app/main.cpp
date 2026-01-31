@@ -27,7 +27,7 @@ static constexpr float MAX_FRAME_DT = 0.1f;
 static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
 static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
 static constexpr float FREE_CAM_MOVE_SPEED = 20.0f;
-static constexpr int TERRAIN_DEBUG_MODE_COUNT = 14;
+static constexpr int TERRAIN_DEBUG_MODE_COUNT = 17;
 
 static BallPitParams params_from_settings(const AppSettings *s)
 {

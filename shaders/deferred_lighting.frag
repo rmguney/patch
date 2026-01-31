@@ -155,24 +155,36 @@ void main() {
     vec3 spec_tint = mix(vec3(1.0), g.albedo, g.metallic);
     specular *= spec_tint;
 
-    /* Environment-tinted specular (R6.6): reflection-vector hemisphere sampling */
+    float NdotV = max(dot(N, V), 0.0);
     vec3 R = reflect(-V, N);
-    vec3 env_color = mix(vec3(0.38, 0.32, 0.28), vec3(0.55, 0.68, 0.95), R.y * 0.5 + 0.5);
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+    vec3 env_color = mix(vec3(0.30, 0.22, 0.18), vec3(0.45, 0.65, 1.05), R.y * 0.5 + 0.5);
+    float smoothness = 1.0 - g.roughness;
     float f0 = mix(0.04, 1.0, g.metallic);
+    float fresnel = pow(1.0 - NdotV, 4.0);
     float F = f0 + (1.0 - f0) * fresnel;
-    float env_weight = (1.0 - g.roughness) * 0.35;
-    vec3 env_spec = env_color * env_weight * F * ao;
+    float env_total = F * smoothness * mix(0.7, 0.9, g.metallic);
+    vec3 env_spec = env_color * env_total * ao;
 
     float floor_y = pc.bounds_min.y;
     float ground_dist = g.world_pos.y - floor_y;
     float ground_ao = smoothstep(0.0, 1.0, ground_dist) * 0.5 + 0.5;
 
-    vec3 color = (g.albedo * ambient_light + diffuse + specular + env_spec) * ground_ao;
+    float diffuse_atten = 1.0 - env_total;
+    vec3 color = (g.albedo * ambient_light * diffuse_atten + diffuse * diffuse_atten + specular + env_spec) * ground_ao;
 
-    float rim = 1.0 - max(dot(N, V), 0.0);
-    rim = pow(rim, 4.0) * 0.08;
-    color += rim * env_color;
+    float rim = pow(1.0 - NdotV, 3.0) * 0.10;
+    vec3 rim_tint = mix(env_color * g.albedo, env_color, g.metallic);
+    color += rim * rim_tint * smoothness;
+
+    /* DEBUG: Specular + environment tint isolation */
+    if (pc.debug_mode == 16) {
+        vec3 rim_color = rim * env_color * smoothness;
+        vec3 debug_spec = (specular + env_spec + rim_color) * ground_ao;
+        debug_spec = aces_tonemap(debug_spec * 3.0);
+        debug_spec = pow(debug_spec, vec3(1.0 / 2.2));
+        out_color = vec4(clamp(debug_spec, 0.0, 1.0), 1.0);
+        return;
+    }
 
     vec3 emissive_color = g.albedo * g.emissive * 2.0;
     color += emissive_color;

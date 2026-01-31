@@ -5,7 +5,7 @@
 
 const MaterialDescriptor g_mat_metal = {
     .name = "metal",
-    .r = 192, .g = 192, .b = 200,
+    .r = 168, .g = 155, .b = 140,
     .flags = MAT_FLAG_SOLID | MAT_FLAG_CONDUCTIVE,
     .density = 7.8f,
     .hardness = 0.95f,
