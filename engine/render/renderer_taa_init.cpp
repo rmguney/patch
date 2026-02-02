@@ -294,6 +294,7 @@ namespace patch
     void Renderer::set_taa_quality(int level)
     {
         taa_quality_ = level < 0 ? 0 : (level > 1 ? 1 : level);
+        if (!applying_preset_) target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
 }

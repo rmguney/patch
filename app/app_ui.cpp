@@ -44,6 +44,7 @@ static void init_scene_menu(UIMenu *menu)
 {
     ui_menu_clear(menu, "SCENES");
     ui_menu_add_button(menu, "BALL PIT", APP_ACTION_START_BALL_PIT);
+    ui_menu_add_button(menu, "GI TEST", APP_ACTION_START_GI_TEST);
     ui_menu_add_label(menu, NULL);
     ui_menu_add_button(menu, "BACK", APP_ACTION_MAIN_MENU);
 }

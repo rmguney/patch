@@ -17,6 +17,7 @@ layout(SET_BINDING(0, 4)) uniform sampler2D gbuffer_world_pos;
 layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
+layout(SET_BINDING(0, 8)) uniform sampler2D gi_buffer;
 
 layout(push_constant) uniform Constants {
     mat4 inv_view;
@@ -74,8 +75,9 @@ void main() {
     gl_FragDepth = camera_linear_depth_to_ndc_ortho(max(g.linear_depth, pc.near_plane), pc.near_plane, pc.far_plane, is_ortho);
 
     vec3 N = normalize(g.normal);
-    /* View direction: for perspective, from surface to camera; for ortho, use negative camera forward */
     vec3 V = is_ortho ? -camera_get_forward(pc.inv_view) : normalize(pc.cam_pos - g.world_pos);
+
+    int gi_quality = pc.history_valid >> 8;
 
     /* DEBUG: Visualize world position (should be stable when camera moves) */
     if (pc.debug_mode == 10) {
@@ -106,6 +108,54 @@ void main() {
         return;
     }
 
+    /* DEBUG: GI radiance volume visualization */
+    if (pc.debug_mode == 17) {
+        if (gi_quality >= 2) {
+            vec3 gi = texture(gi_buffer, in_uv).rgb;
+            gi = aces_tonemap(gi * 1.5);
+            gi = pow(gi, vec3(1.0 / 2.2));
+            out_color = vec4(clamp(gi, 0.0, 1.0), 1.0);
+        } else {
+            out_color = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+        return;
+    }
+
+    /* DEBUG: GI contribution only (shows what GI adds to the scene) */
+    if (pc.debug_mode == 18) {
+        if (gi_quality >= 2) {
+            vec3 gi = texture(gi_buffer, in_uv).rgb;
+            vec3 gi_color = g.albedo * gi;
+            gi_color = aces_tonemap(gi_color * 1.0);
+            gi_color = pow(gi_color, vec3(1.0 / 2.2));
+            out_color = vec4(clamp(gi_color, 0.0, 1.0), 1.0);
+        } else {
+            out_color = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+        return;
+    }
+
+    /* DEBUG: GI vs ambient comparison (left=GI, right=hemisphere ambient) */
+    if (pc.debug_mode == 19) {
+        float ao = (pc.ao_quality >= 1) ? texture(ao_buffer, in_uv).r : 1.0;
+        if (in_uv.x < 0.5 && gi_quality >= 2) {
+            vec3 gi = texture(gi_buffer, in_uv).rgb;
+            vec3 gi_ambient = g.albedo * gi * ao;
+            gi_ambient = aces_tonemap(gi_ambient * 2.0);
+            gi_ambient = pow(gi_ambient, vec3(1.0 / 2.2));
+            out_color = vec4(clamp(gi_ambient, 0.0, 1.0), 1.0);
+        } else {
+            float ambient = 0.32;
+            vec3 sky_ambient = vec3(0.55, 0.68, 0.95) * (N.y * 0.5 + 0.5);
+            vec3 ground_ambient = vec3(0.38, 0.32, 0.28) * (0.5 - N.y * 0.5);
+            vec3 hemisphere = g.albedo * (sky_ambient + ground_ambient) * ambient * ao;
+            hemisphere = aces_tonemap(hemisphere * 2.0);
+            hemisphere = pow(hemisphere, vec3(1.0 / 2.2));
+            out_color = vec4(clamp(hemisphere, 0.0, 1.0), 1.0);
+        }
+        return;
+    }
+
     vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
     vec3 key_color = vec3(1.0, 0.98, 0.95);
     float key_strength = 1.0;
@@ -115,11 +165,12 @@ void main() {
 
     vec3 fill_light_dir = normalize(vec3(0.45, 0.5, -0.65));
     vec3 fill_color = vec3(0.7, 0.8, 1.0);
-    float fill_strength = 0.25;
-
     vec3 back_light_dir = normalize(vec3(-0.35, 0.28, 0.9));
     vec3 back_color = vec3(0.95, 0.9, 0.85);
-    float back_strength = 0.12;
+
+    /* When GI is active, reduce fill/back lights — GI provides indirect illumination */
+    float fill_strength = (gi_quality >= 2) ? 0.15 : 0.25;
+    float back_strength = (gi_quality >= 2) ? 0.08 : 0.12;
 
     float key_dot = max(dot(N, key_light_dir), 0.0);
     float fill_dot = max(dot(N, fill_light_dir), 0.0);
@@ -136,10 +187,19 @@ void main() {
     /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
     float ao = (pc.ao_quality >= 1) ? texture(ao_buffer, in_uv).r : 1.0;
 
-    float ambient = 0.32;
+    /* Ambient lighting: cone-traced GI replaces hemisphere ambient when active */
+    vec3 ambient_light;
+    float ambient_base = 0.32;
     vec3 sky_ambient = vec3(0.55, 0.68, 0.95) * (N.y * 0.5 + 0.5);
     vec3 ground_ambient = vec3(0.38, 0.32, 0.28) * (0.5 - N.y * 0.5);
-    vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
+    vec3 hemisphere = (sky_ambient + ground_ambient) * ambient_base;
+
+    if (gi_quality >= 2) {
+        vec3 gi_indirect = texture(gi_buffer, in_uv).rgb;
+        ambient_light = gi_indirect * ao * 0.5 + hemisphere * 0.05;
+    } else {
+        ambient_light = hemisphere * ao;
+    }
 
     vec3 H = normalize(key_light_dir + V);
     float spec_power = mix(128.0, 4.0, g.roughness * g.roughness);

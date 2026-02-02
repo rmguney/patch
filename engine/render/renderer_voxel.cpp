@@ -321,7 +321,7 @@ namespace patch
                 palette.colors[i].roughness = material_entries_[i].roughness;
                 palette.colors[i].metallic = material_entries_[i].metallic;
                 palette.colors[i].flags = material_entries_[i].flags;
-                palette.colors[i].pad = 0.0f;
+                palette.colors[i].transparency = material_entries_[i].transparency;
             }
             else
             {
@@ -332,7 +332,7 @@ namespace patch
                 palette.colors[i].roughness = 0.5f;
                 palette.colors[i].metallic = 0.0f;
                 palette.colors[i].flags = 0.0f;
-                palette.colors[i].pad = 0.0f;
+                palette.colors[i].transparency = 0.0f;
             }
         }
 

@@ -15,7 +15,7 @@
 
 static const uint8_t s_pastel_materials[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
-    MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE};
+    MAT_SKY, MAT_GREEN, MAT_RED, MAT_CLOUD, MAT_ROSE};
 static const int32_t s_pastel_count = sizeof(s_pastel_materials) / sizeof(s_pastel_materials[0]);
 
 static uint8_t pick_pastel_material(RngState *rng)

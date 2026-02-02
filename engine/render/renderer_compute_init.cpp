@@ -77,6 +77,27 @@ namespace patch
         temporal_ao_history_valid_ = false;
         ao_resources_initialized_ = true;
 
+        /* Initialize GI resources (optional — only used at Good/High presets) */
+        if (create_gi_radiance_resources() &&
+            create_gi_opacity_resources() &&
+            create_gi_output_resources() &&
+            create_gi_history_resources() &&
+            create_gi_inject_pipeline() &&
+            create_gi_mipmap_pipeline() &&
+            create_gi_cone_pipeline() &&
+            create_gi_temporal_pipeline() &&
+            create_gi_descriptor_sets())
+        {
+            gi_history_write_index_ = 0;
+            gi_resources_initialized_ = true;
+            printf("  GI resources initialized\n");
+        }
+        else
+        {
+            fprintf(stderr, "Warning: GI resource init failed, GI will be disabled\n");
+            destroy_gi_resources();
+        }
+
         /* Initialize spatial denoise resources */
         if (!create_lit_color_resources())
         {

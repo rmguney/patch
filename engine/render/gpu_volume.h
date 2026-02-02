@@ -69,7 +69,7 @@ static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
     /*
      * GPUMaterialColor: Single material entry with lighting properties.
      * Stored in palette array indexed by material ID.
-     * Layout: vec4 color (r,g,b,emissive), vec4 params (roughness, metallic, flags, pad)
+     * Layout: vec4 color (r,g,b,emissive), vec4 params (roughness, metallic, flags, transparency)
      *
      *   vec4 color:   r, g, b, emissive
      *   vec4 params:  roughness, metallic, flags, transparency
@@ -81,7 +81,7 @@ static_assert(sizeof(GPUChunkHeader) == 16, "GPUChunkHeader must be 16 bytes");
         float roughness;         /* Surface roughness (0=mirror, 1=matte) */
         float metallic;          /* Metallic factor (0=dielectric, 1=metal) */
         float flags;             /* Material flags as float for GPU */
-        float pad;               /* Padding for alignment */
+        float transparency;      /* 0=opaque, 1=fully transparent */
     } GPUMaterialColor;
 
 static_assert(sizeof(GPUMaterialColor) == 32, "GPUMaterialColor must be 32 bytes");

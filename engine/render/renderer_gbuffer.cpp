@@ -443,6 +443,15 @@ namespace patch
             PROFILE_END(PROFILE_RENDER_AO);
         }
 
+        /* Dispatch GI cone tracing after AO (only if gi_quality >= 2) */
+        if (gi_quality_ >= 2 && gi_resources_initialized_ && gi_inject_pipeline_ && deferred_total_chunks_ > 0)
+        {
+            dispatch_gi_inject();
+            dispatch_gi_mipmap();
+            dispatch_cone_gi();
+            dispatch_temporal_gi_resolve();
+        }
+
         gbuffer_compute_dispatched_ = false;
     }
 
@@ -607,7 +616,7 @@ namespace patch
         pc.camera_pos[0] = camera_position_.x;
         pc.camera_pos[1] = camera_position_.y;
         pc.camera_pos[2] = camera_position_.z;
-        pc.history_valid = 0;
+        pc.history_valid = (gi_quality_ << 8);
         pc.grid_size[0] = deferred_grid_size_[0];
         pc.grid_size[1] = deferred_grid_size_[1];
         pc.grid_size[2] = deferred_grid_size_[2];

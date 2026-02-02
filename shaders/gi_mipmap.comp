@@ -1,0 +1,48 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(push_constant) uniform GIMipmapConstants {
+    ivec3 dst_dims;
+    int _pad;
+} pc;
+
+layout(SET_BINDING(0, 0)) uniform sampler3D src_radiance;
+
+layout(r11f_g11f_b10f, SET_BINDING(1, 0)) writeonly uniform image3D dst_radiance;
+
+void main() {
+    ivec3 dst_coord = ivec3(gl_GlobalInvocationID.xyz);
+
+    if (any(greaterThanEqual(dst_coord, pc.dst_dims)))
+        return;
+
+    ivec3 src_base = dst_coord * 2;
+    ivec3 src_dims = pc.dst_dims * 2;
+
+    vec3 radiance_sum = vec3(0.0);
+    int count = 0;
+
+    for (int dz = 0; dz < 2; dz++) {
+        for (int dy = 0; dy < 2; dy++) {
+            for (int dx = 0; dx < 2; dx++) {
+                ivec3 sc = src_base + ivec3(dx, dy, dz);
+                if (any(greaterThanEqual(sc, src_dims)))
+                    continue;
+
+                vec3 uv = (vec3(sc) + 0.5) / vec3(src_dims);
+                radiance_sum += texture(src_radiance, uv).rgb;
+                count++;
+            }
+        }
+    }
+
+    vec3 avg_radiance = (count > 0) ? radiance_sum / float(count) : vec3(0.0);
+    imageStore(dst_radiance, dst_coord, vec4(avg_radiance, 0.0));
+}

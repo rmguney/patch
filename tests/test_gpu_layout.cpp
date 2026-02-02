@@ -84,7 +84,7 @@ TEST(gpu_material_color_size)
 
 TEST(gpu_material_color_layout)
 {
-    /* Two vec4s: (r,g,b,emissive) and (roughness,metallic,flags,pad) */
+    /* Two vec4s: (r,g,b,emissive) and (roughness,metallic,flags,transparency) */
     ASSERT(offsetof(GPUMaterialColor, r) == 0);
     ASSERT(offsetof(GPUMaterialColor, g) == 4);
     ASSERT(offsetof(GPUMaterialColor, b) == 8);
@@ -92,7 +92,7 @@ TEST(gpu_material_color_layout)
     ASSERT(offsetof(GPUMaterialColor, roughness) == 16);
     ASSERT(offsetof(GPUMaterialColor, metallic) == 20);
     ASSERT(offsetof(GPUMaterialColor, flags) == 24);
-    ASSERT(offsetof(GPUMaterialColor, pad) == 28);
+    ASSERT(offsetof(GPUMaterialColor, transparency) == 28);
     return 1;
 }
 
@@ -175,7 +175,7 @@ TEST(voxel_push_constants_layout)
 
 TEST(voxel_temporal_ubo_size)
 {
-    ASSERT(sizeof(patch::VoxelTemporalUBO) == 128);
+    ASSERT(sizeof(patch::VoxelTemporalUBO) == 144);
     return 1;
 }
 
@@ -184,6 +184,7 @@ TEST(voxel_temporal_ubo_layout)
     using namespace patch;
     ASSERT(offsetof(VoxelTemporalUBO, prev_view_proj) == 0);
     ASSERT(offsetof(VoxelTemporalUBO, view_proj) == 64);
+    ASSERT(offsetof(VoxelTemporalUBO, gi_quality) == 128);
     return 1;
 }
 

@@ -22,7 +22,7 @@ namespace patch
     struct MaterialEntry
     {
         float r, g, b, emissive;
-        float roughness, metallic, flags, pad;
+        float roughness, metallic, flags, transparency;
     };
 
     struct VulkanBuffer
@@ -202,6 +202,8 @@ namespace patch
         int get_denoise_quality() const { return denoise_quality_; }
         void set_taa_quality(int level);
         int get_taa_quality() const { return taa_quality_; }
+        void set_gi_quality(int level);
+        int get_gi_quality() const { return gi_quality_; }
 
         void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
         float get_interp_alpha() const { return interp_alpha_; }
@@ -398,6 +400,7 @@ namespace patch
         int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
         static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
         int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
+        bool applying_preset_ = false;               /* Guard: true while apply_preset() runs */
         int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
         int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
         int object_shadow_quality_ = QUALITY_DEFAULT_SHADOW;
@@ -406,6 +409,7 @@ namespace patch
         int lod_quality_ = QUALITY_DEFAULT_LOD;
         int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
         int taa_quality_ = QUALITY_DEFAULT_TAA;
+        int gi_quality_ = QUALITY_DEFAULT_GI;
         float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
         int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
         mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
@@ -475,6 +479,57 @@ namespace patch
         VkDescriptorSet temporal_ao_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
 
         bool ao_resources_initialized_ = false;
+
+        /* GI cone tracing compute infrastructure */
+        VkImage gi_radiance_image_ = VK_NULL_HANDLE;
+        VmaAllocation gi_radiance_memory_ = VK_NULL_HANDLE;
+        VkImageView gi_radiance_view_ = VK_NULL_HANDLE;
+        VkImageView gi_radiance_mip_views_[4] = {};
+        VkSampler gi_radiance_sampler_ = VK_NULL_HANDLE;
+        uint32_t gi_radiance_dims_[3] = {};
+
+        VkImage gi_opacity_images_[6] = {};
+        VmaAllocation gi_opacity_memory_[6] = {};
+        VkImageView gi_opacity_views_[6] = {};
+        VkSampler gi_opacity_sampler_ = VK_NULL_HANDLE;
+
+        VkImage gi_output_image_ = VK_NULL_HANDLE;
+        VmaAllocation gi_output_memory_ = VK_NULL_HANDLE;
+        VkImageView gi_output_view_ = VK_NULL_HANDLE;
+
+        VkImage gi_history_images_[2] = {};
+        VmaAllocation gi_history_memory_[2] = {};
+        VkImageView gi_history_views_[2] = {};
+        bool temporal_gi_history_valid_ = false;
+        int gi_history_write_index_ = 0;
+
+        VkPipeline gi_inject_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_inject_layout_ = VK_NULL_HANDLE;
+        VkPipeline gi_mipmap_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_mipmap_layout_ = VK_NULL_HANDLE;
+        VkPipeline gi_cone_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_cone_layout_ = VK_NULL_HANDLE;
+        VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;
+        VkPipelineLayout gi_temporal_layout_ = VK_NULL_HANDLE;
+
+        VkDescriptorPool gi_descriptor_pool_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_inject_output_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_mipmap_src_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_mipmap_dst_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_cone_input_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSetLayout gi_cone_output_layout_ = VK_NULL_HANDLE;
+
+        VkDescriptorSet gi_inject_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet gi_inject_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        static constexpr uint32_t GI_MIP_LEVELS = 4;
+        VkDescriptorSet gi_mipmap_src_sets_[MAX_FRAMES_IN_FLIGHT][GI_MIP_LEVELS - 1] = {};
+        VkDescriptorSet gi_mipmap_dst_sets_[MAX_FRAMES_IN_FLIGHT][GI_MIP_LEVELS - 1] = {};
+        VkDescriptorSet gi_cone_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet gi_cone_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet gi_temporal_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet gi_temporal_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
+        bool gi_resources_initialized_ = false;
 
         /* Spatial denoise compute infrastructure */
         VkPipeline spatial_denoise_pipeline_ = VK_NULL_HANDLE;
@@ -763,6 +818,23 @@ namespace patch
         void dispatch_ao_compute();
         void dispatch_temporal_ao_resolve();
         void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
+
+        /* GI cone tracing compute infrastructure */
+        bool create_gi_radiance_resources();
+        bool create_gi_opacity_resources();
+        bool create_gi_output_resources();
+        bool create_gi_history_resources();
+        bool create_gi_inject_pipeline();
+        bool create_gi_mipmap_pipeline();
+        bool create_gi_cone_pipeline();
+        bool create_gi_temporal_pipeline();
+        bool create_gi_descriptor_sets();
+        void destroy_gi_resources();
+        void dispatch_gi_inject();
+        void dispatch_gi_mipmap();
+        void dispatch_cone_gi();
+        void dispatch_temporal_gi_resolve();
+        void update_deferred_gi_buffer_descriptor(uint32_t frame_index, VkImageView gi_view);
 
         /* Spatial denoise compute infrastructure */
         bool create_lit_color_resources();

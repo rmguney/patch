@@ -190,7 +190,7 @@ namespace patch
 
     bool Renderer::create_deferred_lighting_pipeline()
     {
-        VkDescriptorSetLayoutBinding bindings[8]{};
+        VkDescriptorSetLayoutBinding bindings[9]{};
 
         for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
         {
@@ -215,9 +215,14 @@ namespace patch
         bindings[7].descriptorCount = 1;
         bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        bindings[8].binding = 8; /* gi_buffer from cone GI pass */
+        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bindings[8].descriptorCount = 1;
+        bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         VkDescriptorSetLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layout_info.bindingCount = 8;
+        layout_info.bindingCount = 9;
         layout_info.pBindings = bindings;
 
         if (vkCreateDescriptorSetLayout(device_, &layout_info, nullptr, &deferred_lighting_descriptor_layout_) != VK_SUCCESS)
@@ -492,7 +497,7 @@ namespace patch
 
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8; /* gbuffer(5) + shadow + blue_noise + ao */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 9; /* gbuffer(5) + shadow + blue_noise + ao + gi */
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
@@ -549,7 +554,12 @@ namespace patch
             ao_buffer_info.imageView = ao_output_view_ ? ao_output_view_ : gbuffer_views_[0];
             ao_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkWriteDescriptorSet writes[8]{};
+            VkDescriptorImageInfo gi_buffer_info{};
+            gi_buffer_info.sampler = gbuffer_sampler_;
+            gi_buffer_info.imageView = gbuffer_views_[0]; /* placeholder until GI pass provides real data */
+            gi_buffer_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkWriteDescriptorSet writes[9]{};
 
             for (uint32_t g = 0; g < GBUFFER_COUNT; g++)
             {
@@ -582,7 +592,14 @@ namespace patch
             writes[7].descriptorCount = 1;
             writes[7].pImageInfo = &ao_buffer_info;
 
-            vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
+            writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[8].dstSet = deferred_lighting_descriptor_sets_[i];
+            writes[8].dstBinding = 8; /* gi_buffer from cone GI pass */
+            writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[8].descriptorCount = 1;
+            writes[8].pImageInfo = &gi_buffer_info;
+
+            vkUpdateDescriptorSets(device_, 9, writes, 0, nullptr);
         }
 
         return true;

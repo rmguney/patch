@@ -1021,4 +1021,323 @@ namespace patch
                              0, 0, nullptr, 0, nullptr, 1, &present_barrier);
     }
 
+    void Renderer::dispatch_gi_inject()
+    {
+        if (!gi_resources_initialized_ || gi_quality_ < 2 || !gi_inject_pipeline_ || !gi_descriptor_pool_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        /* Transition radiance mip0 + 6 opacity images to GENERAL for compute write */
+        VkImageMemoryBarrier barriers[7]{};
+        barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barriers[0].image = gi_radiance_image_;
+        barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, GI_MIP_LEVELS, 0, 1};
+        barriers[0].srcAccessMask = 0;
+        barriers[0].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        for (int d = 0; d < 6; d++)
+        {
+            barriers[d + 1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[d + 1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[d + 1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[d + 1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[d + 1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[d + 1].image = gi_opacity_images_[d];
+            barriers[d + 1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            barriers[d + 1].srcAccessMask = 0;
+            barriers[d + 1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        }
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 7, barriers);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_inject_pipeline_);
+
+        VkDescriptorSet sets[2] = {gi_inject_input_sets_[current_frame_], gi_inject_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_inject_layout_, 0, 2, sets, 0, nullptr);
+
+        float radiance_voxel_size = (deferred_bounds_max_[0] - deferred_bounds_min_[0]) / static_cast<float>(gi_radiance_dims_[0]);
+
+        GIInjectPushConstants pc{};
+        pc.bounds_min[0] = deferred_bounds_min_[0];
+        pc.bounds_min[1] = deferred_bounds_min_[1];
+        pc.bounds_min[2] = deferred_bounds_min_[2];
+        pc.voxel_size = deferred_voxel_size_;
+        pc.bounds_max[0] = deferred_bounds_max_[0];
+        pc.bounds_max[1] = deferred_bounds_max_[1];
+        pc.bounds_max[2] = deferred_bounds_max_[2];
+        pc.radiance_voxel_size = radiance_voxel_size;
+        pc.grid_size[0] = deferred_grid_size_[0];
+        pc.grid_size[1] = deferred_grid_size_[1];
+        pc.grid_size[2] = deferred_grid_size_[2];
+        pc.total_chunks = deferred_total_chunks_;
+        pc.chunks_dim[0] = deferred_chunks_dim_[0];
+        pc.chunks_dim[1] = deferred_chunks_dim_[1];
+        pc.chunks_dim[2] = deferred_chunks_dim_[2];
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.radiance_dims[0] = static_cast<int32_t>(gi_radiance_dims_[0]);
+        pc.radiance_dims[1] = static_cast<int32_t>(gi_radiance_dims_[1]);
+        pc.radiance_dims[2] = static_cast<int32_t>(gi_radiance_dims_[2]);
+        pc.gi_quality = gi_quality_;
+        /* Key light direction (normalized) - matches deferred_lighting.frag */
+        float kd[3] = {-0.6f, 0.9f, 0.35f};
+        float kd_len = sqrtf(kd[0] * kd[0] + kd[1] * kd[1] + kd[2] * kd[2]);
+        pc.key_light_dir[0] = kd[0] / kd_len;
+        pc.key_light_dir[1] = kd[1] / kd_len;
+        pc.key_light_dir[2] = kd[2] / kd_len;
+        pc.key_light_strength = 1.0f;
+        pc.key_light_color[0] = 1.0f;
+        pc.key_light_color[1] = 0.98f;
+        pc.key_light_color[2] = 0.95f;
+
+        vkCmdPushConstants(cmd, gi_inject_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        /* Dispatch at opacity resolution (radiance_dims / 2), workgroup 4x4x4 */
+        uint32_t opacity_w = gi_radiance_dims_[0] / 2;
+        uint32_t opacity_h = gi_radiance_dims_[1] / 2;
+        uint32_t opacity_d = gi_radiance_dims_[2] / 2;
+        vkCmdDispatch(cmd, (opacity_w + 3) / 4, (opacity_h + 3) / 4, (opacity_d + 3) / 4);
+
+        /* Transition radiance + opacity to SHADER_READ for mipmap pass */
+        for (int i = 0; i < 7; i++)
+        {
+            barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        }
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 7, barriers);
+    }
+
+    void Renderer::dispatch_gi_mipmap()
+    {
+        if (!gi_resources_initialized_ || gi_quality_ < 2 || !gi_mipmap_pipeline_ || !gi_descriptor_pool_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_mipmap_pipeline_);
+
+        for (uint32_t mip = 0; mip < GI_MIP_LEVELS - 1; mip++)
+        {
+            uint32_t dst_w = gi_radiance_dims_[0] >> (mip + 1);
+            uint32_t dst_h = gi_radiance_dims_[1] >> (mip + 1);
+            uint32_t dst_d = gi_radiance_dims_[2] >> (mip + 1);
+            if (dst_w == 0) dst_w = 1;
+            if (dst_h == 0) dst_h = 1;
+            if (dst_d == 0) dst_d = 1;
+
+            /* Transition dst mip to GENERAL for write */
+            VkImageMemoryBarrier mip_barrier{};
+            mip_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            mip_barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            mip_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            mip_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mip_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mip_barrier.image = gi_radiance_image_;
+            mip_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip + 1, 1, 0, 1};
+            mip_barrier.srcAccessMask = 0;
+            mip_barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+            vkCmdPipelineBarrier(cmd,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &mip_barrier);
+
+            VkDescriptorSet sets[2] = {
+                gi_mipmap_src_sets_[current_frame_][mip],
+                gi_mipmap_dst_sets_[current_frame_][mip]};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_mipmap_layout_, 0, 2, sets, 0, nullptr);
+
+            GIMipmapPushConstants mpc{};
+            mpc.dst_dims[0] = static_cast<int32_t>(dst_w);
+            mpc.dst_dims[1] = static_cast<int32_t>(dst_h);
+            mpc.dst_dims[2] = static_cast<int32_t>(dst_d);
+
+            vkCmdPushConstants(cmd, gi_mipmap_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mpc), &mpc);
+
+            vkCmdDispatch(cmd, (dst_w + 3) / 4, (dst_h + 3) / 4, (dst_d + 3) / 4);
+
+            /* Transition dst mip to SHADER_READ for next level */
+            mip_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            mip_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            mip_barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            mip_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            vkCmdPipelineBarrier(cmd,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &mip_barrier);
+        }
+    }
+
+    void Renderer::dispatch_cone_gi()
+    {
+        if (!gi_resources_initialized_ || gi_quality_ < 2 || !gi_cone_pipeline_ || !gi_descriptor_pool_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        /* Transition GI output to GENERAL for compute write */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = gi_output_image_;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_cone_pipeline_);
+
+        VkDescriptorSet sets[2] = {gi_cone_input_sets_[current_frame_], gi_cone_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_cone_layout_, 0, 2, sets, 0, nullptr);
+
+        float bounds_size_x = deferred_bounds_max_[0] - deferred_bounds_min_[0];
+        float radiance_voxel_size = bounds_size_x / static_cast<float>(gi_radiance_dims_[0]);
+
+        GIConePushConstants pc{};
+        pc.bounds_min[0] = deferred_bounds_min_[0];
+        pc.bounds_min[1] = deferred_bounds_min_[1];
+        pc.bounds_min[2] = deferred_bounds_min_[2];
+        pc.voxel_size = deferred_voxel_size_;
+        pc.bounds_max[0] = deferred_bounds_max_[0];
+        pc.bounds_max[1] = deferred_bounds_max_[1];
+        pc.bounds_max[2] = deferred_bounds_max_[2];
+        pc.radiance_voxel_size = radiance_voxel_size;
+        pc.radiance_dims[0] = static_cast<int32_t>(gi_radiance_dims_[0]);
+        pc.radiance_dims[1] = static_cast<int32_t>(gi_radiance_dims_[1]);
+        pc.radiance_dims[2] = static_cast<int32_t>(gi_radiance_dims_[2]);
+        pc.frame_count = static_cast<int32_t>(total_frame_count_);
+        pc.cam_pos[0] = camera_position_.x;
+        pc.cam_pos[1] = camera_position_.y;
+        pc.cam_pos[2] = camera_position_.z;
+        pc.gi_quality = gi_quality_;
+        pc.screen_width = static_cast<int32_t>(swapchain_extent_.width);
+        pc.screen_height = static_cast<int32_t>(swapchain_extent_.height);
+
+        vkCmdPushConstants(cmd, gi_cone_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition GI output to SHADER_READ for temporal resolve */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+
+    void Renderer::dispatch_temporal_gi_resolve()
+    {
+        if (!gi_resources_initialized_ || gi_quality_ < 2 || !gi_temporal_pipeline_ ||
+            !gi_history_views_[0] || !gi_history_views_[1] || !gi_descriptor_pool_)
+            return;
+
+        VkCommandBuffer cmd = command_buffers_[current_frame_];
+
+        const int write_index = gi_history_write_index_ & 1;
+        const int read_index = 1 - write_index;
+
+        /* Transition write history image to GENERAL */
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = gi_history_images_[write_index];
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        /* Update history descriptors for this frame */
+        VkDescriptorImageInfo gi_history_info{};
+        gi_history_info.sampler = gbuffer_sampler_;
+        gi_history_info.imageView = gi_history_views_[read_index];
+        gi_history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet history_write{};
+        history_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        history_write.dstSet = gi_temporal_input_sets_[current_frame_];
+        history_write.dstBinding = 4;
+        history_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        history_write.descriptorCount = 1;
+        history_write.pImageInfo = &gi_history_info;
+
+        VkDescriptorImageInfo out_info{};
+        out_info.imageView = gi_history_views_[write_index];
+        out_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        VkWriteDescriptorSet out_write{};
+        out_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        out_write.dstSet = gi_temporal_output_sets_[current_frame_];
+        out_write.dstBinding = 0;
+        out_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        out_write.descriptorCount = 1;
+        out_write.pImageInfo = &out_info;
+
+        VkWriteDescriptorSet writes[2] = {history_write, out_write};
+        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_temporal_pipeline_);
+        VkDescriptorSet sets[2] = {gi_temporal_input_sets_[current_frame_], gi_temporal_output_sets_[current_frame_]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gi_temporal_layout_, 0, 2, sets, 0, nullptr);
+
+        VoxelPushConstants vpc{};
+        vpc.frame_count = static_cast<int32_t>(total_frame_count_);
+        vpc.history_valid = temporal_gi_history_valid_ ? 1 : 0;
+
+        vkCmdPushConstants(cmd, gi_temporal_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(vpc), &vpc);
+
+        uint32_t group_x = (swapchain_extent_.width + 7) / 8;
+        uint32_t group_y = (swapchain_extent_.height + 7) / 8;
+        vkCmdDispatch(cmd, group_x, group_y, 1);
+
+        /* Transition resolved GI to SHADER_READ for lighting pass */
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        update_deferred_gi_buffer_descriptor(current_frame_, gi_history_views_[write_index]);
+
+        temporal_gi_history_valid_ = true;
+        gi_history_write_index_ = read_index;
+    }
+
 }

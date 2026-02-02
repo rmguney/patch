@@ -1,0 +1,109 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Constants {
+    mat4 inv_view;
+    mat4 inv_projection;
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float chunk_size;
+    vec3 camera_pos;
+    int history_valid;
+    ivec3 grid_size;
+    int total_chunks;
+    ivec3 chunks_dim;
+    int frame_count;
+    int object_shadow_quality;
+    int debug_mode;
+    int is_orthographic;
+    int max_steps;
+    float near_plane;
+    float far_plane;
+    int object_count;
+    int shadow_quality;
+    int shadow_contact;
+    int ao_quality;
+    int lod_quality;
+    int taa_quality;
+} pc;
+
+layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
+layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
+layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
+layout(SET_BINDING(0, 3)) uniform sampler2D gi_current;
+layout(SET_BINDING(0, 4)) uniform sampler2D gi_history;
+
+layout(r11f_g11f_b10f, SET_BINDING(1, 0)) writeonly uniform image2D out_gi_resolved;
+
+const float HISTORY_BLEND_MAX = 0.80;
+const float HISTORY_BLEND_MIN = 0.50;
+const float DEPTH_REJECT_THRESHOLD = 0.02;
+const float NORMAL_REJECT_THRESHOLD = 0.9;
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_gi_resolved);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
+
+    vec3 current_gi = texelFetch(gi_current, pixel, 0).rgb;
+
+    if (pc.history_valid == 0) {
+        imageStore(out_gi_resolved, pixel, vec4(current_gi, 0.0));
+        return;
+    }
+
+    vec2 motion = texture(gbuffer_motion_vector, uv).xy;
+    vec2 prev_uv = uv + motion;
+
+    if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)))) {
+        imageStore(out_gi_resolved, pixel, vec4(current_gi, 0.0));
+        return;
+    }
+
+    float current_depth = texelFetch(gbuffer_linear_depth, pixel, 0).r;
+    float reproj_depth = texture(gbuffer_linear_depth, prev_uv).r;
+    float depth_diff = abs(current_depth - reproj_depth) / max(current_depth, 0.001);
+    if (depth_diff > DEPTH_REJECT_THRESHOLD) {
+        imageStore(out_gi_resolved, pixel, vec4(current_gi, 0.0));
+        return;
+    }
+
+    vec3 current_normal = texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0;
+    vec3 reproj_normal = texture(gbuffer_normal, prev_uv).xyz * 2.0 - 1.0;
+    if (dot(current_normal, reproj_normal) < NORMAL_REJECT_THRESHOLD) {
+        imageStore(out_gi_resolved, pixel, vec4(current_gi, 0.0));
+        return;
+    }
+
+    float motion_len = length(motion * vec2(size));
+    float velocity_weight = clamp(motion_len / 4.0, 0.0, 1.0);
+    float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
+
+    vec3 history_gi = texture(gi_history, prev_uv).rgb;
+
+    vec3 neighborhood_min = current_gi;
+    vec3 neighborhood_max = current_gi;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            vec3 s = texelFetch(gi_current, pixel + ivec2(dx, dy), 0).rgb;
+            neighborhood_min = min(neighborhood_min, s);
+            neighborhood_max = max(neighborhood_max, s);
+        }
+    }
+    history_gi = clamp(history_gi, neighborhood_min, neighborhood_max);
+
+    vec3 resolved = mix(current_gi, history_gi, history_blend);
+    imageStore(out_gi_resolved, pixel, vec4(resolved, 0.0));
+}

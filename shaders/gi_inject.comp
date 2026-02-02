@@ -1,0 +1,275 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(push_constant) uniform GIInjectConstants {
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float radiance_voxel_size;
+    ivec3 grid_size;
+    int total_chunks;
+    ivec3 chunks_dim;
+    int frame_count;
+    ivec3 radiance_dims;
+    int gi_quality;
+    vec3 key_light_dir;
+    float key_light_strength;
+    vec3 key_light_color;
+    float _pad;
+} pc;
+
+layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
+    uint voxel_data[];
+};
+
+layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
+    uvec4 chunk_headers[];
+};
+
+layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
+
+layout(std140, SET_BINDING(0, 3)) uniform MaterialPalette {
+    vec4 materials[512];
+};
+
+layout(r11f_g11f_b10f, SET_BINDING(1, 0)) writeonly uniform image3D radiance_out;
+layout(r8, SET_BINDING(1, 1)) writeonly uniform image3D opacity_pos_x;
+layout(r8, SET_BINDING(1, 2)) writeonly uniform image3D opacity_neg_x;
+layout(r8, SET_BINDING(1, 3)) writeonly uniform image3D opacity_pos_y;
+layout(r8, SET_BINDING(1, 4)) writeonly uniform image3D opacity_neg_y;
+layout(r8, SET_BINDING(1, 5)) writeonly uniform image3D opacity_pos_z;
+layout(r8, SET_BINDING(1, 6)) writeonly uniform image3D opacity_neg_z;
+
+const int CHUNK_SIZE = 32;
+const int CHUNK_UINT_COUNT = 8192;
+const uint MATERIAL_STRIDE = 2u;
+
+uint gi_sample_material(ivec3 p) {
+    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, pc.grid_size)))
+        return 0u;
+
+    ivec3 chunk_pos = p / CHUNK_SIZE;
+    int chunk_idx = chunk_pos.x + chunk_pos.y * pc.chunks_dim.x +
+                    chunk_pos.z * pc.chunks_dim.x * pc.chunks_dim.y;
+
+    ivec3 local = p - chunk_pos * CHUNK_SIZE;
+    int local_idx = local.x + local.y * CHUNK_SIZE + local.z * CHUNK_SIZE * CHUNK_SIZE;
+
+    int chunk_data_offset = chunk_idx * CHUNK_UINT_COUNT;
+    int uint_idx = local_idx / 4;
+    int byte_idx = local_idx % 4;
+
+    uint packed = voxel_data[chunk_data_offset + uint_idx];
+    return (packed >> (byte_idx * 8)) & 0xFFu;
+}
+
+bool gi_is_empty(ivec3 p) {
+    return gi_sample_material(p) == 0u;
+}
+
+bool gi_is_surface(ivec3 p) {
+    if (gi_sample_material(p) == 0u) return false;
+    return gi_is_empty(p + ivec3(1,0,0)) || gi_is_empty(p + ivec3(-1,0,0)) ||
+           gi_is_empty(p + ivec3(0,1,0)) || gi_is_empty(p + ivec3(0,-1,0)) ||
+           gi_is_empty(p + ivec3(0,0,1)) || gi_is_empty(p + ivec3(0,0,-1));
+}
+
+vec3 gi_compute_surface_normal(ivec3 terrain_pos) {
+    vec3 normal = vec3(0.0);
+    if (gi_is_empty(terrain_pos + ivec3( 1, 0, 0))) normal += vec3( 1.0, 0.0, 0.0);
+    if (gi_is_empty(terrain_pos + ivec3(-1, 0, 0))) normal += vec3(-1.0, 0.0, 0.0);
+    if (gi_is_empty(terrain_pos + ivec3( 0, 1, 0))) normal += vec3( 0.0, 1.0, 0.0);
+    if (gi_is_empty(terrain_pos + ivec3( 0,-1, 0))) normal += vec3( 0.0,-1.0, 0.0);
+    if (gi_is_empty(terrain_pos + ivec3( 0, 0, 1))) normal += vec3( 0.0, 0.0, 1.0);
+    if (gi_is_empty(terrain_pos + ivec3( 0, 0,-1))) normal += vec3( 0.0, 0.0,-1.0);
+    float len = length(normal);
+    return len > 0.001 ? normal / len : vec3(0.0, 1.0, 0.0);
+}
+
+bool gi_sample_occupancy(ivec3 voxel_pos) {
+    ivec3 shadow_pos = voxel_pos >> 1;
+    ivec3 shadow_dim = (pc.grid_size + 1) >> 1;
+
+    if (any(lessThan(shadow_pos, ivec3(0))) || any(greaterThanEqual(shadow_pos, shadow_dim)))
+        return false;
+
+    uint packed = texelFetch(shadow_volume_tex, shadow_pos, 0).r;
+    int bit_idx = (voxel_pos.x & 1) + ((voxel_pos.y & 1) << 1) + ((voxel_pos.z & 1) << 2);
+    return (packed & (1u << bit_idx)) != 0u;
+}
+
+bool gi_trace_shadow(vec3 world_pos, vec3 light_dir, int steps) {
+    vec3 step = light_dir * pc.voxel_size * 1.5;
+    vec3 pos = world_pos + light_dir * pc.voxel_size;
+
+    for (int i = 0; i < steps; i++) {
+        ivec3 grid_pos = ivec3(floor((pos - pc.bounds_min) / pc.voxel_size));
+        if (any(lessThan(grid_pos, ivec3(0))) || any(greaterThanEqual(grid_pos, pc.grid_size))) {
+            return false;
+        }
+        if (gi_sample_occupancy(grid_pos)) {
+            return true;
+        }
+        pos += step;
+    }
+    return false;
+}
+
+/*
+ * Find a surface voxel within the terrain block covered by a radiance voxel.
+ * Radiance voxels are 4x terrain voxels wide. Walls may be only 3 voxels thick,
+ * so the center sample often misses surfaces. We sample center + 6 face centers.
+ */
+struct SurfaceHit {
+    uint mat_id;
+    ivec3 pos;
+    bool found;
+};
+
+SurfaceHit find_surface_in_block(vec3 world_pos) {
+    SurfaceHit hit;
+    hit.found = false;
+    hit.mat_id = 0u;
+
+    float vs = pc.voxel_size;
+    vec3 rvs3 = (pc.bounds_max - pc.bounds_min) / vec3(pc.radiance_dims);
+
+    ivec3 center = ivec3(floor((world_pos - pc.bounds_min) / vs));
+    center = clamp(center, ivec3(0), pc.grid_size - 1);
+
+    if (gi_is_surface(center)) {
+        hit.found = true;
+        hit.mat_id = gi_sample_material(center);
+        hit.pos = center;
+        return hit;
+    }
+
+    float max_rvs = max(rvs3.x, max(rvs3.y, rvs3.z));
+    int half_span = max(int(max_rvs / vs * 0.5), 1);
+    ivec3 offsets[6] = ivec3[6](
+        ivec3( half_span, 0, 0), ivec3(-half_span, 0, 0),
+        ivec3(0,  half_span, 0), ivec3(0, -half_span, 0),
+        ivec3(0, 0,  half_span), ivec3(0, 0, -half_span)
+    );
+
+    for (int i = 0; i < 6; i++) {
+        ivec3 p = clamp(center + offsets[i], ivec3(0), pc.grid_size - 1);
+        if (gi_is_surface(p)) {
+            hit.found = true;
+            hit.mat_id = gi_sample_material(p);
+            hit.pos = p;
+            return hit;
+        }
+    }
+
+    uint cmat = gi_sample_material(center);
+    if (cmat != 0u) {
+        hit.found = false;
+        hit.mat_id = cmat;
+        hit.pos = center;
+    }
+    return hit;
+}
+
+vec3 compute_radiance(uint mat_id, ivec3 terrain_pos, vec3 world_pos, bool is_surface) {
+    vec4 mat_color = materials[mat_id * MATERIAL_STRIDE];
+    vec3 albedo = mat_color.rgb;
+    float emissive = mat_color.a;
+
+    vec3 radiance = vec3(0.0);
+
+    if (is_surface) {
+        vec3 surface_normal = gi_compute_surface_normal(terrain_pos);
+        float ndotl = max(dot(surface_normal, pc.key_light_dir), 0.0);
+
+        bool in_shadow = gi_trace_shadow(world_pos, pc.key_light_dir, 20);
+        float shadow = in_shadow ? 0.0 : 1.0;
+
+        radiance += albedo * pc.key_light_color * ndotl * shadow * pc.key_light_strength;
+
+        vec3 sky_color = vec3(0.55, 0.68, 0.95);
+        vec3 ground_color = vec3(0.38, 0.32, 0.28);
+        float sky_weight = surface_normal.y * 0.5 + 0.5;
+        vec3 hemisphere = mix(ground_color, sky_color, sky_weight);
+        radiance += albedo * hemisphere * 0.15;
+    } else {
+        radiance += albedo * 0.12;
+    }
+
+    radiance += albedo * clamp(emissive, 0.0, 1.0) * 2.0;
+
+    return radiance;
+}
+
+void main() {
+    ivec3 opacity_coord = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 opacity_dims = pc.radiance_dims / 2;
+
+    if (any(greaterThanEqual(opacity_coord, opacity_dims)))
+        return;
+
+    ivec3 base_radiance = opacity_coord * 2;
+    vec3 radiance_vs3 = (pc.bounds_max - pc.bounds_min) / vec3(pc.radiance_dims);
+
+    float voxel_opacity[8];
+    int occ_count = 0;
+
+    for (int dz = 0; dz < 2; dz++) {
+        for (int dy = 0; dy < 2; dy++) {
+            for (int dx = 0; dx < 2; dx++) {
+                int idx = dx + dy * 2 + dz * 4;
+                ivec3 rc = base_radiance + ivec3(dx, dy, dz);
+
+                if (any(greaterThanEqual(rc, pc.radiance_dims))) {
+                    voxel_opacity[idx] = 0.0;
+                    imageStore(radiance_out, rc, vec4(0.0));
+                    continue;
+                }
+
+                vec3 world_pos = pc.bounds_min + (vec3(rc) + 0.5) * radiance_vs3;
+
+                SurfaceHit hit = find_surface_in_block(world_pos);
+
+                if (hit.mat_id == 0u) {
+                    voxel_opacity[idx] = 0.0;
+                    imageStore(radiance_out, rc, vec4(0.0));
+                    continue;
+                }
+
+                float mat_transparency = materials[hit.mat_id * MATERIAL_STRIDE + 1u].w;
+                voxel_opacity[idx] = 1.0 - clamp(mat_transparency, 0.0, 1.0);
+                occ_count++;
+
+                vec3 radiance = compute_radiance(hit.mat_id, hit.pos, world_pos, hit.found);
+                imageStore(radiance_out, rc, vec4(radiance, 0.0));
+            }
+        }
+    }
+
+    /* +X face: voxels (1,*,*) */
+    float opx = (voxel_opacity[1] + voxel_opacity[3] + voxel_opacity[5] + voxel_opacity[7]) * 0.25;
+    /* -X face: voxels (0,*,*) */
+    float onx = (voxel_opacity[0] + voxel_opacity[2] + voxel_opacity[4] + voxel_opacity[6]) * 0.25;
+    /* +Y face: voxels (*,1,*) */
+    float opy = (voxel_opacity[2] + voxel_opacity[3] + voxel_opacity[6] + voxel_opacity[7]) * 0.25;
+    /* -Y face: voxels (*,0,*) */
+    float ony = (voxel_opacity[0] + voxel_opacity[1] + voxel_opacity[4] + voxel_opacity[5]) * 0.25;
+    /* +Z face: voxels (*,*,1) */
+    float opz = (voxel_opacity[4] + voxel_opacity[5] + voxel_opacity[6] + voxel_opacity[7]) * 0.25;
+    /* -Z face: voxels (*,*,0) */
+    float onz = (voxel_opacity[0] + voxel_opacity[1] + voxel_opacity[2] + voxel_opacity[3]) * 0.25;
+
+    imageStore(opacity_pos_x, opacity_coord, vec4(opx));
+    imageStore(opacity_neg_x, opacity_coord, vec4(onx));
+    imageStore(opacity_pos_y, opacity_coord, vec4(opy));
+    imageStore(opacity_neg_y, opacity_coord, vec4(ony));
+    imageStore(opacity_pos_z, opacity_coord, vec4(opz));
+    imageStore(opacity_neg_z, opacity_coord, vec4(onz));
+}

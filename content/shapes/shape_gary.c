@@ -2,7 +2,7 @@
 #include "content/materials.h"
 
 #define O MAT_ORANGE
-#define S MAT_CORAL
+#define S MAT_RED
 #define W MAT_CLOUD
 #define B MAT_DIRT
 #define G MAT_MINT

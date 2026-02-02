@@ -208,11 +208,12 @@ static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
 #define MAT_MINT 8
 #define MAT_LAVENDER 9
 #define MAT_SKY 10
-#define MAT_TEAL 11
-#define MAT_CORAL 12
+#define MAT_GREEN 11
+#define MAT_RED 12
 #define MAT_CLOUD 13
 #define MAT_ROSE 14
 #define MAT_ORANGE 15
+#define MAT_GLASS 16
 
 #ifdef __cplusplus
 }

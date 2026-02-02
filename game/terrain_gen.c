@@ -17,7 +17,7 @@
 
 static const uint8_t PASTEL_MATERIALS[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
-    MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE};
+    MAT_SKY, MAT_GREEN, MAT_RED, MAT_CLOUD, MAT_ROSE};
 static const int32_t PASTEL_COUNT = sizeof(PASTEL_MATERIALS) / sizeof(PASTEL_MATERIALS[0]);
 
 static float noise_hash(int32_t x, int32_t z, uint32_t seed)

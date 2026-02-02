@@ -380,8 +380,9 @@ bool draw_debug_overlay(patch::Renderer &renderer,
     const char *mode_names[] = {
         "Normal", "Normals", "Albedo", "Depth", "UVW", "Material", "Roughness",
         "Metallic", "ObjectID", "---", "WorldPos", "ShadowUVW", "Shadow", "AO",
-        "DenoiseRaw", "DenoiseDiff", "Specular+Env"};
-    const char *mode_name = (info->terrain_debug_mode >= 0 && info->terrain_debug_mode < 17)
+        "DenoiseRaw", "DenoiseDiff", "Specular+Env", "GI Radiance", "GI Contribution",
+        "GI vs Ambient"};
+    const char *mode_name = (info->terrain_debug_mode >= 0 && info->terrain_debug_mode < 20)
                                 ? mode_names[info->terrain_debug_mode]
                                 : "?";
     snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d (%s)  DRAWS: %d",

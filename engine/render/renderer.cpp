@@ -48,6 +48,7 @@ namespace patch
         destroy_voxel_object_resources();
         destroy_compute_raymarching_resources();
         destroy_shadow_volume_resources();
+        destroy_gi_resources();
 
         destroy_buffer(&voxel_data_buffer_);
         destroy_buffer(&voxel_headers_buffer_);
@@ -102,26 +103,43 @@ namespace patch
     void Renderer::set_shadow_quality(int level)
     {
         shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
     void Renderer::set_object_shadow_quality(int level)
     {
         object_shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
     void Renderer::set_shadow_contact_hardening(bool enabled)
     {
         shadow_contact_hardening_ = enabled;
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
     void Renderer::set_ao_quality(int level)
     {
         ao_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
     void Renderer::set_lod_quality(int level)
     {
         lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
+    }
+
+    void Renderer::set_gi_quality(int level)
+    {
+        gi_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
+        if (!applying_preset_)
+            target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
     void Renderer::set_adaptive_quality(bool enabled)
@@ -153,13 +171,16 @@ namespace patch
     {
         if (preset < 0 || preset > QUALITY_PRESET_HIGH)
             return;
-        shadow_quality_ = QUALITY_PRESETS[preset].shadow;
-        object_shadow_quality_ = QUALITY_PRESETS[preset].shadow;
-        shadow_contact_hardening_ = QUALITY_PRESETS[preset].shadow_contact != 0;
-        ao_quality_ = QUALITY_PRESETS[preset].ao;
-        lod_quality_ = QUALITY_PRESETS[preset].lod;
-        denoise_quality_ = QUALITY_PRESETS[preset].denoise;
-        taa_quality_ = QUALITY_PRESETS[preset].taa;
+        applying_preset_ = true;
+        set_shadow_quality(QUALITY_PRESETS[preset].shadow);
+        set_object_shadow_quality(QUALITY_PRESETS[preset].shadow);
+        set_shadow_contact_hardening(QUALITY_PRESETS[preset].shadow_contact != 0);
+        set_ao_quality(QUALITY_PRESETS[preset].ao);
+        set_lod_quality(QUALITY_PRESETS[preset].lod);
+        set_denoise_quality(QUALITY_PRESETS[preset].denoise);
+        set_taa_quality(QUALITY_PRESETS[preset].taa);
+        set_gi_quality(QUALITY_PRESETS[preset].gi);
+        applying_preset_ = false;
     }
 
     void Renderer::update_adaptive_quality(float frame_time_ms)
@@ -478,6 +499,7 @@ namespace patch
 
             destroy_timestamp_query_pool();
             destroy_voxel_object_resources();
+            destroy_gi_resources();
             destroy_compute_raymarching_resources();
             destroy_gbuffer_resources();
             destroy_shadow_volume_resources();
@@ -588,6 +610,8 @@ namespace patch
             VoxelTemporalUBO ubo{};
             ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
             ubo.view_proj = view_proj;
+            ubo.gi_quality = gi_quality_;
+            ubo._reserved[0] = ubo._reserved[1] = ubo._reserved[2] = 0;
             memcpy(voxel_temporal_ubo_mapped_[current_frame_], &ubo, sizeof(VoxelTemporalUBO));
         }
 

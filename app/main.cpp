@@ -7,6 +7,7 @@
 #include "app/app_ui.h"
 #include "app/app_debug.h"
 #include "game/ball_pit.h"
+#include "game/gi_test.h"
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
 #include "engine/sim/detach.h"
@@ -27,7 +28,7 @@ static constexpr float MAX_FRAME_DT = 0.1f;
 static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
 static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
 static constexpr float FREE_CAM_MOVE_SPEED = 20.0f;
-static constexpr int TERRAIN_DEBUG_MODE_COUNT = 17;
+static constexpr int TERRAIN_DEBUG_MODE_COUNT = 20;
 
 static BallPitParams params_from_settings(const AppSettings *s)
 {
@@ -51,7 +52,8 @@ enum class AppState
 enum class ActiveScene
 {
     None,
-    BallPit
+    BallPit,
+    GITest
 };
 
 int patch_main(int argc, char *argv[])
@@ -155,7 +157,7 @@ int patch_main(int argc, char *argv[])
             materials[i].roughness = mat->roughness;
             materials[i].metallic = mat->metallic;
             materials[i].flags = static_cast<float>(mat->flags);
-            materials[i].pad = 0.0f;
+            materials[i].transparency = mat->transparency;
         }
         renderer.set_material_palette_full(materials, g_material_count);
     }
@@ -180,6 +182,11 @@ int patch_main(int argc, char *argv[])
             active_scene = ball_pit_scene_create(desc->bounds, desc->voxel_size, nullptr);
             current_scene = ActiveScene::BallPit;
             break;
+        case SCENE_TYPE_GI_TEST:
+            desc = scene_get_descriptor(SCENE_TYPE_GI_TEST);
+            active_scene = gi_test_scene_create(desc->bounds, desc->voxel_size);
+            current_scene = ActiveScene::GITest;
+            break;
         }
         if (active_scene)
         {
@@ -200,6 +207,15 @@ int patch_main(int argc, char *argv[])
             if (current_scene == ActiveScene::BallPit)
             {
                 VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
+                if (terrain)
+                {
+                    renderer.init_volume_for_raymarching(terrain);
+                }
+                renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
+            }
+            else if (current_scene == ActiveScene::GITest)
+            {
+                VoxelVolume *terrain = gi_test_get_terrain(active_scene);
                 if (terrain)
                 {
                     renderer.init_volume_for_raymarching(terrain);
@@ -429,6 +445,34 @@ int patch_main(int argc, char *argv[])
             break;
         }
 
+        case APP_ACTION_START_GI_TEST:
+        {
+            if (active_scene)
+            {
+                renderer.prepare_for_scene_switch();
+                scene_destroy(active_scene);
+            }
+            const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_GI_TEST);
+            active_scene = gi_test_scene_create(desc->bounds, desc->voxel_size);
+            rng_seed(&active_scene->rng, rng_seed_value++);
+            scene_init(active_scene);
+            current_scene = ActiveScene::GITest;
+            app_state = AppState::Playing;
+            app_ui_hide(&ui);
+            renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
+            free_camera_active = true;
+
+            VoxelVolume *terrain = gi_test_get_terrain(active_scene);
+            if (terrain)
+            {
+                renderer.init_volume_for_raymarching(terrain);
+            }
+            renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
+
+            printf("Started: %s\n", scene_get_name(active_scene));
+            break;
+        }
+
         case APP_ACTION_RUN_STRESS_TEST:
         {
             printf("Running stress test in background...\n");
@@ -504,6 +548,12 @@ int patch_main(int argc, char *argv[])
             if (current_scene == ActiveScene::BallPit)
             {
                 ball_pit_set_ray(active_scene, ray_origin, ray_dir);
+                scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
+                                   window.mouse().left_down, window.mouse().right_down);
+            }
+            else if (current_scene == ActiveScene::GITest)
+            {
+                gi_test_set_ray(active_scene, ray_origin, ray_dir);
                 scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
                                    window.mouse().left_down, window.mouse().right_down);
             }
@@ -728,6 +778,16 @@ int patch_main(int argc, char *argv[])
 
             renderer.set_view_angle_at(45.0f, 80.0f, center, dt);
         }
+        else if (active_scene && current_scene == ActiveScene::GITest)
+        {
+            /* Default look-into-room view; free camera overrides this */
+            Vec3 room_center = vec3_create(
+                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
+                active_scene->bounds.min_y + 3.5f,
+                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+
+            renderer.set_view_angle_at(30.0f, 60.0f, room_center, dt);
+        }
 
         uint32_t image_index;
         renderer.begin_frame(&image_index);
@@ -850,6 +910,61 @@ int patch_main(int argc, char *argv[])
             renderer.render_deferred_lighting(image_index);
             PROFILE_END(PROFILE_RENDER_LIGHTING);
         }
+        else if (active_scene && current_scene == ActiveScene::GITest)
+        {
+            VoxelVolume *terrain = gi_test_get_terrain(active_scene);
+            VoxelObjectWorld *objects = gi_test_get_objects(active_scene);
+            ParticleSystem *particles = gi_test_get_particles(active_scene);
+
+            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
+                                            (particles && particles->count > 0);
+
+            if (particles)
+            {
+                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
+                if (interp_alpha < 0.0f)
+                    interp_alpha = 0.0f;
+                if (interp_alpha > 1.0f)
+                    interp_alpha = 1.0f;
+                renderer.set_interp_alpha(interp_alpha);
+            }
+
+            if (terrain)
+            {
+                volume_begin_frame(terrain);
+
+                int32_t dirty_indices[VOLUME_MAX_DIRTY_PER_FRAME];
+                int32_t uploaded = renderer.upload_dirty_chunks(terrain, dirty_indices, VOLUME_MAX_DIRTY_PER_FRAME);
+                if (uploaded > 0)
+                {
+                    dbg_total_uploaded += uploaded;
+                    volume_mark_chunks_uploaded(terrain, dirty_indices, uploaded);
+                }
+
+                if (uploaded > 0 || has_objects_or_particles)
+                {
+                    renderer.update_shadow_volume(terrain, objects, particles);
+                }
+            }
+
+            if (terrain)
+            {
+                bool need_depth_prime = (objects && objects->object_count > 0) || particles;
+                renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
+            }
+
+            renderer.begin_gbuffer_pass();
+
+            if (terrain)
+                renderer.render_gbuffer_terrain(terrain);
+            if (objects)
+                renderer.render_voxel_objects_raymarched(objects);
+            if (particles)
+                renderer.render_particles_raymarched(particles);
+
+            renderer.end_gbuffer_pass();
+            renderer.render_deferred_lighting(image_index);
+        }
         else
         {
             renderer.begin_main_pass(image_index);
@@ -874,6 +989,13 @@ int patch_main(int argc, char *argv[])
                 dbg_info.spawn_count = data->stats.spawn_count;
                 dbg_info.tick_count = data->stats.tick_count;
             }
+        }
+        else if (active_scene && current_scene == ActiveScene::GITest)
+        {
+            dbg_info.scene_name = "GI Test";
+            dbg_terrain = gi_test_get_terrain(active_scene);
+            dbg_objects = gi_test_get_objects(active_scene);
+            dbg_particles = gi_test_get_particles(active_scene);
         }
 
         debug_info_populate_volume(&dbg_info, dbg_terrain);

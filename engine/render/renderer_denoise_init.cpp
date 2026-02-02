@@ -398,6 +398,7 @@ namespace patch
     void Renderer::set_denoise_quality(int level)
     {
         denoise_quality_ = level < 0 ? 0 : (level > 1 ? 1 : level);
+        if (!applying_preset_) target_preset_ = QUALITY_PRESET_CUSTOM;
     }
 
 }

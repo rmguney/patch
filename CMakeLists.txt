@@ -216,6 +216,7 @@ set(ENGINE_RENDER_SOURCES
     engine/render/renderer_compute_init.cpp
     engine/render/renderer_shadow_init.cpp
     engine/render/renderer_ao_init.cpp
+    engine/render/renderer_gi_init.cpp
     engine/render/renderer_denoise_init.cpp
     engine/render/renderer_taa_init.cpp
     engine/render/renderer_voxel_objects.cpp
@@ -265,6 +266,8 @@ set(GAME_C_SOURCES
     game/terrain_gen.c
     game/ball_pit.h
     game/ball_pit.c
+    game/gi_test.h
+    game/gi_test.c
 )
 
 add_library(game STATIC ${GAME_C_SOURCES})

@@ -1,0 +1,169 @@
+#version 450
+
+#if defined(PATCH_VULKAN)
+#define SET_BINDING(set_, binding_) set = set_, binding = binding_
+#else
+#define SET_BINDING(set_, binding_) binding = binding_
+#endif
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform GIConeConstants {
+    vec3 bounds_min;
+    float voxel_size;
+    vec3 bounds_max;
+    float radiance_voxel_size;
+    ivec3 radiance_dims;
+    int frame_count;
+    vec3 cam_pos;
+    int gi_quality;
+    int screen_width;
+    int screen_height;
+    int _pad0;
+    int _pad1;
+} pc;
+
+layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_world_pos;
+layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
+layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_albedo;
+layout(SET_BINDING(0, 3)) uniform sampler3D radiance_volume;
+layout(SET_BINDING(0, 4)) uniform sampler3D opacity_pos_x;
+layout(SET_BINDING(0, 5)) uniform sampler3D opacity_neg_x;
+layout(SET_BINDING(0, 6)) uniform sampler3D opacity_pos_y;
+layout(SET_BINDING(0, 7)) uniform sampler3D opacity_neg_y;
+layout(SET_BINDING(0, 8)) uniform sampler3D opacity_pos_z;
+layout(SET_BINDING(0, 9)) uniform sampler3D opacity_neg_z;
+
+layout(r11f_g11f_b10f, SET_BINDING(1, 0)) writeonly uniform image2D gi_out;
+
+const float PI = 3.14159265;
+const float CONE_APERTURE = 0.577; /* tan(~30 degrees) */
+const int MAX_CONE_STEPS = 32;
+const float MAX_TRACE_DIST = 24.0;
+
+float sample_directional_opacity(vec3 uvw, vec3 dir) {
+    vec3 weight = dir * dir;
+
+    float ox = (dir.x > 0.0)
+        ? texture(opacity_pos_x, uvw).r
+        : texture(opacity_neg_x, uvw).r;
+    float oy = (dir.y > 0.0)
+        ? texture(opacity_pos_y, uvw).r
+        : texture(opacity_neg_y, uvw).r;
+    float oz = (dir.z > 0.0)
+        ? texture(opacity_pos_z, uvw).r
+        : texture(opacity_neg_z, uvw).r;
+
+    return weight.x * ox + weight.y * oy + weight.z * oz;
+}
+
+vec3 trace_cone(vec3 origin, vec3 dir, float aperture) {
+    vec3 volume_size = pc.bounds_max - pc.bounds_min;
+    vec3 rvs3 = volume_size / vec3(pc.radiance_dims);
+    float min_rvs = min(rvs3.x, min(rvs3.y, rvs3.z));
+    float t = min_rvs;
+    float occlusion = 0.0;
+    vec3 radiance = vec3(0.0);
+
+    for (int i = 0; i < MAX_CONE_STEPS; i++) {
+        vec3 pos = origin + dir * t;
+        float diameter = 2.0 * t * aperture;
+        float mip = log2(max(diameter / min_rvs, 1.0));
+
+        vec3 uvw = (pos - pc.bounds_min) / volume_size;
+        if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0))))
+            break;
+
+        vec3 sampled_radiance = textureLod(radiance_volume, uvw, mip).rgb;
+        float opacity = sample_directional_opacity(uvw, dir);
+        float scale = min(diameter / min_rvs, 4.0);
+        opacity = 1.0 - pow(1.0 - opacity, scale);
+
+        float weight = (1.0 - occlusion) * opacity;
+        radiance += sampled_radiance * weight;
+        occlusion += weight;
+
+        if (occlusion > 0.95)
+            break;
+
+        t += max(diameter, min_rvs);
+        if (t > MAX_TRACE_DIST)
+            break;
+    }
+
+    return radiance;
+}
+
+void get_cone_dirs_4(vec3 N, out vec3 dirs[4]) {
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+
+    float cos_a = 0.577; /* cos(~55 deg) - hemisphere coverage */
+    float sin_a = 0.816;
+
+    dirs[0] = normalize(N * cos_a + T * sin_a);
+    dirs[1] = normalize(N * cos_a - T * sin_a);
+    dirs[2] = normalize(N * cos_a + B * sin_a);
+    dirs[3] = normalize(N * cos_a - B * sin_a);
+}
+
+void get_cone_dirs_6(vec3 N, out vec3 dirs[6]) {
+    vec3 up = abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+
+    /* Central cone + 5 surrounding at ~60 degrees from normal */
+    dirs[0] = N;
+    float cos_a = 0.5;
+    float sin_a = 0.866;
+    float angle_step = 2.0 * PI / 5.0;
+    for (int i = 0; i < 5; i++) {
+        float a = float(i) * angle_step;
+        dirs[i + 1] = normalize(N * cos_a + (T * cos(a) + B * sin(a)) * sin_a);
+    }
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+
+    if (pixel.x >= pc.screen_width || pixel.y >= pc.screen_height)
+        return;
+
+    vec3 world_pos = texelFetch(gbuffer_world_pos, pixel, 0).xyz;
+    float depth = texelFetch(gbuffer_world_pos, pixel, 0).w;
+
+    vec4 albedo_sample = texelFetch(gbuffer_albedo, pixel, 0);
+    if (albedo_sample.a < 0.01) {
+        imageStore(gi_out, pixel, vec4(0.0));
+        return;
+    }
+
+    vec3 normal = normalize(texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0);
+    vec3 rvs3 = (pc.bounds_max - pc.bounds_min) / vec3(pc.radiance_dims);
+    float min_rvs = min(rvs3.x, min(rvs3.y, rvs3.z));
+    vec3 origin = world_pos + normal * min_rvs * 0.5;
+
+    vec3 gi = vec3(0.0);
+
+    if (pc.gi_quality <= 2) {
+        vec3 dirs[4];
+        get_cone_dirs_4(normal, dirs);
+        for (int i = 0; i < 4; i++)
+            gi += trace_cone(origin, dirs[i], CONE_APERTURE);
+        gi /= 4.0;
+    } else {
+        vec3 dirs[6];
+        get_cone_dirs_6(normal, dirs);
+        float weight_center = 1.0 / PI;
+        float weight_side = (1.0 - weight_center) / 5.0;
+        gi += trace_cone(origin, dirs[0], 0.4) * weight_center;
+        for (int i = 1; i < 6; i++)
+            gi += trace_cone(origin, dirs[i], CONE_APERTURE) * weight_side;
+    }
+
+    float luma = dot(gi, vec3(0.2126, 0.7152, 0.0722));
+    gi = mix(vec3(luma), gi, 0.6);
+
+    imageStore(gi_out, pixel, vec4(gi, 0.0));
+}

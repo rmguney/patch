@@ -41,11 +41,12 @@ extern const MaterialDescriptor g_mat_peach;
 extern const MaterialDescriptor g_mat_mint;
 extern const MaterialDescriptor g_mat_lavender;
 extern const MaterialDescriptor g_mat_sky;
-extern const MaterialDescriptor g_mat_teal;
-extern const MaterialDescriptor g_mat_coral;
+extern const MaterialDescriptor g_mat_green;
+extern const MaterialDescriptor g_mat_red;
 extern const MaterialDescriptor g_mat_cloud;
 extern const MaterialDescriptor g_mat_rose;
 extern const MaterialDescriptor g_mat_orange;
+extern const MaterialDescriptor g_mat_glass;
 
 /*
  * Global material registration table.
@@ -63,14 +64,15 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_MINT] = &g_mat_mint,
     [MAT_LAVENDER] = &g_mat_lavender,
     [MAT_SKY] = &g_mat_sky,
-    [MAT_TEAL] = &g_mat_teal,
-    [MAT_CORAL] = &g_mat_coral,
+    [MAT_GREEN] = &g_mat_green,
+    [MAT_RED] = &g_mat_red,
     [MAT_CLOUD] = &g_mat_cloud,
     [MAT_ROSE] = &g_mat_rose,
     [MAT_ORANGE] = &g_mat_orange,
+    [MAT_GLASS] = &g_mat_glass,
 };
 
-const int32_t g_material_count = 16;
+const int32_t g_material_count = 17;
 
-static_assert(MAT_ORANGE + 1 == 16, "Material count must match g_material_count");
-static_assert(MAT_ORANGE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+static_assert(MAT_GLASS + 1 == 17, "Material count must match g_material_count");
+static_assert(MAT_GLASS < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
