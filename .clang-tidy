@@ -1,0 +1,24 @@
+---
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  performance-*,
+  portability-*,
+  misc-unused-parameters,
+  misc-redundant-expression,
+  readability-redundant-*,
+  readability-misleading-indentation,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity
+
+WarningsAsErrors: >
+  bugprone-use-after-move,
+  clang-analyzer-core.NullDereference
+
+HeaderFilterRegex: '^.*/engine/.*\.h$'
+...

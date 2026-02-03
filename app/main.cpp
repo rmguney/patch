@@ -197,6 +197,8 @@ int patch_main(int argc, char *argv[])
             ui.settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
             ui.settings.taa_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].taa;
 
+            renderer.set_scene_lighting(&desc->lighting);
+
             if (current_scene == ActiveScene::BallPit)
             {
                 VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
@@ -417,6 +419,7 @@ int patch_main(int argc, char *argv[])
             renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
             if (free_camera_active)
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
+            renderer.set_scene_lighting(&desc->lighting);
 
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             if (terrain)

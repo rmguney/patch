@@ -41,7 +41,7 @@ extern "C"
         int32_t count;
     } BVHNode;
 
-    static_assert(sizeof(BVHNode) == 32, "BVHNode must be 32 bytes for GPU alignment");
+    STATIC_ASSERT(sizeof(BVHNode) == 32, "BVHNode must be 32 bytes for GPU alignment");
 
     /*
      * BVH container with cached per-object data for fast refit.

@@ -12,10 +12,11 @@ const SceneDescriptor g_scenes[SCENE_MAX_COUNT] = {
         .rng_seed = 0x12345678,
         .max_entities = 128,
         .max_particles = 8192,
+        .lighting = SCENE_LIGHTING_DEFAULT,
     },
 };
 
 const int32_t g_scene_count = SCENE_TYPE_COUNT;
 
-static_assert(SCENE_TYPE_COUNT == 1, "Scene count changed - update g_scenes array");
-static_assert(SCENE_TYPE_COUNT <= SCENE_MAX_COUNT, "Too many scene types");
+STATIC_ASSERT(SCENE_TYPE_COUNT == 1, "Scene count changed - update g_scenes array");
+STATIC_ASSERT(SCENE_TYPE_COUNT <= SCENE_MAX_COUNT, "Too many scene types");

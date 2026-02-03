@@ -7,3 +7,4 @@
 *.h linguist-language=C
 
 third_party/** linguist-vendored
+**prebuilt.** linguist-generated

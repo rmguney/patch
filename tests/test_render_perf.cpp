@@ -8,7 +8,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-static const int TEST_FRAMES = 300;
 static const int LAUNCH_WAIT_MS = 30000; /* 30 seconds - needs time for GPU warmup and longer spike tests */
 
 static const float FRAME_BUDGET_MS = 16.667f;
@@ -35,7 +34,6 @@ static const PerfThreshold THRESHOLD_CLOSEUP = {15.0f, 17.0f, 20.0f};         /*
 static const PerfThreshold THRESHOLD_TERRAIN_CLOSEUP = {16.0f, 18.0f, 22.0f};  /* Terrain close-up + camera motion */
 static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {16.0f, 18.0f, 22.0f}; /* Extreme close-up (nearly touching) */
 static const PerfThreshold THRESHOLD_TOPDOWN = {16.0f, 19.0f, 25.0f};          /* Looking straight down into object pile */
-static const PerfThreshold THRESHOLD_DISTANCE_SCALE = {10.0f, 13.0f, 18.0f};  /* Distance scaling tests */
 
 /* CPU dispatch timing thresholds */
 struct PassThreshold

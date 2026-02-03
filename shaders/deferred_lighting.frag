@@ -18,6 +18,9 @@ layout(SET_BINDING(0, 5)) uniform sampler2D shadow_buffer;
 layout(SET_BINDING(0, 6)) uniform sampler2D blue_noise_tex;
 layout(SET_BINDING(0, 7)) uniform sampler2D ao_buffer;
 
+#define LIGHTING_SET 1
+#include "include/scene_lighting.glsl"
+
 layout(push_constant) uniform Constants {
     mat4 inv_view;
     mat4 inv_projection;
@@ -65,7 +68,7 @@ void main() {
     );
 
     if (g.is_sky) {
-        out_color = vec4(0.75, 0.80, 0.95, 1.0);
+        out_color = vec4(lighting.sky_color_params.rgb, 1.0);
         gl_FragDepth = 1.0;
         return;
     }
@@ -106,26 +109,27 @@ void main() {
         return;
     }
 
-    vec3 key_light_dir = normalize(vec3(-0.6, 0.9, 0.35));
-    vec3 key_color = vec3(1.0, 0.98, 0.95);
-    float key_strength = 1.0;
+    vec3 key_light_dir = lighting.sun_dir.xyz;
+    vec3 key_color = lighting.sun_color.rgb;
+    float key_strength = lighting.sun_color.w;
 
     /* Sample precomputed shadow from compute pass */
     float shadow = texture(shadow_buffer, in_uv).r;
 
-    vec3 fill_light_dir = normalize(vec3(0.45, 0.5, -0.65));
-    vec3 fill_color = vec3(0.7, 0.8, 1.0);
-    float fill_strength = 0.25;
+    vec3 fill_light_dir = lighting.fill_dir.xyz;
+    vec3 fill_color = lighting.fill_color.rgb;
+    float fill_strength = lighting.fill_dir.w;
 
-    vec3 back_light_dir = normalize(vec3(-0.35, 0.28, 0.9));
-    vec3 back_color = vec3(0.95, 0.9, 0.85);
-    float back_strength = 0.12;
+    vec3 back_light_dir = lighting.back_dir.xyz;
+    vec3 back_color = lighting.back_color.rgb;
+    float back_strength = lighting.fill_color.w;
 
     float key_dot = max(dot(N, key_light_dir), 0.0);
     float fill_dot = max(dot(N, fill_light_dir), 0.0);
     float back_dot = max(dot(N, back_light_dir), 0.0);
 
-    float wrap_key = (dot(N, key_light_dir) + 0.4) / 1.4;
+    float wrap_bias = lighting.sun_dir.w;
+    float wrap_key = (dot(N, key_light_dir) + wrap_bias) / (1.0 + wrap_bias);
     wrap_key = max(wrap_key, 0.0);
 
     vec3 diffuse = vec3(0.0);
@@ -136,9 +140,9 @@ void main() {
     /* Sample AO from compute pass (1 = unoccluded, 0 = fully occluded) */
     float ao = (pc.ao_quality >= 1) ? texture(ao_buffer, in_uv).r : 1.0;
 
-    float ambient = 0.32;
-    vec3 sky_ambient = vec3(0.55, 0.68, 0.95) * (N.y * 0.5 + 0.5);
-    vec3 ground_ambient = vec3(0.38, 0.32, 0.28) * (0.5 - N.y * 0.5);
+    float ambient = lighting.back_color.w;
+    vec3 sky_ambient = lighting.sky_ambient.rgb * (N.y * 0.5 + 0.5);
+    vec3 ground_ambient = lighting.ground_ambient.rgb * (0.5 - N.y * 0.5);
     vec3 ambient_light = (sky_ambient + ground_ambient) * ambient * ao;
 
     vec3 H = normalize(key_light_dir + V);
@@ -172,7 +176,7 @@ void main() {
     float diffuse_atten = 1.0 - env_total;
     vec3 color = (g.albedo * ambient_light * diffuse_atten + diffuse * diffuse_atten + specular + env_spec) * ground_ao;
 
-    float rim = pow(1.0 - NdotV, 3.0) * 0.10;
+    float rim = pow(1.0 - NdotV, 3.0) * lighting.back_dir.w;
     vec3 rim_tint = mix(env_color * g.albedo, env_color, g.metallic);
     color += rim * rim_tint * smoothness;
 
@@ -186,10 +190,10 @@ void main() {
         return;
     }
 
-    vec3 emissive_color = g.albedo * g.emissive * 2.0;
+    vec3 emissive_color = g.albedo * g.emissive * lighting.ground_ambient.w;
     color += emissive_color;
 
-    float exposure = 1.0;
+    float exposure = lighting.sky_ambient.w;
     color *= exposure;
 
     color = aces_tonemap(color);

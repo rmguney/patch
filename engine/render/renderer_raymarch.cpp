@@ -201,17 +201,17 @@ namespace patch
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 1, &mem_barrier, 0, nullptr, 1, &barrier);
 
-        /* Bind pipeline and descriptor sets (set 3 = vobj data for direct object shadow tracing) */
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shadow_compute_pipeline_);
 
-        VkDescriptorSet sets[4] = {
+        VkDescriptorSet sets[5] = {
             shadow_compute_input_sets_[current_frame_],
             shadow_compute_gbuffer_sets_[current_frame_],
             shadow_compute_output_sets_[current_frame_],
-            gbuffer_compute_vobj_sets_[current_frame_]};
+            gbuffer_compute_vobj_sets_[current_frame_],
+            shadow_lighting_sets_[current_frame_]};
 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                shadow_compute_layout_, 0, 4, sets, 0, nullptr);
+                                shadow_compute_layout_, 0, 5, sets, 0, nullptr);
 
         /* Push constants - same as gbuffer for consistency */
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);

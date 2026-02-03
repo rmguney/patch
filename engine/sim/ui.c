@@ -1,11 +1,7 @@
 #include "ui.h"
+#include "engine/core/math.h"
 #include <string.h>
 #include <stdio.h>
-
-static inline float clampf_local(float v, float lo, float hi)
-{
-    return v < lo ? lo : (v > hi ? hi : v);
-}
 
 void ui_menu_clear(UIMenu *menu, const char *title)
 {
@@ -174,10 +170,10 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
         h = 1.0f;
     const float min_dim = w < h ? w : h;
 
-    const float item_h_px = clampf_local(min_dim * 0.024f, 12.0f, 20.0f);
-    const float button_w_px = clampf_local(w * 0.32f, 200.0f, 480.0f);
-    const float button_h_px = clampf_local(item_h_px * 1.8f, 22.0f, 40.0f);
-    const float spacing_px = clampf_local(button_h_px * 0.35f, 6.0f, 16.0f);
+    const float item_h_px = clampf(min_dim * 0.024f, 12.0f, 20.0f);
+    const float button_w_px = clampf(w * 0.32f, 200.0f, 480.0f);
+    const float button_h_px = clampf(item_h_px * 1.8f, 22.0f, 40.0f);
+    const float spacing_px = clampf(button_h_px * 0.35f, 6.0f, 16.0f);
 
     const float cx_px = w * 0.5f;
     const float center_y_px = h * 0.55f;

@@ -309,20 +309,6 @@ void physics_body_apply_impulse(PhysicsWorld *world, int32_t body_index, Vec3 im
         physics_body_wake(world, body_index);
 }
 
-void physics_body_apply_force(PhysicsWorld *world, int32_t body_index, Vec3 force)
-{
-    (void)world;
-    (void)body_index;
-    (void)force;
-}
-
-void physics_body_apply_torque(PhysicsWorld *world, int32_t body_index, Vec3 torque)
-{
-    (void)world;
-    (void)body_index;
-    (void)torque;
-}
-
 static void get_obb_sample_points(VoxelObject *obj, Vec3 points[PHYS_TERRAIN_SAMPLE_POINTS])
 {
     Vec3 he = obj->shape_half_extents;

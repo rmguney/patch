@@ -211,8 +211,6 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     int32_t min_x = VOBJ_GRID_SIZE, max_x = 0;
     int32_t min_y = VOBJ_GRID_SIZE, max_y = 0;
     int32_t min_z = VOBJ_GRID_SIZE, max_z = 0;
-    float com_x = 0.0f, com_y = 0.0f, com_z = 0.0f;
-    int32_t counted = 0;
     uint8_t occupancy = 0;
 
     obj->surface_voxel_count = 0;
@@ -239,11 +237,6 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                         min_z = z;
                     if (z > max_z)
                         max_z = z;
-                    com_x += (float)x + 0.5f;
-                    com_y += (float)y + 0.5f;
-                    com_z += (float)z + 0.5f;
-                    counted++;
-
                     /* Occupancy: which region contains this voxel (2×2×2 regions) */
                     int32_t region_size = VOBJ_GRID_SIZE / 2;
                     int32_t region = (x / region_size) + ((y / region_size) * 2) + ((z / region_size) * 4);
@@ -358,11 +351,6 @@ void voxel_object_recalc_shape(VoxelObject *obj)
         }
     }
     obj->inertia_diag = vec3_create(Ixx, Iyy, Izz);
-
-    float inv_count = 1.0f / (float)counted;
-    com_x *= inv_count;
-    com_y *= inv_count;
-    com_z *= inv_count;
 
     /* Radius: calculate from GRID CENTER (which corresponds to obj->position) to corners.
      * This is critical for split objects where voxels may be off-center in the grid.
@@ -961,7 +949,7 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
                                     int32_t start_x, int32_t start_y, int32_t start_z)
 {
-    static thread_local int32_t stack[VOBJ_TOTAL_VOXELS];
+    static __declspec(thread) int32_t stack[VOBJ_TOTAL_VOXELS];
     int32_t stack_top = 0;
 
     int32_t start_idx = vobj_index(start_x, start_y, start_z);

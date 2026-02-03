@@ -72,5 +72,5 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
 
 const int32_t g_material_count = 16;
 
-static_assert(MAT_ORANGE + 1 == 16, "Material count must match g_material_count");
-static_assert(MAT_ORANGE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+STATIC_ASSERT(MAT_ORANGE + 1 == 16, "Material count must match g_material_count");
+STATIC_ASSERT(MAT_ORANGE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

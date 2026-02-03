@@ -89,6 +89,9 @@ layout(std430, SET_BINDING(3, 1)) readonly buffer ObjectMetadata {
 #include "include/data_voxobj.glsl"
 #include "include/bvh_traverse.glsl"
 
+#define LIGHTING_SET 4
+#include "include/scene_lighting.glsl"
+
 /* G-buffer inputs (set 1) */
 layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
 layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
@@ -100,7 +103,7 @@ layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
 
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
 const int BASE_SHADOW_STEPS = 128;  /* Base step count for far surfaces */
-const float SHADOW_MAX_DIST = 50.0;
+#define SHADOW_MAX_DIST (lighting.sky_color_params.w)
 const float SHADOW_DIST_VERY_FAR = 100.0;
 const float SHADOW_DIST_FAR = 60.0;
 const int SHADOW_STEPS_VERY_FAR = 64;
@@ -108,8 +111,7 @@ const int SHADOW_STEPS_FAR = 96;
 const float SHADOW_SAMPLE_DIST_FAR = 80.0;
 const float SHADOW_SAMPLE_DIST_MID = 40.0;
 
-/* Sun direction */
-const vec3 SUN_DIR = normalize(vec3(-0.6, 0.9, 0.35));
+#define SUN_DIR (lighting.sun_dir.xyz)
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
@@ -351,8 +353,7 @@ void main() {
 
     if (pc.shadow_quality > 0) {
         vec2 noise_uv = vec2(pixel) / 128.0;
-        float spatial_noise = texture(blue_noise_tex, noise_uv).r;
-        float temporal_noise = fract(spatial_noise + float(pc.frame_count) * 0.6180339887);
+        float frame_offset = float(pc.frame_count) * 0.6180339887;
 
         vec3 tangent = normalize(cross(SUN_DIR, vec3(0.0, 1.0, 0.01)));
         vec3 bitangent = cross(SUN_DIR, tangent);
@@ -393,15 +394,19 @@ void main() {
         }
 
         for (int s = 0; s < num_samples; s++) {
-            /* Per-sample temporal variation breaks up patterns across frames */
-            float sample_temporal = fract(temporal_noise + float(s) * 0.1618033989);
+            /* R2 sequence for 2D low-discrepancy sample offsets (avoids linear patterns) */
+            const float a1 = 0.7548776662466927;  /* 1/plastic constant */
+            const float a2 = 0.5698402909980532;  /* 1/plastic^2 */
+            vec2 r2_offset = fract(vec2(float(s) * a1, float(s) * a2));
+            vec2 temporal_offset = fract(vec2(frame_offset, frame_offset * a1));
+            float sample_noise = texture(blue_noise_tex, noise_uv + r2_offset + temporal_offset).r;
 
-            /* Golden angle + per-sample temporal offset for angular distribution */
+            /* Golden angle + independent temporal offset for angular distribution */
             float golden_angle = 2.399963229; /* 137.5 degrees in radians */
-            float angle = float(s) * golden_angle + sample_temporal * 6.28318;
+            float angle = float(s) * golden_angle + sample_noise * 6.28318;
 
-            /* Stratified radius with temporal jitter for better frame-to-frame coverage */
-            float radius_base = sqrt((float(s) + sample_temporal) / float(num_samples));
+            /* Stratified radius with independent jitter for better coverage */
+            float radius_base = sqrt((float(s) + sample_noise) / float(num_samples));
             float radius = radius_base * penumbra;
 
             vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;

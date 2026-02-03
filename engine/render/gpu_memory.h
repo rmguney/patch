@@ -2,7 +2,13 @@
 #define PATCH_ENGINE_GPU_MEMORY_H
 
 #include <vulkan/vulkan.h>
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullability-completeness"
+#pragma clang diagnostic ignored "-Wunused-parameter"
+#pragma clang diagnostic ignored "-Wunused-variable"
+#pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #include "vk_mem_alloc.h"
+#pragma clang diagnostic pop
 
 namespace patch {
 

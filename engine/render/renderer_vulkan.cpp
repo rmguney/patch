@@ -825,13 +825,14 @@ namespace patch
             return false;
 
         /* Recreate lighting UBO */
-        VkDeviceSize ubo_size = sizeof(ShadowUniforms);
+        VkDeviceSize ubo_size = sizeof(SceneLightingUBO);
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             create_buffer(ubo_size,
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &lighting_ubo_[i]);
+            lighting_ubo_mapped_[i] = gpu_allocator_.map(lighting_ubo_[i].allocation);
         }
 
         update_voxel_depth_descriptor();

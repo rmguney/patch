@@ -15,6 +15,12 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef PATCH_SANITIZERS_ENABLED
+#define PERF_TIME_SCALE 3.0f
+#else
+#define PERF_TIME_SCALE 1.0f
+#endif
+
 TEST(mat3_multiply_identity)
 {
     float id[9], a[9], out[9];
@@ -747,7 +753,7 @@ TEST(physics_performance_128_bodies)
 
     printf("(1000 ticks in %.1fms) ", elapsed_ms);
 
-    ASSERT(elapsed_ms < 500.0f);
+    ASSERT(elapsed_ms < 500.0f * PERF_TIME_SCALE);
 
     physics_world_destroy(physics);
     voxel_object_world_destroy(obj_world);

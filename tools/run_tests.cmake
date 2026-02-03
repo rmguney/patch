@@ -77,6 +77,11 @@ else()
     endif()
 endif()
 
+file(APPEND ${REPORT_FILE} "\n================================================================================\n")
+file(APPEND ${REPORT_FILE} "  STATIC ANALYSIS\n")
+file(APPEND ${REPORT_FILE} "================================================================================\n\n")
+file(APPEND ${REPORT_FILE} "Run 'cmake --build build --target clang-tidy' for full analysis\n")
+
 file(APPEND ${REPORT_FILE} "\n################################################################################\n")
 file(APPEND ${REPORT_FILE} "#                              FINAL SUMMARY                                  #\n")
 file(APPEND ${REPORT_FILE} "################################################################################\n")

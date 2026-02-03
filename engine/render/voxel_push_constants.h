@@ -99,8 +99,22 @@ namespace patch
         Mat4 view_proj;
     };
 
+    struct SceneLightingUBO
+    {
+        Vec4 sun_dir;        /* .w = wrap_bias */
+        Vec4 sun_color;      /* .w = strength */
+        Vec4 fill_dir;       /* .w = strength */
+        Vec4 fill_color;     /* .w = back_strength */
+        Vec4 back_dir;       /* .w = rim_strength */
+        Vec4 back_color;     /* .w = ambient_strength */
+        Vec4 sky_ambient;    /* .w = exposure */
+        Vec4 ground_ambient; /* .w = emissive_mult */
+        Vec4 sky_color;      /* .w = shadow_max_dist */
+    };
+
 static_assert(sizeof(struct VoxelPushConstants) == 256, "VoxelPushConstants must be 256 bytes");
 static_assert(sizeof(struct VoxelTemporalUBO) == 128, "VoxelTemporalUBO must be 128 bytes");
+static_assert(sizeof(struct SceneLightingUBO) == 144, "SceneLightingUBO must be 144 bytes");
 
 #ifdef __cplusplus
 } // namespace patch

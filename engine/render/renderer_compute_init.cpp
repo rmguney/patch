@@ -346,13 +346,13 @@ namespace patch
             return false;
         }
 
-        /* Pipeline layout with 4 descriptor sets
-         * Set 3 reuses gbuffer_compute_vobj_layout_ since bindings are identical */
-        VkDescriptorSetLayout set_layouts[4] = {
+        /* Set 3 = vobj (reuses gbuffer layout), set 4 = scene lighting */
+        VkDescriptorSetLayout set_layouts[5] = {
             shadow_compute_input_layout_,
             shadow_compute_gbuffer_layout_,
             shadow_compute_output_layout_,
-            gbuffer_compute_vobj_layout_};
+            gbuffer_compute_vobj_layout_,
+            scene_lighting_descriptor_layout_};
 
         VkPushConstantRange push_range{};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -361,7 +361,7 @@ namespace patch
 
         VkPipelineLayoutCreateInfo layout_info{};
         layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layout_info.setLayoutCount = 4;
+        layout_info.setLayoutCount = 5;
         layout_info.pSetLayouts = set_layouts;
         layout_info.pushConstantRangeCount = 1;
         layout_info.pPushConstantRanges = &push_range;
@@ -602,22 +602,21 @@ namespace patch
         if (!compute_resources_initialized_ || voxel_data_buffer_.buffer == VK_NULL_HANDLE)
             return true;
 
-        /* Create descriptor pool - includes vobj data for direct object shadow tracing */
         VkDescriptorPoolSize pool_sizes[4]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3; /* voxel_data, chunk_headers, vobj metadata */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 6; /* depth, normal, world_pos, blue noise, shadow_volume, vobj_atlas */
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 6;
         pool_sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         pool_sizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1;
         pool_sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pool_sizes[3].descriptorCount = MAX_FRAMES_IN_FLIGHT * 1; /* material palette */
+        pool_sizes[3].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool_info.poolSizeCount = 4;
         pool_info.pPoolSizes = pool_sizes;
-        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 4; /* 4 sets per frame: input, gbuffer, output, vobj */
+        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 5;
 
         if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &shadow_compute_descriptor_pool_) != VK_SUCCESS)
         {
@@ -660,6 +659,17 @@ namespace patch
         if (vkAllocateDescriptorSets(device_, &alloc_info, shadow_compute_output_sets_) != VK_SUCCESS)
         {
             fprintf(stderr, "Failed to allocate shadow compute output sets\n");
+            return false;
+        }
+
+        VkDescriptorSetLayout lighting_layouts[MAX_FRAMES_IN_FLIGHT];
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            lighting_layouts[i] = scene_lighting_descriptor_layout_;
+
+        alloc_info.pSetLayouts = lighting_layouts;
+        if (vkAllocateDescriptorSets(device_, &alloc_info, shadow_lighting_sets_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to allocate shadow lighting sets\n");
             return false;
         }
 
@@ -784,6 +794,21 @@ namespace patch
             output_write.pImageInfo = &output_info;
 
             vkUpdateDescriptorSets(device_, 1, &output_write, 0, nullptr);
+
+            VkDescriptorBufferInfo lighting_ubo_info{};
+            lighting_ubo_info.buffer = lighting_ubo_[i].buffer;
+            lighting_ubo_info.offset = 0;
+            lighting_ubo_info.range = sizeof(SceneLightingUBO);
+
+            VkWriteDescriptorSet lighting_write{};
+            lighting_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lighting_write.dstSet = shadow_lighting_sets_[i];
+            lighting_write.dstBinding = 0;
+            lighting_write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            lighting_write.descriptorCount = 1;
+            lighting_write.pBufferInfo = &lighting_ubo_info;
+
+            vkUpdateDescriptorSets(device_, 1, &lighting_write, 0, nullptr);
         }
 
         printf("  Shadow compute descriptor sets created\n");

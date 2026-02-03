@@ -105,8 +105,6 @@ extern "C"
     bool physics_body_is_sleeping(PhysicsWorld *world, int32_t body_index);
 
     void physics_body_apply_impulse(PhysicsWorld *world, int32_t body_index, Vec3 impulse, Vec3 world_point);
-    void physics_body_apply_force(PhysicsWorld *world, int32_t body_index, Vec3 force);
-    void physics_body_apply_torque(PhysicsWorld *world, int32_t body_index, Vec3 torque);
     void physics_body_wake(PhysicsWorld *world, int32_t body_index);
 
     void physics_body_set_velocity(PhysicsWorld *world, int32_t body_index, Vec3 velocity);

@@ -261,13 +261,19 @@ namespace patch
             return false;
         }
 
-        VkDeviceSize ubo_size = sizeof(ShadowUniforms);
+        VkDeviceSize ubo_size = sizeof(SceneLightingUBO);
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             create_buffer(ubo_size,
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &lighting_ubo_[i]);
+            lighting_ubo_mapped_[i] = gpu_allocator_.map(lighting_ubo_[i].allocation);
+        }
+
+        {
+            SceneLighting defaults = scene_lighting_default();
+            set_scene_lighting(&defaults);
         }
 
         if (!create_voxel_descriptor_layout())
@@ -430,6 +436,11 @@ namespace patch
 
             for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
             {
+                if (lighting_ubo_mapped_[i])
+                {
+                    gpu_allocator_.unmap(lighting_ubo_[i].allocation);
+                    lighting_ubo_mapped_[i] = nullptr;
+                }
                 destroy_buffer(&lighting_ubo_[i]);
             }
 
@@ -582,13 +593,17 @@ namespace patch
             last_wait_fence_ms_ = (float)(wait_end - wait_start) * 1000.0f / (float)freq;
         vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
 
-        /* Now safe to write to UBO - GPU done with this frame slot */
+        /* Now safe to write to UBOs - GPU done with this frame slot */
         if (voxel_temporal_ubo_mapped_[current_frame_])
         {
             VoxelTemporalUBO ubo{};
             ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
             ubo.view_proj = view_proj;
             memcpy(voxel_temporal_ubo_mapped_[current_frame_], &ubo, sizeof(VoxelTemporalUBO));
+        }
+        if (lighting_ubo_mapped_[current_frame_])
+        {
+            memcpy(lighting_ubo_mapped_[current_frame_], &scene_lighting_ubo_data_, sizeof(SceneLightingUBO));
         }
 
         int64_t acquire_start = platform_get_ticks();
@@ -647,7 +662,9 @@ namespace patch
         }
 
         VkClearValue clear_values[2];
-        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}}; /* Light pastel baby blue */
+        clear_values[0].color = {{scene_lighting_ubo_data_.sky_color.x,
+                                  scene_lighting_ubo_data_.sky_color.y,
+                                  scene_lighting_ubo_data_.sky_color.z, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo render_pass_info{};
@@ -938,6 +955,28 @@ namespace patch
             *out_origin = mat4_transform_point(inv_view, origin_view);
         if (out_dir)
             *out_dir = vec3_normalize(mat4_transform_direction(inv_view, dir_view));
+    }
+
+    void Renderer::set_scene_lighting(const SceneLighting *lighting)
+    {
+        scene_lighting_ubo_data_.sun_dir = {lighting->sun_direction.x, lighting->sun_direction.y,
+                                            lighting->sun_direction.z, lighting->wrap_bias};
+        scene_lighting_ubo_data_.sun_color = {lighting->sun_color.x, lighting->sun_color.y,
+                                              lighting->sun_color.z, lighting->sun_strength};
+        scene_lighting_ubo_data_.fill_dir = {lighting->fill_direction.x, lighting->fill_direction.y,
+                                             lighting->fill_direction.z, lighting->fill_strength};
+        scene_lighting_ubo_data_.fill_color = {lighting->fill_color.x, lighting->fill_color.y,
+                                               lighting->fill_color.z, lighting->back_strength};
+        scene_lighting_ubo_data_.back_dir = {lighting->back_direction.x, lighting->back_direction.y,
+                                             lighting->back_direction.z, lighting->rim_strength};
+        scene_lighting_ubo_data_.back_color = {lighting->back_color.x, lighting->back_color.y,
+                                               lighting->back_color.z, lighting->ambient_strength};
+        scene_lighting_ubo_data_.sky_ambient = {lighting->sky_ambient_color.x, lighting->sky_ambient_color.y,
+                                                lighting->sky_ambient_color.z, lighting->exposure};
+        scene_lighting_ubo_data_.ground_ambient = {lighting->ground_ambient_color.x, lighting->ground_ambient_color.y,
+                                                   lighting->ground_ambient_color.z, lighting->emissive_multiplier};
+        scene_lighting_ubo_data_.sky_color = {lighting->sky_color.x, lighting->sky_color.y,
+                                              lighting->sky_color.z, lighting->shadow_max_dist};
     }
 
 }

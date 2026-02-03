@@ -66,7 +66,11 @@ typedef struct
     int32_t island_ids_size;
 
     int32_t deferred_seed_start;
+    uint16_t deferred_next_island_id;
     bool has_deferred_work;
+
+    /* Persistent anchor tracking across deferred frames */
+    bool anchored_ids[CONNECTIVITY_MAX_ISLANDS + 2];
 } ConnectivityWorkBuffer;
 
 bool connectivity_work_init(ConnectivityWorkBuffer *work, const VoxelVolume *vol);

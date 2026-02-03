@@ -71,7 +71,7 @@ extern "C"
 #define TOOL_TIER_DIAMOND 4
 
     /* Static assertion for descriptor size (includes liquid properties) */
-static_assert(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
+STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
               "MaterialDescriptor size unexpected");
 
     /*

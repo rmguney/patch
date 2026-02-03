@@ -360,6 +360,12 @@ namespace patch
             deferred_lighting_descriptor_layout_ = VK_NULL_HANDLE;
         }
 
+        if (scene_lighting_descriptor_layout_)
+        {
+            vkDestroyDescriptorSetLayout(device_, scene_lighting_descriptor_layout_, nullptr);
+            scene_lighting_descriptor_layout_ = VK_NULL_HANDLE;
+        }
+
         destroy_depth_prime_resources();
 
         gbuffer_initialized_ = false;
@@ -441,6 +447,11 @@ namespace patch
             dispatch_ao_compute();
             dispatch_temporal_ao_resolve();
             PROFILE_END(PROFILE_RENDER_AO);
+        }
+        else
+        {
+            /* AO disabled - update descriptor to fallback view to avoid stale references */
+            update_deferred_ao_buffer_descriptor(current_frame_, VK_NULL_HANDLE);
         }
 
         gbuffer_compute_dispatched_ = false;
@@ -559,7 +570,9 @@ namespace patch
                            deferred_lighting_intermediate_fb_ != VK_NULL_HANDLE;
 
         VkClearValue clear_values[2]{};
-        clear_values[0].color = {{0.85f, 0.93f, 1.0f, 1.0f}}; /* Light pastel baby blue */
+        clear_values[0].color = {{scene_lighting_ubo_data_.sky_color.x,
+                                  scene_lighting_ubo_data_.sky_color.y,
+                                  scene_lighting_ubo_data_.sky_color.z, 1.0f}};
         clear_values[1].depthStencil = {1.0f, 0};
 
         VkRenderPassBeginInfo rp_info{};
@@ -585,8 +598,12 @@ namespace patch
         vkCmdSetScissor(command_buffers_[current_frame_], 0, 1, &scissor);
 
         vkCmdBindPipeline(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS, deferred_lighting_pipeline_);
+
+        VkDescriptorSet deferred_sets[2] = {
+            deferred_lighting_descriptor_sets_[current_frame_],
+            scene_lighting_sets_[current_frame_]};
         vkCmdBindDescriptorSets(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                deferred_lighting_layout_, 0, 1, &deferred_lighting_descriptor_sets_[current_frame_], 0, nullptr);
+                                deferred_lighting_layout_, 0, 2, deferred_sets, 0, nullptr);
 
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
         Mat4 inv_proj = mat4_inverse(projection_matrix_);

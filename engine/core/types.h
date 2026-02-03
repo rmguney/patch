@@ -5,6 +5,12 @@
 #include <stdbool.h>
 
 #ifdef __cplusplus
+#define STATIC_ASSERT static_assert
+#else
+#define STATIC_ASSERT _Static_assert
+#endif
+
+#ifdef __cplusplus
 extern "C"
 {
 #endif
@@ -51,12 +57,6 @@ extern "C"
         Vec4 params;
     } PushConstants;
 
-    typedef struct
-    {
-        Mat4 light_view_proj;
-        Vec4 light_dir;
-    } ShadowUniforms;
-
 /* Voxel material ID 0 is reserved for empty/air (engine constant, not content) */
 #define VOXEL_MATERIAL_EMPTY 0
 
@@ -67,11 +67,10 @@ extern "C"
  * CPU↔GPU shared struct size invariants.
  * These must match shader expectations exactly; mismatches cause UB on upload.
  */
-static_assert(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
-static_assert(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
-static_assert(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
-static_assert(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
-static_assert(sizeof(ShadowUniforms) == 80, "ShadowUniforms size mismatch with shader");
+STATIC_ASSERT(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
+STATIC_ASSERT(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
+STATIC_ASSERT(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
+STATIC_ASSERT(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
 
 #ifdef __cplusplus
 }

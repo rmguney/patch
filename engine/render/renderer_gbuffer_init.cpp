@@ -226,15 +226,39 @@ namespace patch
             return false;
         }
 
+        if (scene_lighting_descriptor_layout_ == VK_NULL_HANDLE)
+        {
+            VkDescriptorSetLayoutBinding lighting_binding{};
+            lighting_binding.binding = 0;
+            lighting_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            lighting_binding.descriptorCount = 1;
+            lighting_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+
+            VkDescriptorSetLayoutCreateInfo lighting_layout_info{};
+            lighting_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            lighting_layout_info.bindingCount = 1;
+            lighting_layout_info.pBindings = &lighting_binding;
+
+            if (vkCreateDescriptorSetLayout(device_, &lighting_layout_info, nullptr, &scene_lighting_descriptor_layout_) != VK_SUCCESS)
+            {
+                fprintf(stderr, "Failed to create scene lighting descriptor layout\n");
+                return false;
+            }
+        }
+
         VkPushConstantRange push_range{};
         push_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         push_range.offset = 0;
         push_range.size = 256;
 
+        VkDescriptorSetLayout deferred_set_layouts[2] = {
+            deferred_lighting_descriptor_layout_,
+            scene_lighting_descriptor_layout_};
+
         VkPipelineLayoutCreateInfo pipeline_layout_info{};
         pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_info.setLayoutCount = 1;
-        pipeline_layout_info.pSetLayouts = &deferred_lighting_descriptor_layout_;
+        pipeline_layout_info.setLayoutCount = 2;
+        pipeline_layout_info.pSetLayouts = deferred_set_layouts;
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_range;
 
@@ -492,15 +516,15 @@ namespace patch
 
         VkDescriptorPoolSize pool_sizes[2]{};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8; /* gbuffer(5) + shadow + blue_noise + ao */
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 8;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
 
         VkDescriptorPoolCreateInfo pool_info{};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool_info.poolSizeCount = 2;
         pool_info.pPoolSizes = pool_sizes;
-        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT;
+        pool_info.maxSets = MAX_FRAMES_IN_FLIGHT * 2;
 
         if (vkCreateDescriptorPool(device_, &pool_info, nullptr, &deferred_lighting_descriptor_pool_) != VK_SUCCESS)
         {
@@ -583,6 +607,48 @@ namespace patch
             writes[7].pImageInfo = &ao_buffer_info;
 
             vkUpdateDescriptorSets(device_, 8, writes, 0, nullptr);
+        }
+
+        if (!create_scene_lighting_descriptors())
+            return false;
+
+        return true;
+    }
+
+    bool Renderer::create_scene_lighting_descriptors()
+    {
+        VkDescriptorSetLayout lighting_layouts[MAX_FRAMES_IN_FLIGHT];
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            lighting_layouts[i] = scene_lighting_descriptor_layout_;
+
+        VkDescriptorSetAllocateInfo lighting_alloc{};
+        lighting_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        lighting_alloc.descriptorPool = deferred_lighting_descriptor_pool_;
+        lighting_alloc.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+        lighting_alloc.pSetLayouts = lighting_layouts;
+
+        if (vkAllocateDescriptorSets(device_, &lighting_alloc, scene_lighting_sets_) != VK_SUCCESS)
+        {
+            fprintf(stderr, "Failed to allocate scene lighting descriptor sets\n");
+            return false;
+        }
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorBufferInfo ubo_info{};
+            ubo_info.buffer = lighting_ubo_[i].buffer;
+            ubo_info.offset = 0;
+            ubo_info.range = sizeof(SceneLightingUBO);
+
+            VkWriteDescriptorSet write{};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = scene_lighting_sets_[i];
+            write.dstBinding = 0;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.descriptorCount = 1;
+            write.pBufferInfo = &ubo_info;
+
+            vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
         }
 
         return true;

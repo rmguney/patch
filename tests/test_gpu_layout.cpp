@@ -187,6 +187,27 @@ TEST(voxel_temporal_ubo_layout)
     return 1;
 }
 
+TEST(scene_lighting_ubo_size)
+{
+    ASSERT(sizeof(patch::SceneLightingUBO) == 144);
+    return 1;
+}
+
+TEST(scene_lighting_ubo_layout)
+{
+    using namespace patch;
+    ASSERT(offsetof(SceneLightingUBO, sun_dir) == 0);
+    ASSERT(offsetof(SceneLightingUBO, sun_color) == 16);
+    ASSERT(offsetof(SceneLightingUBO, fill_dir) == 32);
+    ASSERT(offsetof(SceneLightingUBO, fill_color) == 48);
+    ASSERT(offsetof(SceneLightingUBO, back_dir) == 64);
+    ASSERT(offsetof(SceneLightingUBO, back_color) == 80);
+    ASSERT(offsetof(SceneLightingUBO, sky_ambient) == 96);
+    ASSERT(offsetof(SceneLightingUBO, ground_ambient) == 112);
+    ASSERT(offsetof(SceneLightingUBO, sky_color) == 128);
+    return 1;
+}
+
 TEST(material_descriptor_size)
 {
     ASSERT(sizeof(MaterialDescriptor) >= 72);
@@ -416,6 +437,8 @@ int main()
     RUN_TEST(voxel_push_constants_layout);
     RUN_TEST(voxel_temporal_ubo_size);
     RUN_TEST(voxel_temporal_ubo_layout);
+    RUN_TEST(scene_lighting_ubo_size);
+    RUN_TEST(scene_lighting_ubo_layout);
     RUN_TEST(material_descriptor_size);
 
     printf("\nShader Embedding:\n");

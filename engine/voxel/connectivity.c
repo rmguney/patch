@@ -119,11 +119,6 @@ static inline void set_island_id(ConnectivityWorkBuffer *work, int32_t global_id
     work->island_ids[global_idx] = island_id;
 }
 
-static inline uint16_t get_island_id(const ConnectivityWorkBuffer *work, int32_t global_idx)
-{
-    return work->island_ids[global_idx];
-}
-
 static const int32_t NEIGHBOR_OFFSETS[6][3] = {
     {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
 
@@ -1006,14 +1001,25 @@ static void boundary_bfs(const VoxelVolume *vol, ConnectivityWorkBuffer *work,
         /* Break AFTER neighbor expansion so the anchor voxel's neighbors
          * are all marked visited, creating wider coverage near the cut. */
         if (anchor_found)
+        {
+            /* Drain remaining stack: mark all queued voxels as visited with
+             * this island_id so later seeds don't re-discover them as phantom
+             * floating islands. No budget cost — just marking, not expanding. */
+            while (work->stack_top > 0)
+            {
+                int32_t drain_packed = work->stack[--work->stack_top];
+                int32_t dcx, dcy, dcz, dlx, dly, dlz;
+                unpack_voxel_pos(drain_packed, &dcx, &dcy, &dcz, &dlx, &dly, &dlz);
+                int32_t dgi = global_voxel_index(vol, dcx, dcy, dcz, dlx, dly, dlz);
+                if (dgi >= 0 && dgi < work->visited_size)
+                {
+                    set_visited(work, dgi);
+                    set_island_id(work, dgi, island_id);
+                }
+            }
             break;
+        }
     }
-
-    /* If BFS didn't complete (budget exhausted or stack still has items) and no
-     * anchor was found, conservatively force-anchor to prevent false floating
-     * classification of large connected terrain. */
-    if (work->stack_top > 0 && !anchor_found)
-        anchor_found = true;
 
     *found_anchor = anchor_found;
 
@@ -1078,14 +1084,13 @@ void connectivity_analyze_boundary(const VoxelVolume *vol,
         }
     }
 
-    uint16_t next_island_id = 1;
+    uint16_t next_island_id = resuming ? work->deferred_next_island_id : 1;
     int32_t budget = CONNECTIVITY_BUDGET_PER_TICK;
 
-    /* Track which island IDs are confirmed anchored, so subsequent BFS
-     * seeds on partially-explored anchored components can inherit anchor
-     * status via visited neighbor lookup. */
-    bool anchored_ids[CONNECTIVITY_MAX_ISLANDS + 2];
-    memset(anchored_ids, 0, sizeof(anchored_ids));
+    /* Use persistent anchored_ids from work buffer so anchor status
+     * propagates correctly across deferred multi-frame analysis. */
+    if (!resuming)
+        memset(work->anchored_ids, 0, sizeof(work->anchored_ids));
 
     if (!boundary->overflow)
     {
@@ -1119,18 +1124,29 @@ void connectivity_analyze_boundary(const VoxelVolume *vol,
             bool found_anchor = false;
             boundary_bfs(vol, work, packed, next_island_id,
                          island, anchor_y, anchor_material,
-                         &budget, &found_anchor, anchored_ids);
+                         &budget, &found_anchor, work->anchored_ids);
 
             if (island->voxel_count == 0)
                 continue;
 
-            if (found_anchor)
+            if (!found_anchor && work->stack_top > 0)
+            {
+                /* Budget exhausted mid-BFS: island status is unknown.
+                 * Conservatively treat as anchored to prevent false detachments.
+                 * Remaining seeds will be deferred to next frame. */
+                island->is_floating = false;
+                island->anchor = ANCHOR_FLOOR;
+                result->anchored_count++;
+                if (next_island_id <= CONNECTIVITY_MAX_ISLANDS)
+                    work->anchored_ids[next_island_id] = true;
+            }
+            else if (found_anchor)
             {
                 island->is_floating = false;
                 island->anchor = ANCHOR_FLOOR;
                 result->anchored_count++;
                 if (next_island_id <= CONNECTIVITY_MAX_ISLANDS)
-                    anchored_ids[next_island_id] = true;
+                    work->anchored_ids[next_island_id] = true;
 
                 /* Sweep remaining boundary seeds: mark any that are adjacent
                  * to visited-anchored territory as visited. This prevents
@@ -1183,7 +1199,7 @@ void connectivity_analyze_boundary(const VoxelVolume *vol,
                             continue;
 
                         uint16_t nid = work->island_ids[ngi];
-                        if (nid > 0 && nid <= CONNECTIVITY_MAX_ISLANDS && anchored_ids[nid])
+                        if (nid > 0 && nid <= CONNECTIVITY_MAX_ISLANDS && work->anchored_ids[nid])
                         {
                             set_visited(work, sgi);
                             set_island_id(work, sgi, nid);
@@ -1208,6 +1224,7 @@ void connectivity_analyze_boundary(const VoxelVolume *vol,
         if (i < boundary->count && budget <= 0)
         {
             work->deferred_seed_start = i;
+            work->deferred_next_island_id = next_island_id;
             work->has_deferred_work = true;
         }
     }

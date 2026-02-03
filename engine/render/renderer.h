@@ -12,6 +12,7 @@
 #include "engine/render/gpu_bvh.h"
 #include "engine/render/gpu_memory.h"
 #include "engine/platform/window.h"
+#include "content/scenes.h"
 #include <cstdint>
 #include <vector>
 
@@ -112,6 +113,7 @@ namespace patch
 
         void set_material_palette(const Vec3 *colors, int32_t count);
         void set_material_palette_full(const MaterialEntry *materials, int32_t count);
+        void set_scene_lighting(const SceneLighting *lighting);
 
         void begin_frame(uint32_t *image_index);
         void begin_main_pass(uint32_t image_index);
@@ -295,8 +297,9 @@ namespace patch
         VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
         VkPipeline ui_pipeline_;
 
-        /* Lighting uniforms UBO (used by deferred lighting shader) */
         VulkanBuffer lighting_ubo_[MAX_FRAMES_IN_FLIGHT];
+        void *lighting_ubo_mapped_[MAX_FRAMES_IN_FLIGHT] = {};
+        SceneLightingUBO scene_lighting_ubo_data_{};
 
         Vec3 camera_target_;
         Vec3 prev_camera_target_;
@@ -562,6 +565,10 @@ namespace patch
         VkDescriptorPool deferred_lighting_descriptor_pool_;
         VkDescriptorSet deferred_lighting_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
 
+        VkDescriptorSetLayout scene_lighting_descriptor_layout_ = VK_NULL_HANDLE;
+        VkDescriptorSet scene_lighting_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+        VkDescriptorSet shadow_lighting_sets_[MAX_FRAMES_IN_FLIGHT] = {};
+
         /* Depth prime pass (copies linear_depth texture to hardware depth buffer) */
         VkRenderPass depth_prime_render_pass_;
         VkFramebuffer depth_prime_framebuffer_;
@@ -711,6 +718,7 @@ namespace patch
         bool create_deferred_lighting_pipeline();
         bool create_gbuffer_descriptor_sets();
         bool create_deferred_lighting_descriptor_sets();
+        bool create_scene_lighting_descriptors();
         void update_deferred_shadow_buffer_descriptor(uint32_t frame_index, VkImageView shadow_view);
         void update_denoise_color_input(uint32_t frame_index, VkImageView color_view);
         void destroy_gbuffer_resources();

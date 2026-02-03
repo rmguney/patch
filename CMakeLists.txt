@@ -5,24 +5,34 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
+add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 option(PATCH_ENABLE_WARNINGS "Enable compiler warnings" ON)
-option(PATCH_ENABLE_ASAN "Enable address sanitizer" OFF)
 option(PATCH_USE_PREBUILT_SHADERS "Use prebuilt shader header (no Vulkan SDK required for build)" OFF)
 option(PATCH_ENABLE_PROFILING "Enable CPU/GPU profiling (F3 toggle in app)" ON)
+option(PATCH_ENABLE_SANITIZERS "Enable sanitizers (ASan + UBSan)" OFF)
+option(PATCH_ENABLE_CLANG_TIDY "Enable clang-tidy static analysis target" OFF)
 
-# Optimization flags for Release builds
-if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-    if(MSVC)
-        add_compile_options(/O2 /Ob2 /DNDEBUG)
-    else()
-        add_compile_options(-O3 -DNDEBUG)
-    endif()
+# Clang-cl: CMake lacks C23 flag mapping for clang-cl MSVC frontend
+if("x${CMAKE_C_COMPILER_FRONTEND_VARIANT}" STREQUAL "xMSVC")
+    set(CMAKE_C23_STANDARD_COMPILE_OPTION "/clang:-std=c23")
+    set(CMAKE_C23_EXTENSION_COMPILE_OPTION "/clang:-std=gnu23")
+    set(CMAKE_C_STANDARD_LATEST 23)
 endif()
 
-# Kill patch_samples.exe if running (allows rebuild while app accidentally left open)
+set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    add_compile_options(/O2 /Ob2 /DNDEBUG)
+endif()
+
+# Kill patch_samples.exe if running
 if(WIN32)
     execute_process(
         COMMAND taskkill /F /IM patch_samples.exe
@@ -65,8 +75,6 @@ set(ENGINE_VOXEL_SOURCES
     engine/voxel/connectivity.c
     engine/voxel/voxel_object.h
     engine/voxel/voxel_object.c
-    engine/voxel/unified_volume.h
-    engine/voxel/unified_volume.c
     engine/voxel/bvh.h
     engine/voxel/bvh.c
 )
@@ -187,12 +195,9 @@ set_property(TARGET engine_platform PROPERTY CXX_STANDARD 23)
 set_property(TARGET engine_platform PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET engine_platform PROPERTY CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    target_compile_options(engine_platform PRIVATE /GR- /EHs-c-)
-    target_compile_definitions(engine_platform PRIVATE _HAS_EXCEPTIONS=0)
-else()
-    target_compile_options(engine_platform PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
-endif()
+# Disable RTTI and exceptions (Clang-cl uses MSVC-style flags)
+target_compile_options(engine_platform PRIVATE /GR- /EHs-c-)
+target_compile_definitions(engine_platform PRIVATE _HAS_EXCEPTIONS=0)
 
 if(PATCH_ENABLE_PROFILING)
     target_compile_definitions(engine_platform PRIVATE PATCH_PROFILE)
@@ -246,12 +251,9 @@ set_property(TARGET engine_render PROPERTY CXX_STANDARD 23)
 set_property(TARGET engine_render PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET engine_render PROPERTY CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    target_compile_options(engine_render PRIVATE /GR- /EHs-c-)
-    target_compile_definitions(engine_render PRIVATE _HAS_EXCEPTIONS=0)
-else()
-    target_compile_options(engine_render PRIVATE -fno-exceptions -fno-rtti)
-endif()
+# Disable RTTI and exceptions
+target_compile_options(engine_render PRIVATE /GR- /EHs-c-)
+target_compile_definitions(engine_render PRIVATE _HAS_EXCEPTIONS=0)
 
 if(PATCH_ENABLE_PROFILING)
     target_compile_definitions(engine_render PRIVATE PATCH_PROFILE)
@@ -283,12 +285,9 @@ set_property(TARGET game PROPERTY CXX_STANDARD 23)
 set_property(TARGET game PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET game PROPERTY CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    target_compile_options(game PRIVATE /GR- /EHs-c-)
-    target_compile_definitions(game PRIVATE _HAS_EXCEPTIONS=0)
-else()
-    target_compile_options(game PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
-endif()
+# Disable RTTI and exceptions
+target_compile_options(game PRIVATE /GR- /EHs-c-)
+target_compile_definitions(game PRIVATE _HAS_EXCEPTIONS=0)
 
 if(PATCH_ENABLE_PROFILING)
     target_compile_definitions(game PRIVATE PATCH_PROFILE)
@@ -319,12 +318,9 @@ set_property(TARGET patch_samples PROPERTY CXX_STANDARD 23)
 set_property(TARGET patch_samples PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET patch_samples PROPERTY CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    target_compile_options(patch_samples PRIVATE /GR- /EHs-c-)
-    target_compile_definitions(patch_samples PRIVATE _HAS_EXCEPTIONS=0)
-else()
-    target_compile_options(patch_samples PRIVATE -fno-exceptions -fno-rtti)
-endif()
+# Disable RTTI and exceptions
+target_compile_options(patch_samples PRIVATE /GR- /EHs-c-)
+target_compile_definitions(patch_samples PRIVATE _HAS_EXCEPTIONS=0)
 
 if(PATCH_ENABLE_PROFILING)
     target_compile_definitions(patch_samples PRIVATE PATCH_PROFILE)
@@ -336,22 +332,43 @@ endif()
 set(PATCH_ALL_TARGETS engine_physics engine_voxel engine_sim content engine_platform engine_render game patch_samples)
 if(PATCH_ENABLE_WARNINGS)
     foreach(tgt ${PATCH_ALL_TARGETS})
-        if(MSVC)
-            target_compile_options(${tgt} PRIVATE /W4 /permissive-)
-        else()
-            target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wpedantic)
-        endif()
+        target_compile_options(${tgt} PRIVATE /W4 /permissive-)
     endforeach()
 endif()
 
 # -----------------------------------------------------------------------------
-# Address sanitizer
+# Sanitizers (ASan + UBSan) - Clang-cl
 # -----------------------------------------------------------------------------
-if(PATCH_ENABLE_ASAN AND NOT MSVC)
+if(PATCH_ENABLE_SANITIZERS)
+    # ASan requires release runtime (not debug runtime)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+
+    # Find LLVM installation and sanitizer runtime
+    set(LLVM_ROOT "C:/Program Files/LLVM")
+    file(GLOB LLVM_VERSION_DIRS "${LLVM_ROOT}/lib/clang/*")
+    list(GET LLVM_VERSION_DIRS 0 LLVM_VERSION_DIR)
+    set(SANITIZER_LIB_DIR "${LLVM_VERSION_DIR}/lib/windows")
+
     foreach(tgt ${PATCH_ALL_TARGETS})
-        target_compile_options(${tgt} PRIVATE -fsanitize=address -fno-omit-frame-pointer)
-        target_link_options(${tgt} PRIVATE -fsanitize=address)
+        target_compile_definitions(${tgt} PRIVATE PATCH_SANITIZERS_ENABLED)
+        target_compile_options(${tgt} PRIVATE
+            -fsanitize=address,undefined
+            -fno-sanitize-recover=all
+            /MD)
+        target_link_directories(${tgt} PRIVATE "${SANITIZER_LIB_DIR}")
+        target_link_libraries(${tgt} PRIVATE
+            clang_rt.asan_dynamic-x86_64
+            clang_rt.asan_dynamic_runtime_thunk-x86_64
+            clang_rt.ubsan_standalone-x86_64)
+        target_link_options(${tgt} PRIVATE /INCREMENTAL:NO)
     endforeach()
+
+    # Copy ASan DLL to build directory
+    file(COPY "${SANITIZER_LIB_DIR}/clang_rt.asan_dynamic-x86_64.dll"
+         DESTINATION "${CMAKE_BINARY_DIR}")
+
+    message(STATUS "Sanitizers enabled: ASan + UBSan (Clang-cl)")
+    message(STATUS "  Runtime libs: ${SANITIZER_LIB_DIR}")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -486,16 +503,12 @@ else()
     )
 endif()
 
-# Make engine_render rebuild when embedded shaders change
+# Track generated shader header as a source so ninja rebuilds properly in one pass
 set_source_files_properties(
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_gbuffer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_raymarch.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_particles.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_voxel_objects.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_vulkan.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/engine/render/renderer_denoise_init.cpp
-    PROPERTIES OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/generated/shaders_embedded.h
+    ${CMAKE_BINARY_DIR}/generated/shaders_embedded.h
+    PROPERTIES GENERATED TRUE
 )
+target_sources(engine_render PRIVATE ${CMAKE_BINARY_DIR}/generated/shaders_embedded.h)
 
 # -----------------------------------------------------------------------------
 # IDE helpers
@@ -561,6 +574,7 @@ add_test(NAME scenes COMMAND test_scenes)
 add_executable(test_gpu_layout tests/test_gpu_layout.cpp)
 target_link_libraries(test_gpu_layout PRIVATE engine_voxel engine_core)
 target_include_directories(test_gpu_layout PRIVATE ${CMAKE_BINARY_DIR}/generated)
+add_dependencies(test_gpu_layout Shaders)
 set_property(TARGET test_gpu_layout PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_gpu_layout PROPERTY CXX_STANDARD_REQUIRED ON)
 add_test(NAME gpu_layout COMMAND test_gpu_layout)
@@ -598,11 +612,7 @@ set_tests_properties(${UNIT_TESTS} PROPERTIES FIXTURES_SETUP unit_tests)
 add_executable(test_launch tests/test_launch.cpp)
 set_property(TARGET test_launch PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_launch PROPERTY CXX_STANDARD_REQUIRED ON)
-if(MSVC)
-    target_compile_options(test_launch PRIVATE /W4)
-else()
-    target_compile_options(test_launch PRIVATE -Wall -Wextra)
-endif()
+target_compile_options(test_launch PRIVATE /W4)
 
 add_test(NAME launch COMMAND test_launch $<TARGET_FILE:patch_samples>)
 set_tests_properties(launch PROPERTIES FIXTURES_REQUIRED unit_tests)
@@ -611,14 +621,38 @@ set_tests_properties(launch PROPERTIES FIXTURES_REQUIRED unit_tests)
 add_executable(test_render_perf tests/test_render_perf.cpp)
 set_property(TARGET test_render_perf PROPERTY CXX_STANDARD 23)
 set_property(TARGET test_render_perf PROPERTY CXX_STANDARD_REQUIRED ON)
-if(MSVC)
-    target_compile_options(test_render_perf PRIVATE /W4)
-else()
-    target_compile_options(test_render_perf PRIVATE -Wall -Wextra)
-endif()
+target_compile_options(test_render_perf PRIVATE /W4)
 
 add_test(NAME render_perf COMMAND test_render_perf $<TARGET_FILE:patch_samples>)
 set_tests_properties(render_perf PROPERTIES FIXTURES_REQUIRED unit_tests)
+
+# Apply sanitizer settings to test targets
+if(PATCH_ENABLE_SANITIZERS)
+    set(PATCH_TEST_TARGETS
+        test_core test_voxel test_content test_connectivity test_terrain_detach
+        test_physics test_scenes test_gpu_layout test_profile test_profile_validation
+        test_profile_stress test_stress test_launch test_render_perf)
+    foreach(tgt ${PATCH_TEST_TARGETS})
+        target_compile_definitions(${tgt} PRIVATE PATCH_SANITIZERS_ENABLED)
+        target_compile_options(${tgt} PRIVATE
+            -fsanitize=address,undefined
+            -fno-sanitize-recover=all
+            /MD)
+        target_link_directories(${tgt} PRIVATE "${SANITIZER_LIB_DIR}")
+        target_link_libraries(${tgt} PRIVATE
+            clang_rt.asan_dynamic-x86_64
+            clang_rt.asan_dynamic_runtime_thunk-x86_64
+            clang_rt.ubsan_standalone-x86_64)
+        target_link_options(${tgt} PRIVATE /INCREMENTAL:NO)
+    endforeach()
+endif()
+
+# Ensure all test executables are built before running tests
+set(PATCH_TEST_EXECUTABLES
+    test_core test_voxel test_content test_connectivity test_terrain_detach
+    test_physics test_scenes test_gpu_layout test_profile test_profile_validation
+    test_profile_stress test_stress test_launch test_render_perf)
+add_dependencies(patch_samples ${PATCH_TEST_EXECUTABLES})
 
 # Run all tests and generate build report
 add_custom_command(TARGET patch_samples POST_BUILD
@@ -638,8 +672,42 @@ set_property(TARGET voxelize PROPERTY CXX_STANDARD 23)
 set_property(TARGET voxelize PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET voxelize PROPERTY CXX_EXTENSIONS OFF)
 
-if(MSVC)
-    target_compile_options(voxelize PRIVATE /W4)
-else()
-    target_compile_options(voxelize PRIVATE -Wall -Wextra)
+target_compile_options(voxelize PRIVATE /W4)
+
+# -----------------------------------------------------------------------------
+# Clang-Tidy static analysis
+# -----------------------------------------------------------------------------
+if(PATCH_ENABLE_CLANG_TIDY)
+    find_program(CLANG_TIDY_EXE NAMES clang-tidy clang-tidy-18 clang-tidy-17
+        HINTS "C:/Program Files/LLVM/bin" "$ENV{LLVM_PATH}/bin")
+    if(CLANG_TIDY_EXE)
+        file(GLOB_RECURSE TIDY_SOURCES
+            "${CMAKE_SOURCE_DIR}/engine/*.c"
+            "${CMAKE_SOURCE_DIR}/engine/*.cpp"
+            "${CMAKE_SOURCE_DIR}/app/*.cpp"
+            "${CMAKE_SOURCE_DIR}/game/*.c"
+            "${CMAKE_SOURCE_DIR}/content/*.c"
+        )
+
+        add_custom_target(clang-tidy
+            COMMAND ${CLANG_TIDY_EXE}
+                -p ${CMAKE_BINARY_DIR}
+                --config-file=${CMAKE_SOURCE_DIR}/.clang-tidy
+                ${TIDY_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy static analysis..."
+        )
+
+        add_custom_target(clang-tidy-fix
+            COMMAND ${CLANG_TIDY_EXE}
+                -p ${CMAKE_BINARY_DIR}
+                --config-file=${CMAKE_SOURCE_DIR}/.clang-tidy
+                --fix
+                ${TIDY_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy with automatic fixes..."
+        )
+    else()
+        message(WARNING "clang-tidy not found")
+    endif()
 endif()

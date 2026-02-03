@@ -3,7 +3,6 @@
 #include "voxel_push_constants.h"
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
-#include "engine/voxel/unified_volume.h"
 #include <climits>
 #include <cstdio>
 #include <cstring>

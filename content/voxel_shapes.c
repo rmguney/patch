@@ -51,4 +51,4 @@ const VoxelShape *const g_voxel_shapes[VOXEL_SHAPE_MAX_COUNT] = {
 
 const int32_t g_voxel_shape_count = 3;
 
-static_assert(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");
+STATIC_ASSERT(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");
