@@ -5,6 +5,7 @@
 #include "engine/core/types.h"
 #include "engine/core/math.h"
 #include "engine/physics/particles.h"
+#include "engine/sim/env_particles.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/render/draw_list.h"
@@ -141,7 +142,8 @@ namespace patch
                                   const ParticleSystem *particles = nullptr);
 
         /* GPU raymarched particle rendering */
-        void render_particles_raymarched(const ParticleSystem *sys);
+        void render_particles_raymarched(const ParticleSystem *sys,
+                                         const EnvParticleSystem *env_sys = nullptr);
 
         /* GPU raymarched voxel object rendering */
         void render_voxel_objects_raymarched(const VoxelObjectWorld *world);

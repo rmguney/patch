@@ -263,4 +263,63 @@ namespace patch
         renderer.end_ui();
     }
 
+    void render_loading_screen(Renderer &renderer, const LoadingState *state,
+                               int32_t window_width, int32_t window_height)
+    {
+        if (!state)
+            return;
+
+        UIDrawContext ctx;
+        ctx.renderer = &renderer;
+        ctx.alpha = 1.0f;
+        ctx.window_width = window_width;
+        ctx.window_height = window_height;
+
+        const float w = (float)(window_width > 0 ? window_width : 1);
+        const float h = (float)(window_height > 0 ? window_height : 1);
+        const float min_dim = w < h ? w : h;
+        const float cx = w * 0.5f;
+
+        renderer.begin_ui();
+
+        draw_rect_px(&ctx, 0.0f, 0.0f, w, h, color_background, 1.0f);
+        draw_decorations_px(&ctx);
+
+        const float title_h = clampf_local(min_dim * 0.06f, 28.0f, 56.0f);
+        draw_text_centered_px(&ctx, cx, h * 0.35f, title_h, color_primary_bright, 1.0f, "LOADING");
+
+        const float stage_h = clampf_local(min_dim * 0.025f, 12.0f, 20.0f);
+        if (state->stage_name && state->stage_name[0] != '\0')
+        {
+            draw_text_centered_px(&ctx, cx, h * 0.43f, stage_h, color_text_dim, 0.8f, state->stage_name);
+        }
+
+        const float bar_w = clampf_local(w * 0.4f, 200.0f, 600.0f);
+        const float bar_h = clampf_local(min_dim * 0.015f, 8.0f, 20.0f);
+        const float bar_x = cx - bar_w * 0.5f;
+        const float bar_y = h * 0.52f;
+        const float border = clampf_local(min_dim * 0.002f, 1.0f, 3.0f);
+
+        draw_rect_px(&ctx, bar_x - border, bar_y - border,
+                     bar_w + border * 2.0f, bar_h + border * 2.0f, color_primary, 0.4f);
+        draw_rect_px(&ctx, bar_x, bar_y, bar_w, bar_h, color_panel, 0.95f);
+
+        float progress = state->progress;
+        if (progress < 0.0f) progress = 0.0f;
+        if (progress > 1.0f) progress = 1.0f;
+        if (progress > 0.0f)
+        {
+            draw_rect_px(&ctx, bar_x, bar_y, bar_w * progress, bar_h, color_primary, 0.9f);
+        }
+
+        char pct_text[16];
+        snprintf(pct_text, sizeof(pct_text), "%d%%", (int)(progress * 100.0f));
+        draw_text_centered_px(&ctx, cx, bar_y + bar_h + stage_h * 0.8f,
+                              stage_h, color_text, 0.9f, pct_text);
+
+        draw_footer_px(&ctx);
+
+        renderer.end_ui();
+    }
+
 }

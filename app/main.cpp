@@ -407,12 +407,27 @@ int patch_main(int argc, char *argv[])
                 scene_destroy(active_scene);
             }
             const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
-            const AppSettings *settings = app_ui_get_settings(&ui);
-            float voxel_size = settings->voxel_size_mm / 1000.0f;
-            BallPitParams bp = params_from_settings(settings);
+            const AppSettings *settings_snap = app_ui_get_settings(&ui);
+            float voxel_size = settings_snap->voxel_size_mm / 1000.0f;
+            BallPitParams bp = params_from_settings(settings_snap);
             active_scene = ball_pit_scene_create(desc->bounds, voxel_size, &bp);
             rng_seed(&active_scene->rng, rng_seed_value++);
-            scene_init(active_scene);
+
+            {
+                LoadingState load_state;
+                loading_state_init(&load_state, BALL_PIT_INIT_STAGES);
+                while (!ball_pit_init_step(active_scene, &load_state))
+                {
+                    window.poll_events();
+                    uint32_t li;
+                    renderer.begin_frame(&li);
+                    renderer.begin_main_pass(li);
+                    patch::render_loading_screen(renderer, &load_state,
+                                                 window.width(), window.height());
+                    renderer.end_frame(li);
+                }
+            }
+
             current_scene = ActiveScene::BallPit;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
@@ -781,11 +796,13 @@ int patch_main(int argc, char *argv[])
             VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
             VoxelObjectWorld *objects = ball_pit_get_objects(active_scene);
             ParticleSystem *particles = ball_pit_get_particles(active_scene);
+            EnvParticleSystem *env_particles = ball_pit_get_env_particles(active_scene);
 
             bool has_objects_or_particles = (objects && objects->object_count > 0) ||
-                                            (particles && particles->count > 0);
+                                            (particles && particles->count > 0) ||
+                                            (env_particles && env_particles->active_count > 0);
 
-            if (particles)
+            if (particles || env_particles)
             {
                 float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
                 if (interp_alpha < 0.0f)
@@ -822,7 +839,7 @@ int patch_main(int argc, char *argv[])
             if (terrain)
             {
                 PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
-                bool need_depth_prime = (objects && objects->object_count > 0) || particles;
+                bool need_depth_prime = (objects && objects->object_count > 0) || particles || env_particles;
                 renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
                 PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
@@ -843,9 +860,9 @@ int patch_main(int argc, char *argv[])
                 PROFILE_END(PROFILE_RENDER_OBJECTS);
             }
 
-            if (particles)
+            if (particles || env_particles)
             {
-                renderer.render_particles_raymarched(particles);
+                renderer.render_particles_raymarched(particles, env_particles);
             }
 
             renderer.end_gbuffer_pass();

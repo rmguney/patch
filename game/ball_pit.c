@@ -1,5 +1,6 @@
 #include "game/ball_pit.h"
 #include "game/terrain_gen.h"
+#include "game/scatter_gen.h"
 #include "engine/platform/platform.h"
 #include "engine/core/profile.h"
 #include "engine/core/math.h"
@@ -175,53 +176,104 @@ static void throw_random_shape(BallPitData *data, Scene *scene, Vec3 target)
 }
 
 
-static void ball_pit_init(Scene *scene)
+bool ball_pit_init_step(Scene *scene, LoadingState *state)
 {
     BallPitData *data = (BallPitData *)scene->user_data;
     const BallPitParams *p = &data->params;
-
     const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
 
-    Vec3 origin = vec3_create(scene->bounds.min_x, scene->bounds.min_y, scene->bounds.min_z);
-    data->terrain = volume_create_dims(desc->chunks_x, desc->chunks_y, desc->chunks_z,
-                                       origin, data->voxel_size);
-
-    terrain_gen_heightmap(data->terrain, data->voxel_size,
-                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
-    terrain_gen_pillars(data->terrain, data->voxel_size,
-                        p->num_pillars, p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
-
-    volume_rebuild_all_occupancy(data->terrain);
-
-    data->detach_ready = connectivity_work_init(&data->detach_work, data->terrain);
-
-    data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
-    voxel_object_world_set_terrain(data->objects, data->terrain);
-
-    spawn_gary_on_terrain(data->objects, scene->bounds,
-                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
-    spawn_metal_cube_on_terrain(data->objects, scene->bounds,
-                                p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
-
-    data->particles = particle_system_create(scene->bounds);
-    data->physics = physics_world_create(data->objects, data->terrain);
-
-    int32_t spawn_target = p->initial_spawns;
-    const char *stress_env = getenv("PATCH_STRESS_OBJECTS");
-    if (stress_env)
+    switch (data->init_stage)
     {
-        int32_t stress_count = atoi(stress_env);
-        if (stress_count > 0 && stress_count <= p->max_spawns)
-            spawn_target = stress_count;
+    case 0:
+    {
+        loading_state_advance(state, "Creating volume");
+        Vec3 origin = vec3_create(scene->bounds.min_x, scene->bounds.min_y, scene->bounds.min_z);
+        data->terrain = volume_create_dims(desc->chunks_x, desc->chunks_y, desc->chunks_z,
+                                           origin, data->voxel_size);
+        break;
+    }
+    case 1:
+        loading_state_advance(state, "Generating terrain");
+        terrain_gen_heightmap(data->terrain, data->voxel_size,
+                              p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        terrain_gen_pillars(data->terrain, data->voxel_size,
+                            p->num_pillars, p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        break;
+    case 2:
+        loading_state_advance(state, "Planting trees");
+        terrain_gen_trees(data->terrain, data->voxel_size, 0.6f,
+                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        break;
+    case 3:
+    {
+        loading_state_advance(state, "Scattering flora");
+        static const ScatterConfig scatter_configs[] = {
+            {MAT_FLOWER_RED, MAT_GRASS, 0.025f, 8.0f, 0.3f, 0.0f, 0.7f, 0.3f, 0.5f},
+            {MAT_FLOWER_BLUE, MAT_GRASS, 0.02f, 10.0f, 0.35f, -0.1f, 0.6f, 0.5f, 0.4f},
+            {MAT_FLOWER_YELLOW, MAT_GRASS, 0.02f, 12.0f, 0.3f, 0.3f, 0.6f, 0.2f, 0.5f},
+            {MAT_MUSHROOM, MAT_DIRT, 0.015f, 5.0f, 0.5f, -0.2f, 0.5f, 0.5f, 0.4f},
+        };
+        scatter_gen_apply(data->terrain, data->voxel_size, scatter_configs,
+                          sizeof(scatter_configs) / sizeof(scatter_configs[0]), desc->rng_seed);
+        break;
+    }
+    case 4:
+        loading_state_advance(state, "Building occupancy");
+        volume_rebuild_all_occupancy(data->terrain);
+        data->detach_ready = connectivity_work_init(&data->detach_work, data->terrain);
+        break;
+    case 5:
+    {
+        loading_state_advance(state, "Placing objects");
+        data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
+        voxel_object_world_set_terrain(data->objects, data->terrain);
+        spawn_gary_on_terrain(data->objects, scene->bounds,
+                              p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        spawn_metal_cube_on_terrain(data->objects, scene->bounds,
+                                    p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+
+        int32_t spawn_target = p->initial_spawns;
+        const char *stress_env = getenv("PATCH_STRESS_OBJECTS");
+        if (stress_env)
+        {
+            int32_t stress_count = atoi(stress_env);
+            if (stress_count > 0 && stress_count <= p->max_spawns)
+                spawn_target = stress_count;
+        }
+        for (int32_t i = 0; i < spawn_target; i++)
+            spawn_random_shape(data->objects, scene->bounds, &scene->rng);
+        data->stats.spawn_count = spawn_target;
+        data->spawn_timer = p->spawn_interval;
+        break;
+    }
+    case 6:
+        loading_state_advance(state, "Starting physics");
+        data->particles = particle_system_create(scene->bounds);
+        data->env_particles = env_particles_create(desc->rng_seed);
+        if (data->env_particles)
+        {
+            env_particles_register_emitters(data->env_particles, data->terrain, data->voxel_size);
+            env_particles_set_wind(data->env_particles, vec3_create(1.0f, 0.0f, 0.3f), 0.5f);
+        }
+        data->physics = physics_world_create(data->objects, data->terrain);
+        loading_state_complete(state);
+        data->init_stage++;
+        return true;
+    default:
+        return true;
     }
 
-    for (int32_t i = 0; i < spawn_target; i++)
-    {
-        spawn_random_shape(data->objects, scene->bounds, &scene->rng);
-    }
+    data->init_stage++;
+    return false;
+}
 
-    data->stats.spawn_count = spawn_target;
-    data->spawn_timer = p->spawn_interval;
+static void ball_pit_init(Scene *scene)
+{
+    LoadingState ls;
+    loading_state_init(&ls, BALL_PIT_INIT_STAGES);
+    while (!ball_pit_init_step(scene, &ls))
+    {
+    }
 }
 
 static void ball_pit_destroy_impl(Scene *scene)
@@ -230,6 +282,8 @@ static void ball_pit_destroy_impl(Scene *scene)
 
     if (data->physics)
         physics_world_destroy(data->physics);
+    if (data->env_particles)
+        env_particles_destroy(data->env_particles);
     if (data->particles)
         particle_system_destroy(data->particles);
     if (data->objects)
@@ -271,6 +325,11 @@ static void ball_pit_tick(Scene *scene)
 
     PROFILE_BEGIN(PROFILE_SIM_PARTICLES);
     particle_system_update(data->particles, dt, data->terrain, data->objects);
+    if (data->env_particles)
+    {
+        double sim_time = (double)data->stats.tick_count * (double)dt;
+        env_particles_update(data->env_particles, dt, sim_time);
+    }
     PROFILE_END(PROFILE_SIM_PARTICLES);
 
     /* Process deferred voxel object work (budgeted per-frame) */
@@ -540,7 +599,7 @@ BallPitParams ball_pit_default_params(void)
     p.spawn_interval = 1.0f;
     p.spawn_batch = 1;
     p.max_spawns = 0; /* Automatic spawning disabled - use right-click to throw objects */
-    p.num_pillars = 60;
+    p.num_pillars = 25;
     p.terrain_amplitude = 3.0f;
     p.terrain_frequency = 0.1f;
     return p;
@@ -567,6 +626,7 @@ Scene *ball_pit_scene_create(Bounds3D bounds, float voxel_size, const BallPitPar
     data->terrain = NULL;
     data->objects = NULL;
     data->particles = NULL;
+    data->env_particles = NULL;
 
     scene->vtable = &ball_pit_vtable;
     scene->bounds = bounds;
@@ -609,6 +669,13 @@ ParticleSystem *ball_pit_get_particles(Scene *scene)
     if (!scene || !scene->user_data)
         return NULL;
     return ((BallPitData *)scene->user_data)->particles;
+}
+
+EnvParticleSystem *ball_pit_get_env_particles(Scene *scene)
+{
+    if (!scene || !scene->user_data)
+        return NULL;
+    return ((BallPitData *)scene->user_data)->env_particles;
 }
 
 PhysicsWorld *ball_pit_get_physics(Scene *scene)

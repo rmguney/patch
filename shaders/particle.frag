@@ -104,7 +104,8 @@ void main() {
 
     out_albedo = vec4(color, 1.0);
     out_normal = vec4(normal * 0.5 + 0.5, 1.0);
-    out_material = vec4(0.8, 0.0, 0.0, 0.0);  // roughness=0.8, metallic=0, emissive=0
+    float emissive = (p.color_flags.a >= 1.5) ? 0.8 : 0.0;
+    out_material = vec4(0.8, 0.0, emissive, 0.0);
     out_linear_depth = linear_depth;
     out_world_pos = vec4(hit_point, 1.0);
     out_motion_vector = vec2(0.0);

@@ -133,6 +133,9 @@ set(ENGINE_SIM_SOURCES
     engine/sim/ui.c
     engine/sim/detach.h
     engine/sim/detach.c
+    engine/sim/heartbeat.h
+    engine/sim/env_particles.h
+    engine/sim/env_particles.c
 )
 
 add_library(engine_sim STATIC ${ENGINE_SIM_SOURCES})
@@ -265,6 +268,10 @@ endif()
 set(GAME_C_SOURCES
     game/terrain_gen.h
     game/terrain_gen.c
+    game/tree_gen.h
+    game/tree_gen.c
+    game/scatter_gen.h
+    game/scatter_gen.c
     game/ball_pit.h
     game/ball_pit.c
 )

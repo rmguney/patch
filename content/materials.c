@@ -46,6 +46,21 @@ extern const MaterialDescriptor g_mat_coral;
 extern const MaterialDescriptor g_mat_cloud;
 extern const MaterialDescriptor g_mat_rose;
 extern const MaterialDescriptor g_mat_orange;
+extern const MaterialDescriptor g_mat_oak_bark;
+extern const MaterialDescriptor g_mat_pine_bark;
+extern const MaterialDescriptor g_mat_birch_bark;
+extern const MaterialDescriptor g_mat_jungle_bark;
+extern const MaterialDescriptor g_mat_oak_leaf;
+extern const MaterialDescriptor g_mat_pine_leaf;
+extern const MaterialDescriptor g_mat_birch_leaf;
+extern const MaterialDescriptor g_mat_jungle_leaf;
+extern const MaterialDescriptor g_mat_cherry_leaf;
+extern const MaterialDescriptor g_mat_autumn_leaf;
+extern const MaterialDescriptor g_mat_dead_wood;
+extern const MaterialDescriptor g_mat_flower_red;
+extern const MaterialDescriptor g_mat_flower_blue;
+extern const MaterialDescriptor g_mat_flower_yellow;
+extern const MaterialDescriptor g_mat_mushroom;
 
 /*
  * Global material registration table.
@@ -68,9 +83,24 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_CLOUD] = &g_mat_cloud,
     [MAT_ROSE] = &g_mat_rose,
     [MAT_ORANGE] = &g_mat_orange,
+    [MAT_OAK_BARK] = &g_mat_oak_bark,
+    [MAT_PINE_BARK] = &g_mat_pine_bark,
+    [MAT_BIRCH_BARK] = &g_mat_birch_bark,
+    [MAT_JUNGLE_BARK] = &g_mat_jungle_bark,
+    [MAT_OAK_LEAF] = &g_mat_oak_leaf,
+    [MAT_PINE_LEAF] = &g_mat_pine_leaf,
+    [MAT_BIRCH_LEAF] = &g_mat_birch_leaf,
+    [MAT_JUNGLE_LEAF] = &g_mat_jungle_leaf,
+    [MAT_CHERRY_LEAF] = &g_mat_cherry_leaf,
+    [MAT_AUTUMN_LEAF] = &g_mat_autumn_leaf,
+    [MAT_DEAD_WOOD] = &g_mat_dead_wood,
+    [MAT_FLOWER_RED] = &g_mat_flower_red,
+    [MAT_FLOWER_BLUE] = &g_mat_flower_blue,
+    [MAT_FLOWER_YELLOW] = &g_mat_flower_yellow,
+    [MAT_MUSHROOM] = &g_mat_mushroom,
 };
 
-const int32_t g_material_count = 16;
+const int32_t g_material_count = 31;
 
-STATIC_ASSERT(MAT_ORANGE + 1 == 16, "Material count must match g_material_count");
-STATIC_ASSERT(MAT_ORANGE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+STATIC_ASSERT(MAT_MUSHROOM + 1 == 31, "Material count must match g_material_count");
+STATIC_ASSERT(MAT_MUSHROOM < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

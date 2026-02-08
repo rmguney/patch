@@ -7,6 +7,8 @@
 #include "engine/voxel/voxel_object.h"
 #include "engine/physics/particles.h"
 #include "engine/physics/rigidbody.h"
+#include "engine/sim/env_particles.h"
+#include "engine/sim/loading.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -45,6 +47,7 @@ extern "C"
         VoxelVolume *terrain;
         VoxelObjectWorld *objects;
         ParticleSystem *particles;
+        EnvParticleSystem *env_particles;
         PhysicsWorld *physics;
 
         /* Terrain detachment (floating islands -> voxel objects) */
@@ -53,6 +56,7 @@ extern "C"
         bool pending_connectivity;  /* Run connectivity on next frame when not destroying */
         double last_connectivity_time; /* Time of last connectivity analysis (for throttling) */
         Vec3 last_destroy_point;    /* Last terrain destruction center (for detach impulse) */
+        int32_t init_stage;
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);
@@ -61,10 +65,16 @@ extern "C"
 
     void ball_pit_set_ray(Scene *scene, Vec3 origin, Vec3 dir);
 
+#define BALL_PIT_INIT_STAGES 7
+
+    /* Stepped init: returns true when all stages complete */
+    bool ball_pit_init_step(Scene *scene, LoadingState *state);
+
     /* Accessors for renderer */
     VoxelVolume *ball_pit_get_terrain(Scene *scene);
     VoxelObjectWorld *ball_pit_get_objects(Scene *scene);
     ParticleSystem *ball_pit_get_particles(Scene *scene);
+    EnvParticleSystem *ball_pit_get_env_particles(Scene *scene);
     PhysicsWorld *ball_pit_get_physics(Scene *scene);
 
 #ifdef __cplusplus

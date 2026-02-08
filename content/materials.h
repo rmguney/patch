@@ -213,6 +213,21 @@ STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
 #define MAT_CLOUD 13
 #define MAT_ROSE 14
 #define MAT_ORANGE 15
+#define MAT_OAK_BARK 16
+#define MAT_PINE_BARK 17
+#define MAT_BIRCH_BARK 18
+#define MAT_JUNGLE_BARK 19
+#define MAT_OAK_LEAF 20
+#define MAT_PINE_LEAF 21
+#define MAT_BIRCH_LEAF 22
+#define MAT_JUNGLE_LEAF 23
+#define MAT_CHERRY_LEAF 24
+#define MAT_AUTUMN_LEAF 25
+#define MAT_DEAD_WOOD 26
+#define MAT_FLOWER_RED 27
+#define MAT_FLOWER_BLUE 28
+#define MAT_FLOWER_YELLOW 29
+#define MAT_MUSHROOM 30
 
 #ifdef __cplusplus
 }

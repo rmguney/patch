@@ -208,9 +208,9 @@ namespace patch
         depth_stencil.depthWriteEnable = VK_TRUE;
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        // G-buffer has 5 color attachments
-        VkPipelineColorBlendAttachmentState blend_attachments[5] = {};
-        for (int i = 0; i < 5; i++)
+        // G-buffer has 6 color attachments (albedo, normal, material, linear_depth, world_pos, motion_vector)
+        VkPipelineColorBlendAttachmentState blend_attachments[6] = {};
+        for (int i = 0; i < 6; i++)
         {
             blend_attachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -219,7 +219,7 @@ namespace patch
 
         VkPipelineColorBlendStateCreateInfo color_blend{};
         color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend.attachmentCount = 5;
+        color_blend.attachmentCount = 6;
         color_blend.pAttachments = blend_attachments;
 
         VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -293,9 +293,12 @@ namespace patch
         particle_resources_initialized_ = false;
     }
 
-    void Renderer::render_particles_raymarched(const ParticleSystem *sys)
+    void Renderer::render_particles_raymarched(const ParticleSystem *sys,
+                                               const EnvParticleSystem *env_sys)
     {
-        if (!sys || sys->count == 0)
+        bool has_destruction = sys && sys->count > 0;
+        bool has_env = env_sys && env_sys->count > 0;
+        if (!has_destruction && !has_env)
             return;
 
         if (!particle_resources_initialized_)
@@ -304,7 +307,6 @@ namespace patch
                 return;
         }
 
-        // Count active particles and upload to SSBO
         uint32_t active_count = 0;
         ParticleGPU *gpu_data = nullptr;
 
@@ -312,27 +314,57 @@ namespace patch
 
         float alpha = interp_alpha_;
 
-        for (int32_t i = 0; i < sys->count && active_count < MAX_PARTICLE_INSTANCES; i++)
+        /* Upload destruction particles */
+        if (has_destruction)
         {
-            const Particle *p = &sys->particles[i];
-            if (!p->active)
-                continue;
+            for (int32_t i = 0; i < sys->count && active_count < MAX_PARTICLE_INSTANCES; i++)
+            {
+                const Particle *p = &sys->particles[i];
+                if (!p->active)
+                    continue;
 
-            /* Interpolate between previous and current position for smooth rendering */
-            float interp_x = p->prev_position.x + alpha * (p->position.x - p->prev_position.x);
-            float interp_y = p->prev_position.y + alpha * (p->position.y - p->prev_position.y);
-            float interp_z = p->prev_position.z + alpha * (p->position.z - p->prev_position.z);
+                float interp_x = p->prev_position.x + alpha * (p->position.x - p->prev_position.x);
+                float interp_y = p->prev_position.y + alpha * (p->position.y - p->prev_position.y);
+                float interp_z = p->prev_position.z + alpha * (p->position.z - p->prev_position.z);
 
-            gpu_data[active_count].position[0] = interp_x;
-            gpu_data[active_count].position[1] = interp_y;
-            gpu_data[active_count].position[2] = interp_z;
-            gpu_data[active_count].radius = p->radius;
-            gpu_data[active_count].color[0] = p->color.x;
-            gpu_data[active_count].color[1] = p->color.y;
-            gpu_data[active_count].color[2] = p->color.z;
-            gpu_data[active_count].flags = 1.0f;
+                gpu_data[active_count].position[0] = interp_x;
+                gpu_data[active_count].position[1] = interp_y;
+                gpu_data[active_count].position[2] = interp_z;
+                gpu_data[active_count].radius = p->radius;
+                gpu_data[active_count].color[0] = p->color.x;
+                gpu_data[active_count].color[1] = p->color.y;
+                gpu_data[active_count].color[2] = p->color.z;
+                gpu_data[active_count].flags = 1.0f;
 
-            active_count++;
+                active_count++;
+            }
+        }
+
+        /* Upload environmental particles */
+        if (has_env)
+        {
+            for (int32_t i = 0; i < env_sys->count && active_count < MAX_PARTICLE_INSTANCES; i++)
+            {
+                const EnvParticle *p = &env_sys->particles[i];
+                if (!p->active)
+                    continue;
+
+                float interp_x = p->prev_position.x + alpha * (p->position.x - p->prev_position.x);
+                float interp_y = p->prev_position.y + alpha * (p->position.y - p->prev_position.y);
+                float interp_z = p->prev_position.z + alpha * (p->position.z - p->prev_position.z);
+
+                gpu_data[active_count].position[0] = interp_x;
+                gpu_data[active_count].position[1] = interp_y;
+                gpu_data[active_count].position[2] = interp_z;
+                gpu_data[active_count].radius = p->radius;
+                gpu_data[active_count].color[0] = p->color.x;
+                gpu_data[active_count].color[1] = p->color.y;
+                gpu_data[active_count].color[2] = p->color.z;
+                /* Encode emissive in flags: 1.0 = normal, 2.0 = emissive */
+                gpu_data[active_count].flags = p->emissive ? 2.0f : 1.0f;
+
+                active_count++;
+            }
         }
 
         gpu_allocator_.unmap(particle_ssbo_.memory);

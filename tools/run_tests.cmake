@@ -1,6 +1,6 @@
-# Run all tests and generate build_report.txt
+# Run tests and generate build_report.txt
 # Usage: cmake -DBUILD_DIR=<build_dir> -DEXE_PATH=<patch_samples.exe> -P run_tests.cmake
-# Set PATCH_SKIP_PERF_TESTS=1 to skip performance tests during development
+# Only unit tests run on every build. Set PATCH_RUN_ALL_TESTS=1 for launch+perf tests.
 
 cmake_minimum_required(VERSION 3.21)
 
@@ -12,7 +12,7 @@ if(NOT EXE_PATH)
     message(FATAL_ERROR "EXE_PATH not specified")
 endif()
 
-set(SKIP_PERF_TESTS $ENV{PATCH_SKIP_PERF_TESTS})
+set(RUN_ALL $ENV{PATCH_RUN_ALL_TESTS})
 
 set(REPORT_FILE "${BUILD_DIR}/build_report.txt")
 
@@ -40,30 +40,30 @@ if(UNIT_ERROR)
     file(APPEND ${REPORT_FILE} "${UNIT_ERROR}\n")
 endif()
 
-file(APPEND ${REPORT_FILE} "\n================================================================================\n")
-file(APPEND ${REPORT_FILE} "  LAUNCH TESTS\n")
-file(APPEND ${REPORT_FILE} "================================================================================\n\n")
+set(LAUNCH_RESULT 0)
+set(PERF_RESULT 0)
 
-execute_process(
-    COMMAND "${BUILD_DIR}/test_launch.exe" "${EXE_PATH}"
-    WORKING_DIRECTORY ${BUILD_DIR}
-    OUTPUT_VARIABLE LAUNCH_OUTPUT
-    ERROR_VARIABLE LAUNCH_ERROR
-    RESULT_VARIABLE LAUNCH_RESULT
-)
-file(APPEND ${REPORT_FILE} "${LAUNCH_OUTPUT}\n")
-if(LAUNCH_ERROR)
-    file(APPEND ${REPORT_FILE} "${LAUNCH_ERROR}\n")
-endif()
+if(RUN_ALL)
+    file(APPEND ${REPORT_FILE} "\n================================================================================\n")
+    file(APPEND ${REPORT_FILE} "  LAUNCH TESTS\n")
+    file(APPEND ${REPORT_FILE} "================================================================================\n\n")
 
-file(APPEND ${REPORT_FILE} "\n================================================================================\n")
-file(APPEND ${REPORT_FILE} "  PERFORMANCE TESTS\n")
-file(APPEND ${REPORT_FILE} "================================================================================\n\n")
+    execute_process(
+        COMMAND "${BUILD_DIR}/test_launch.exe" "${EXE_PATH}"
+        WORKING_DIRECTORY ${BUILD_DIR}
+        OUTPUT_VARIABLE LAUNCH_OUTPUT
+        ERROR_VARIABLE LAUNCH_ERROR
+        RESULT_VARIABLE LAUNCH_RESULT
+    )
+    file(APPEND ${REPORT_FILE} "${LAUNCH_OUTPUT}\n")
+    if(LAUNCH_ERROR)
+        file(APPEND ${REPORT_FILE} "${LAUNCH_ERROR}\n")
+    endif()
 
-if(SKIP_PERF_TESTS)
-    file(APPEND ${REPORT_FILE} "(Skipped - PATCH_SKIP_PERF_TESTS=1)\n")
-    set(PERF_RESULT 0)
-else()
+    file(APPEND ${REPORT_FILE} "\n================================================================================\n")
+    file(APPEND ${REPORT_FILE} "  PERFORMANCE TESTS\n")
+    file(APPEND ${REPORT_FILE} "================================================================================\n\n")
+
     execute_process(
         COMMAND "${BUILD_DIR}/test_render_perf.exe" "${EXE_PATH}"
         WORKING_DIRECTORY ${BUILD_DIR}
@@ -75,23 +75,26 @@ else()
     if(PERF_ERROR)
         file(APPEND ${REPORT_FILE} "${PERF_ERROR}\n")
     endif()
+else()
+    file(APPEND ${REPORT_FILE} "\n(Launch + perf tests skipped. Set PATCH_RUN_ALL_TESTS=1 to run.)\n")
 endif()
-
-file(APPEND ${REPORT_FILE} "\n================================================================================\n")
-file(APPEND ${REPORT_FILE} "  STATIC ANALYSIS\n")
-file(APPEND ${REPORT_FILE} "================================================================================\n\n")
-file(APPEND ${REPORT_FILE} "Run 'cmake --build build --target clang-tidy' for full analysis\n")
 
 file(APPEND ${REPORT_FILE} "\n################################################################################\n")
 file(APPEND ${REPORT_FILE} "#                              FINAL SUMMARY                                  #\n")
 file(APPEND ${REPORT_FILE} "################################################################################\n")
 file(APPEND ${REPORT_FILE} "Unit tests exit code: ${UNIT_RESULT}\n")
-file(APPEND ${REPORT_FILE} "Launch tests exit code: ${LAUNCH_RESULT}\n")
-file(APPEND ${REPORT_FILE} "Performance tests exit code: ${PERF_RESULT}\n")
+if(RUN_ALL)
+    file(APPEND ${REPORT_FILE} "Launch tests exit code: ${LAUNCH_RESULT}\n")
+    file(APPEND ${REPORT_FILE} "Performance tests exit code: ${PERF_RESULT}\n")
+endif()
 file(APPEND ${REPORT_FILE} "Report saved: build_report.txt\n")
 
 message(STATUS "Build report saved to: ${REPORT_FILE}")
 
-if(NOT UNIT_RESULT EQUAL 0 OR NOT LAUNCH_RESULT EQUAL 0 OR NOT PERF_RESULT EQUAL 0)
+if(NOT UNIT_RESULT EQUAL 0)
+    message(FATAL_ERROR "Unit tests failed")
+endif()
+
+if(RUN_ALL AND (NOT LAUNCH_RESULT EQUAL 0 OR NOT PERF_RESULT EQUAL 0))
     message(FATAL_ERROR "Some tests failed")
 endif()

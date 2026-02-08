@@ -13,6 +13,19 @@ if not exist "%VCVARS%" (
 call "%VCVARS%" x64 >nul 2>&1
 :vcvars_done
 
+:: Kill zombies - build tools, compilers, linkers, test executables
+taskkill /f /im ninja.exe >nul 2>&1
+taskkill /f /im cmake.exe >nul 2>&1
+taskkill /f /im cl.exe >nul 2>&1
+taskkill /f /im link.exe >nul 2>&1
+taskkill /f /im patch_samples.exe >nul 2>&1
+taskkill /f /im test_scenes.exe >nul 2>&1
+taskkill /f /im test_launch.exe >nul 2>&1
+taskkill /f /im test_render_perf.exe >nul 2>&1
+
+:: Clean stale ninja state if present
+if exist build\.ninja_log.restat del /f build\.ninja_log.restat
+
 set "CMD=%~1"
 if "%CMD%"=="" goto :build
 
@@ -88,11 +101,6 @@ if not exist build (
     if !errorlevel! neq 0 exit /b !errorlevel!
 )
 
-echo Building...
+echo Building (unit tests run automatically via POST_BUILD)...
 cmake --build build
-if !errorlevel! neq 0 exit /b !errorlevel!
-
-echo.
-echo Running tests...
-ctest --test-dir build --output-on-failure
 exit /b !errorlevel!

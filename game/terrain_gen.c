@@ -1,4 +1,5 @@
 #include "terrain_gen.h"
+#include "tree_gen.h"
 #include "content/materials.h"
 #include "engine/core/rng.h"
 #include <math.h>
@@ -37,7 +38,7 @@ static float noise_smooth(float t)
     return t * t * (3.0f - 2.0f * t);
 }
 
-static float noise_2d(float x, float z, uint32_t seed)
+float terrain_noise_2d(float x, float z, uint32_t seed)
 {
     int32_t ix = (int32_t)floorf(x);
     int32_t iz = (int32_t)floorf(z);
@@ -66,7 +67,7 @@ float terrain_gen_height(float x, float z, float amplitude, float frequency, uin
 
     for (int32_t octave = 0; octave < 4; octave++)
     {
-        height += noise_2d(x * freq, z * freq, seed + (uint32_t)octave * 1000) * amp;
+        height += terrain_noise_2d(x * freq, z * freq, seed + (uint32_t)octave * 1000) * amp;
         amp *= 0.5f;
         freq *= 2.0f;
     }
@@ -106,7 +107,7 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
 }
 
 static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float radius,
-                             uint8_t material, float voxel_size)
+                            uint8_t material, float voxel_size)
 {
     for (float y = 0.0f; y < height; y += voxel_size)
     {
@@ -155,4 +156,105 @@ void terrain_gen_pillars(VoxelVolume *vol, float voxel_size, int32_t count,
         Vec3 base = vec3_create(x, base_y, z);
         generate_pillar(vol, base, height, radius, mat, voxel_size);
     }
+}
+
+#define TREE_SEED_OFFSET 77777
+#define TREE_SPACING 5.0f  /* world units between tree placement candidates */
+#define TREE_MARGIN 3.0f
+#define TREE_SCALE 0.2f
+#define TREE_MAX_DEPTH_SMALL 3  /* cap depth for small-scale trees */
+
+static TreeType pick_tree_type(float temp, float humidity, RngState *rng)
+{
+    if (temp < -0.3f)
+    {
+        if (humidity > 0.3f)
+            return TREE_FROSTPINE;
+        return rng_float(rng) < 0.7f ? TREE_PINE : TREE_DEAD;
+    }
+    if (temp > 0.5f)
+    {
+        if (humidity > 0.5f)
+            return rng_float(rng) < 0.6f ? TREE_JUNGLE : TREE_PALM;
+        if (humidity > 0.2f)
+            return TREE_ACACIA;
+        return TREE_DEAD;
+    }
+    /* Temperate zone */
+    float roll = rng_float(rng);
+    if (humidity > 0.6f)
+        return roll < 0.4f ? TREE_OAK : (roll < 0.7f ? TREE_BIRCH : TREE_CHESTNUT);
+    if (humidity > 0.3f)
+        return roll < 0.3f ? TREE_OAK : (roll < 0.5f ? TREE_MAPLE : (roll < 0.7f ? TREE_CHERRY : TREE_AUTUMN));
+    return roll < 0.5f ? TREE_PINE : TREE_CEDAR;
+}
+
+static bool is_structure_at(const VoxelVolume *vol, float x, float z,
+                             float surface_y, float voxel_size, float check_radius)
+{
+    for (float dx = -check_radius; dx <= check_radius; dx += voxel_size)
+    {
+        for (float dz = -check_radius; dz <= check_radius; dz += voxel_size)
+        {
+            for (float dy = 0.0f; dy < voxel_size * 3.0f; dy += voxel_size)
+            {
+                Vec3 pos = vec3_create(x + dx, surface_y + dy, z + dz);
+                uint8_t mat = volume_get_at(vol, pos);
+                if (mat != 0 && mat != MAT_GRASS && mat != MAT_DIRT && mat != MAT_STONE)
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
+void terrain_gen_trees(VoxelVolume *vol, float voxel_size, float tree_density,
+                       float amplitude, float frequency, uint32_t seed)
+{
+    RngState rng;
+    rng_seed(&rng, seed + TREE_SEED_OFFSET);
+
+    float margin = TREE_MARGIN;
+    float spacing = TREE_SPACING;
+
+    volume_edit_begin(vol);
+
+    for (float x = vol->bounds.min_x + margin; x < vol->bounds.max_x - margin; x += spacing)
+    {
+        for (float z = vol->bounds.min_z + margin; z < vol->bounds.max_z - margin; z += spacing)
+        {
+            float density = terrain_noise_2d(x * 0.25f, z * 0.25f, seed + 5000);
+            density = (density + 1.0f) * 0.5f;
+            if (density < (1.0f - tree_density))
+                continue;
+
+            if (rng_float(&rng) > tree_density * 0.5f)
+                continue;
+
+            float jx = x + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
+            float jz = z + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
+
+            float surface_y = TERRAIN_BASE_HEIGHT + terrain_gen_height(jx, jz, amplitude, frequency, seed);
+
+            if (is_structure_at(vol, jx, jz, surface_y, voxel_size, voxel_size * 2.0f))
+                continue;
+
+            float temp = terrain_noise_2d(jx * 0.1f, jz * 0.1f, seed + 3000);
+            float humidity = terrain_noise_2d(jx * 0.15f, jz * 0.15f, seed + 4000);
+
+            TreeType type = pick_tree_type(temp, humidity, &rng);
+            TreeConfig config = tree_config_create(type, &rng, TREE_SCALE);
+
+            if (config.max_depth > TREE_MAX_DEPTH_SMALL)
+                config.max_depth = TREE_MAX_DEPTH_SMALL;
+
+            ProceduralTree tree;
+            tree_generate(&tree, &config, &rng);
+
+            Vec3 origin = vec3_create(jx, surface_y, jz);
+            tree_voxelize(&tree, &config, vol, origin, voxel_size);
+        }
+    }
+
+    volume_edit_end(vol);
 }
