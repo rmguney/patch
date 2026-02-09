@@ -56,6 +56,9 @@ enum class ActiveScene
 
 int patch_main(int argc, char *argv[])
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     int test_scene = -1;
     int test_frames = 0;
     const char *profile_csv = "profile_results.csv";
@@ -538,6 +541,13 @@ int patch_main(int argc, char *argv[])
             }
 
             scene_update(active_scene, dt);
+
+            if (current_scene == ActiveScene::BallPit)
+            {
+                const SceneLighting *scene_lighting = ball_pit_get_lighting(active_scene);
+                if (scene_lighting)
+                    renderer.set_scene_lighting(scene_lighting);
+            }
             PROFILE_END(PROFILE_SIM_TICK);
 
             /* Programmatic destruction for test mode */
@@ -562,7 +572,8 @@ int patch_main(int argc, char *argv[])
                     Vec3 hit_normal = vec3_zero();
                     uint8_t hit_mat = 0;
                     float hit_dist = volume_raycast(bp_data->terrain, ray_o, ray_d,
-                                                     50.0f, &hit_pos, &hit_normal, &hit_mat);
+                                                     50.0f, &hit_pos, &hit_normal, &hit_mat,
+                                                     MAT_FLAG_LIQUID);
 
                     if (hit_dist >= 0.0f && hit_mat != 0)
                     {
@@ -585,7 +596,7 @@ int patch_main(int argc, char *argv[])
                                     {
                                         Vec3 pos = vec3_create(hit_pos.x + dx, hit_pos.y + dy, hit_pos.z + dz);
                                         uint8_t mat = volume_get_at(bp_data->terrain, pos);
-                                        if (mat != 0)
+                                        if (mat != 0 && material_is_breakable(mat))
                                         {
                                             volume_edit_set(bp_data->terrain, pos, 0);
                                             if (destroyed_count < 64)
@@ -914,20 +925,31 @@ int patch_main(int argc, char *argv[])
         debug_info_populate_profiler(&dbg_info);
         dbg_info.total_uploaded = dbg_total_uploaded;
 
-        bool btn_clicked = false;
+        DebugOverlayActions dbg_actions = {};
+        dbg_actions.time_preset = -1;
+        dbg_actions.weather_preset = -1;
         bool render_ui = show_overlay || app_ui_is_blocking(&ui);
         if (show_overlay && active_scene)
         {
             PROFILE_BEGIN(PROFILE_RENDER_UI_OVERLAY);
-            btn_clicked = draw_debug_overlay(renderer,
-                                             window.width(), window.height(),
-                                             &dbg_info,
-                                             window.mouse().x, window.mouse().y,
-                                             mouse_clicked, &dbg_feedback);
+            draw_debug_overlay(renderer,
+                               window.width(), window.height(),
+                               &dbg_info,
+                               window.mouse().x, window.mouse().y,
+                               mouse_clicked, &dbg_feedback, &dbg_actions);
             PROFILE_END(PROFILE_RENDER_UI_OVERLAY);
         }
 
-        if (active_scene && (do_export || btn_clicked))
+        if (active_scene && current_scene == ActiveScene::BallPit)
+        {
+            static const float time_presets[] = {0.25f, 0.5f, 0.75f, 0.0f};
+            if (dbg_actions.time_preset >= 0 && dbg_actions.time_preset < 4)
+                ball_pit_set_time_of_day(active_scene, time_presets[dbg_actions.time_preset]);
+            if (dbg_actions.weather_preset >= 0 && dbg_actions.weather_preset < 4)
+                ball_pit_set_weather(active_scene, dbg_actions.weather_preset);
+        }
+
+        if (active_scene && (do_export || dbg_actions.export_clicked))
         {
             const char *report_filename = "debug_report.txt";
             dbg_feedback.success = export_debug_report(report_filename, &dbg_info);

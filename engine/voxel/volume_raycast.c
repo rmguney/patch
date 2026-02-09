@@ -1,4 +1,5 @@
 #include "volume.h"
+#include "content/materials.h"
 #include "engine/core/math.h"
 #include "engine/core/profile.h"
 #include <math.h>
@@ -8,7 +9,8 @@
 #define VOLUME_RAYCAST_MISS -1.0f
 
 float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist,
-                     Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material)
+                     Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material,
+                     uint32_t skip_flags)
 {
     PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
 
@@ -111,6 +113,12 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
 
             if (mat != MATERIAL_EMPTY)
             {
+                if (skip_flags != 0)
+                {
+                    const MaterialDescriptor *mdesc = material_get(mat);
+                    if (mdesc && (mdesc->flags & skip_flags))
+                        goto advance_voxel;
+                }
                 /* Hit! */
                 float hit_dist = t * vol->voxel_size;
                 if (out_hit_pos)

@@ -29,4 +29,12 @@ float get_material_metallic(uint material_id) {
     return materials[material_id * MATERIAL_STRIDE + 1u].g;
 }
 
+float get_material_flags(uint material_id) {
+    return materials[material_id * MATERIAL_STRIDE + 1u].b;
+}
+
+bool is_material_transparent(uint material_id) {
+    return get_material_flags(material_id) >= 16.0;
+}
+
 #endif /* MATERIALS_GLSL */

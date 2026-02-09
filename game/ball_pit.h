@@ -9,6 +9,9 @@
 #include "engine/physics/rigidbody.h"
 #include "engine/sim/env_particles.h"
 #include "engine/sim/loading.h"
+#include "game/day_night.h"
+#include "game/weather.h"
+#include "content/scenes.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -57,6 +60,11 @@ extern "C"
         double last_connectivity_time; /* Time of last connectivity analysis (for throttling) */
         Vec3 last_destroy_point;    /* Last terrain destruction center (for detach impulse) */
         int32_t init_stage;
+
+        /* Day/night + weather */
+        DayNightCycle day_night;
+        WeatherSystem weather;
+        SceneLighting lighting;
     } BallPitData;
 
     BallPitParams ball_pit_default_params(void);
@@ -65,7 +73,7 @@ extern "C"
 
     void ball_pit_set_ray(Scene *scene, Vec3 origin, Vec3 dir);
 
-#define BALL_PIT_INIT_STAGES 7
+#define BALL_PIT_INIT_STAGES 9
 
     /* Stepped init: returns true when all stages complete */
     bool ball_pit_init_step(Scene *scene, LoadingState *state);
@@ -76,6 +84,9 @@ extern "C"
     ParticleSystem *ball_pit_get_particles(Scene *scene);
     EnvParticleSystem *ball_pit_get_env_particles(Scene *scene);
     PhysicsWorld *ball_pit_get_physics(Scene *scene);
+    const SceneLighting *ball_pit_get_lighting(Scene *scene);
+    void ball_pit_set_time_of_day(Scene *scene, float time);
+    void ball_pit_set_weather(Scene *scene, int weather_state);
 
 #ifdef __cplusplus
 }

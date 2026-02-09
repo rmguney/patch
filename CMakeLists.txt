@@ -279,6 +279,12 @@ set(GAME_C_SOURCES
     game/tree_gen.c
     game/scatter_gen.h
     game/scatter_gen.c
+    game/shrub_gen.h
+    game/shrub_gen.c
+    game/day_night.h
+    game/day_night.c
+    game/weather.h
+    game/weather.c
     game/ball_pit.h
     game/ball_pit.c
 )

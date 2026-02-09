@@ -216,7 +216,7 @@ TEST(budget_raycast)
     PROFILE_BEGIN(PROFILE_RAYCAST);
     for (int i = 0; i < 100; i++)
     {
-        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
     PROFILE_END(PROFILE_RAYCAST);
 
@@ -285,7 +285,7 @@ static void run_benchmark_suite(void)
         Vec3 dir = vec3_create(1.0f, 0.0f, 0.0f);
         Vec3 hit_pos, hit_normal;
         uint8_t hit_mat;
-        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
         PROFILE_END(PROFILE_RAYCAST);
 
         PROFILE_BEGIN(PROFILE_SIM_TICK);

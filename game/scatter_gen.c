@@ -4,6 +4,7 @@
 #include "engine/core/noise.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
+#include "engine/voxel/chunk.h"
 
 #define SCATTER_SEED_OFFSET 99999
 
@@ -14,24 +15,45 @@ void scatter_gen_apply(VoxelVolume *vol, float voxel_size,
     RngState rng;
     rng_seed(&rng, seed + SCATTER_SEED_OFFSET);
 
+    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
+    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
+    int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+
     volume_edit_begin(vol);
 
-    for (float x = vol->bounds.min_x; x < vol->bounds.max_x; x += voxel_size)
+    for (int32_t gx = 0; gx < total_x; gx++)
     {
-        for (float z = vol->bounds.min_z; z < vol->bounds.max_z; z += voxel_size)
+        int32_t cx = gx >> CHUNK_SIZE_BITS;
+        int32_t lx = gx & CHUNK_SIZE_MASK;
+        float x = vol->bounds.min_x + gx * voxel_size;
+
+        for (int32_t gz = 0; gz < total_z; gz++)
         {
+            int32_t cz = gz >> CHUNK_SIZE_BITS;
+            int32_t lz = gz & CHUNK_SIZE_MASK;
+            float z = vol->bounds.min_z + gz * voxel_size;
+
             float temp = biome_temperature(x, z, seed);
             float humidity = biome_humidity(x, z, seed);
 
-            for (float y = vol->bounds.max_y - voxel_size; y > vol->bounds.min_y; y -= voxel_size)
+            for (int32_t gy = total_y - 1; gy > 0; gy--)
             {
-                Vec3 pos = vec3_create(x, y, z);
-                uint8_t mat = volume_get_at(vol, pos);
+                int32_t cy = gy >> CHUNK_SIZE_BITS;
+                int32_t ly = gy & CHUNK_SIZE_MASK;
+                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                Chunk *chunk = &vol->chunks[idx];
+
+                uint8_t mat = chunk_get(chunk, lx, ly, lz);
                 if (mat == 0)
                     continue;
 
-                Vec3 above = vec3_create(x, y + voxel_size, z);
-                if (volume_get_at(vol, above) != 0)
+                int32_t ay = gy + 1;
+                if (ay >= total_y)
+                    break;
+                int32_t acy = ay >> CHUNK_SIZE_BITS;
+                int32_t aly = ay & CHUNK_SIZE_MASK;
+                int32_t aidx = cx + acy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                if (chunk_get(&vol->chunks[aidx], lx, aly, lz) != 0)
                     break;
 
                 for (int32_t c = 0; c < config_count; c++)
@@ -61,7 +83,7 @@ void scatter_gen_apply(VoxelVolume *vol, float voxel_size,
 
                     if (density > 0.0f && rng_float(&rng) < density)
                     {
-                        volume_edit_set(vol, above, cfg->material);
+                        chunk_set(&vol->chunks[aidx], lx, aly, lz, cfg->material);
                         break;
                     }
                 }

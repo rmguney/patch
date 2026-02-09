@@ -57,7 +57,7 @@ static bool raycast_terrain(VoxelVolume *terrain, Vec3 origin, Vec3 dir, float m
         return false;
 
     uint8_t hit_mat;
-    float dist = volume_raycast(terrain, origin, dir, max_dist, out_hit, out_normal, &hit_mat);
+    float dist = volume_raycast(terrain, origin, dir, max_dist, out_hit, out_normal, &hit_mat, 0);
 
     if (dist >= 0.0f && hit_mat != 0)
     {

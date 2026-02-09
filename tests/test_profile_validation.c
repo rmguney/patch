@@ -113,7 +113,7 @@ TEST(raycast_scales_linearly)
     profile_reset_all();
     for (int i = 0; i < 100; i++)
     {
-        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
     float time_100 = profile_get_avg_ms(PROFILE_VOXEL_RAYCAST);
     int32_t samples_100 = profile_get_sample_count(PROFILE_VOXEL_RAYCAST);
@@ -122,7 +122,7 @@ TEST(raycast_scales_linearly)
     profile_reset_all();
     for (int i = 0; i < 1000; i++)
     {
-        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
     float time_1000 = profile_get_avg_ms(PROFILE_VOXEL_RAYCAST);
     int32_t samples_1000 = profile_get_sample_count(PROFILE_VOXEL_RAYCAST);
@@ -244,7 +244,7 @@ TEST(measures_real_work)
     uint8_t hit_mat;
     for (int i = 0; i < 1000; i++)
     {
-        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
 
     volume_destroy(vol);

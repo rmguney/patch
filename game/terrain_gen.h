@@ -18,6 +18,7 @@ extern "C"
     } TerrainGenParams;
 
 #define TERRAIN_BASE_HEIGHT 10.0f
+#define TERRAIN_SEA_LEVEL 8.5f
 
     float terrain_noise_2d(float x, float z, uint32_t seed);
     float terrain_gen_height(float x, float z, float amplitude, float frequency, uint32_t seed);
@@ -27,6 +28,9 @@ extern "C"
 
     void terrain_gen_pillars(VoxelVolume *vol, float voxel_size, int32_t count,
                              float amplitude, float frequency, uint32_t seed);
+
+    void terrain_gen_water(VoxelVolume *vol, float voxel_size, float amplitude,
+                           float frequency, uint32_t seed);
 
     void terrain_gen_trees(VoxelVolume *vol, float voxel_size, float tree_density,
                            float amplitude, float frequency, uint32_t seed);

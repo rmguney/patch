@@ -193,6 +193,15 @@ void main() {
     vec3 emissive_color = g.albedo * g.emissive * lighting.ground_ambient.w;
     color += emissive_color;
 
+    /* Water absorption via Beer's law */
+    if (g.water_depth > 0.0) {
+        vec3 absorption = vec3(0.2, 0.05, 0.01);
+        vec3 transmittance = exp(-absorption * g.water_depth);
+        color *= transmittance;
+        float water_fresnel = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+        color += lighting.sky_color_params.rgb * water_fresnel * 0.15;
+    }
+
     float exposure = lighting.sky_ambient.w;
     color *= exposure;
 

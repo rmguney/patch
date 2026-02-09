@@ -15,7 +15,7 @@ HDDA raymarched voxel engine with real-time destruction, procedural world genera
 - **Deferred Rendering Pipeline** - G-buffer, temporal shadows, temporal AO, TAA, spatial denoising
 - **Procedural World Generation** - Biome-driven terrain with 9 biome types, 18 procedural tree species, flora scatter system
 - **Noise Library** - Value noise, FBM, Billow, and RidgedMulti noise for terrain variety
-- **34 Materials** - Terrain (stone, dirt, grass, sand, snow, ice), tree bark/leaf variants, flora, decoratives, metal
+- **Foundational Materials System** - Terrain (stone, dirt, grass, sand, snow, ice), tree bark/leaf variants, flora, decoratives, metal
 - **Real-Time Destruction** - Voxel damage with connectivity analysis, island detachment, debris particles
 - **Physics Simulation** - Rigid body dynamics with voxel-based collision, gravity, friction
 - **Environmental Particles** - 8 particle types (leaf, dust, firefly, snow, pollen, drip, steam, bee) with wind
@@ -69,26 +69,6 @@ cmake --build build
 ```shell
 ctest --test-dir build --output-on-failure
 ```
-
-## World Generation
-
-The procedural world uses a biome system driven by temperature and humidity noise:
-
-| Biome     | Surface    | Trees                          |
-| --------- | ---------- | ------------------------------ |
-| Grassland | Grass/Dirt | Oak, Maple, Cherry, Birch      |
-| Forest    | Grass/Dirt | Oak, Birch, Chestnut, Redwood  |
-| Desert    | Sand       | None                           |
-| Snow      | Snow/Dirt  | Frostpine, Pine                |
-| Jungle    | Grass/Dirt | Jungle, Palm                   |
-| Swamp     | Dirt       | Swamp, Mangrove                |
-| Savannah  | Grass/Dirt | Acacia, Baobab                 |
-| Taiga     | Snow/Dirt  | Pine, Cedar, Frostpine         |
-| Mountain  | Stone      | Cedar, Pine                    |
-
-Tree species are selected via weighted proclivity curves (bell-curve fitness per temperature/humidity), creating smooth biome transitions instead of hard boundaries.
-
-Terrain uses 6-octave FBM for base landscape with RidgedMulti noise for mountain ridges, slope-based cliff detection, and biome-driven surface materials.
 
 ## Tools
 

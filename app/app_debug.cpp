@@ -271,14 +271,22 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     return true;
 }
 
-bool draw_debug_overlay(patch::Renderer &renderer,
+void draw_debug_overlay(patch::Renderer &renderer,
                         int32_t window_width, int32_t window_height,
                         const DebugInfo *info,
                         float mouse_x, float mouse_y, bool mouse_clicked,
-                        const DebugExportFeedback *feedback)
+                        const DebugExportFeedback *feedback,
+                        DebugOverlayActions *out_actions)
 {
+    if (out_actions)
+    {
+        out_actions->export_clicked = false;
+        out_actions->time_preset = -1;
+        out_actions->weather_preset = -1;
+    }
+
     if (!info)
-        return false;
+        return;
 
     renderer.begin_ui();
     const float w = (float)((window_width > 0) ? window_width : 1);
@@ -392,12 +400,15 @@ bool draw_debug_overlay(patch::Renderer &renderer,
     y_px += unit * 12.0f;
     const float btn_w = unit * 60.0f;
     const float btn_h = unit * 12.0f;
-    bool hovered = mouse_x >= x_px && mouse_x <= x_px + btn_w &&
-                   mouse_y >= y_px && mouse_y <= y_px + btn_h;
-    Vec3 btn_color = hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
+    bool export_hovered = mouse_x >= x_px && mouse_x <= x_px + btn_w &&
+                          mouse_y >= y_px && mouse_y <= y_px + btn_h;
+    Vec3 btn_color = export_hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
     renderer.draw_ui_quad_px(x_px, y_px, btn_w, btn_h, btn_color, 0.9f);
     renderer.draw_ui_text_px(x_px + unit * 4.0f, y_px + unit * 2.0f, text_h_px,
                              vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT] F3");
+
+    if (out_actions && export_hovered && mouse_clicked)
+        out_actions->export_clicked = true;
 
     if (feedback && feedback->timer > 0.0f)
     {
@@ -408,6 +419,47 @@ bool draw_debug_overlay(patch::Renderer &renderer,
         renderer.draw_ui_text_px(x_px + btn_w + unit * 4.0f, y_px + unit * 2.0f, text_h_px, fb_color, 1.0f, line);
     }
 
+    /* Time-of-day buttons */
+    y_px += btn_h + unit * 4.0f;
+    const float small_btn_w = unit * 28.0f;
+    const float small_btn_h = unit * 12.0f;
+    const float label_offset = unit * 42.0f;
+
+    renderer.draw_ui_text_px(x_px, y_px + unit * 2.0f, text_h_px,
+                             vec3_create(0.8f, 0.8f, 0.6f), 1.0f, "TIME:");
+
+    const char *time_labels[] = {"DAWN", "NOON", "DUSK", "NIGHT"};
+    for (int i = 0; i < 4; i++)
+    {
+        float bx = x_px + label_offset + (float)i * (small_btn_w + unit * 2.0f);
+        bool bh = mouse_x >= bx && mouse_x <= bx + small_btn_w &&
+                  mouse_y >= y_px && mouse_y <= y_px + small_btn_h;
+        Vec3 bc = bh ? vec3_create(0.9f, 0.7f, 0.3f) : vec3_create(0.5f, 0.4f, 0.2f);
+        renderer.draw_ui_quad_px(bx, y_px, small_btn_w, small_btn_h, bc, 0.9f);
+        renderer.draw_ui_text_px(bx + unit * 2.0f, y_px + unit * 2.0f, text_h_px,
+                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, time_labels[i]);
+        if (out_actions && bh && mouse_clicked)
+            out_actions->time_preset = i;
+    }
+
+    /* Weather buttons */
+    y_px += small_btn_h + unit * 4.0f;
+    renderer.draw_ui_text_px(x_px, y_px + unit * 2.0f, text_h_px,
+                             vec3_create(0.8f, 0.8f, 0.6f), 1.0f, "WEATHER:");
+
+    const char *weather_labels[] = {"CLEAR", "CLOUDY", "RAIN", "SNOW"};
+    for (int i = 0; i < 4; i++)
+    {
+        float bx = x_px + label_offset + (float)i * (small_btn_w + unit * 2.0f);
+        bool bh = mouse_x >= bx && mouse_x <= bx + small_btn_w &&
+                  mouse_y >= y_px && mouse_y <= y_px + small_btn_h;
+        Vec3 bc = bh ? vec3_create(0.3f, 0.6f, 0.9f) : vec3_create(0.2f, 0.3f, 0.5f);
+        renderer.draw_ui_quad_px(bx, y_px, small_btn_w, small_btn_h, bc, 0.9f);
+        renderer.draw_ui_text_px(bx + unit * 2.0f, y_px + unit * 2.0f, text_h_px,
+                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, weather_labels[i]);
+        if (out_actions && bh && mouse_clicked)
+            out_actions->weather_preset = i;
+    }
+
     renderer.end_ui();
-    return hovered && mouse_clicked;
 }

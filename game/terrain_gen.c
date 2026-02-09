@@ -4,6 +4,7 @@
 #include "content/materials.h"
 #include "engine/core/noise.h"
 #include "engine/core/rng.h"
+#include "engine/voxel/chunk.h"
 #include <math.h>
 
 #define GRASS_DEPTH_MULT 1.5f
@@ -45,11 +46,22 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
                             float frequency, uint32_t seed)
 {
     float base_height = TERRAIN_BASE_HEIGHT;
+    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
+    int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
 
-    for (float x = vol->bounds.min_x; x < vol->bounds.max_x; x += voxel_size)
+    for (int32_t gx = 0; gx < total_x; gx++)
     {
-        for (float z = vol->bounds.min_z; z < vol->bounds.max_z; z += voxel_size)
+        int32_t cx = gx >> CHUNK_SIZE_BITS;
+        int32_t lx = gx & CHUNK_SIZE_MASK;
+        float x = vol->bounds.min_x + gx * voxel_size;
+
+        for (int32_t gz = 0; gz < total_z; gz++)
         {
+            int32_t cz = gz >> CHUNK_SIZE_BITS;
+            int32_t lz = gz & CHUNK_SIZE_MASK;
+            float z = vol->bounds.min_z + gz * voxel_size;
+
             float h = terrain_gen_height(x, z, amplitude, frequency, seed);
             float surface_y = base_height + h;
 
@@ -72,10 +84,15 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
             else if (biome == BIOME_SWAMP)
                 grass_depth *= 0.5f;
 
-            for (float y = vol->bounds.min_y; y < surface_y && y < vol->bounds.max_y; y += voxel_size)
+            int32_t surface_gy = (int32_t)ceilf((surface_y - vol->bounds.min_y) / voxel_size);
+            if (surface_gy > total_y)
+                surface_gy = total_y;
+
+            for (int32_t gy = 0; gy < surface_gy; gy++)
             {
-                Vec3 pos = vec3_create(x, y, z);
-                float depth = surface_y - y;
+                int32_t cy = gy >> CHUNK_SIZE_BITS;
+                int32_t ly = gy & CHUNK_SIZE_MASK;
+                float depth = surface_y - (vol->bounds.min_y + gy * voxel_size);
 
                 uint8_t mat;
                 if (steep)
@@ -87,10 +104,72 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
                 else
                     mat = MAT_STONE;
 
-                volume_set_at(vol, pos, mat);
+                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                chunk_set(&vol->chunks[idx], lx, ly, lz, mat);
             }
         }
     }
+}
+
+void terrain_gen_water(VoxelVolume *vol, float voxel_size, float amplitude,
+                       float frequency, uint32_t seed)
+{
+    (void)amplitude;
+    (void)frequency;
+    (void)seed;
+
+    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
+    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
+    int32_t sea_gy = (int32_t)((TERRAIN_SEA_LEVEL - vol->bounds.min_y) / voxel_size);
+    if (sea_gy <= 0)
+        return;
+    int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+    if (sea_gy > total_y)
+        sea_gy = total_y;
+
+    volume_edit_begin(vol);
+
+    for (int32_t gz = 0; gz < total_z; gz++)
+    {
+        int32_t cz = gz >> CHUNK_SIZE_BITS;
+        int32_t lz = gz & CHUNK_SIZE_MASK;
+
+        for (int32_t gx = 0; gx < total_x; gx++)
+        {
+            int32_t cx = gx >> CHUNK_SIZE_BITS;
+            int32_t lx = gx & CHUNK_SIZE_MASK;
+
+            for (int32_t gy = sea_gy - 1; gy >= 0; gy--)
+            {
+                int32_t cy = gy >> CHUNK_SIZE_BITS;
+                int32_t ly = gy & CHUNK_SIZE_MASK;
+                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                Chunk *chunk = &vol->chunks[idx];
+
+                if (chunk_get(chunk, lx, ly, lz) != 0)
+                    break;
+                chunk_set(chunk, lx, ly, lz, MAT_WATER);
+            }
+        }
+    }
+
+    /* Mark all chunks at or below sea level as dirty */
+    int32_t max_cy = (sea_gy >> CHUNK_SIZE_BITS) + 1;
+    if (max_cy > vol->chunks_y)
+        max_cy = vol->chunks_y;
+    for (int32_t cz = 0; cz < vol->chunks_z; cz++)
+    {
+        for (int32_t cy = 0; cy < max_cy; cy++)
+        {
+            for (int32_t cx = 0; cx < vol->chunks_x; cx++)
+            {
+                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                vol->chunks[idx].dirty_frame = vol->current_frame;
+            }
+        }
+    }
+
+    volume_edit_end(vol);
 }
 
 static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float radius,

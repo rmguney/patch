@@ -124,6 +124,7 @@ HitInfo hdda_march_terrain(
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
+    info.water_depth = 0.0;
 
     vec2 box_hit = hdda_intersect_aabb(ray_origin, ray_dir, bounds_min, bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {

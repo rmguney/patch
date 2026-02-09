@@ -64,6 +64,14 @@ extern const MaterialDescriptor g_mat_mushroom;
 extern const MaterialDescriptor g_mat_sand;
 extern const MaterialDescriptor g_mat_snow;
 extern const MaterialDescriptor g_mat_ice;
+extern const MaterialDescriptor g_mat_moss;
+extern const MaterialDescriptor g_mat_clay;
+extern const MaterialDescriptor g_mat_gravel;
+extern const MaterialDescriptor g_mat_cobblestone;
+extern const MaterialDescriptor g_mat_weak_rock;
+extern const MaterialDescriptor g_mat_glowing_rock;
+extern const MaterialDescriptor g_mat_glowing_mushroom;
+extern const MaterialDescriptor g_mat_water;
 
 /*
  * Global material registration table.
@@ -104,9 +112,17 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_SAND] = &g_mat_sand,
     [MAT_SNOW] = &g_mat_snow,
     [MAT_ICE] = &g_mat_ice,
+    [MAT_MOSS] = &g_mat_moss,
+    [MAT_CLAY] = &g_mat_clay,
+    [MAT_GRAVEL] = &g_mat_gravel,
+    [MAT_COBBLESTONE] = &g_mat_cobblestone,
+    [MAT_WEAK_ROCK] = &g_mat_weak_rock,
+    [MAT_GLOWING_ROCK] = &g_mat_glowing_rock,
+    [MAT_GLOWING_MUSHROOM] = &g_mat_glowing_mushroom,
+    [MAT_WATER] = &g_mat_water,
 };
 
-const int32_t g_material_count = 34;
+const int32_t g_material_count = 42;
 
-STATIC_ASSERT(MAT_ICE + 1 == 34, "Material count must match g_material_count");
-STATIC_ASSERT(MAT_ICE < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+STATIC_ASSERT(MAT_WATER + 1 == 42, "Material count must match g_material_count");
+STATIC_ASSERT(MAT_WATER < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

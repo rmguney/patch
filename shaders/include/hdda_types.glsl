@@ -12,6 +12,7 @@ struct HitInfo {
     float emissive;     /* Emissive intensity */
     float roughness;    /* Surface roughness */
     float metallic;     /* Metallic factor */
+    float water_depth;  /* World-unit depth through water (0 = no water) */
     bvec3 step_mask;    /* DDA step mask for normal computation */
 };
 

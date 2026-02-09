@@ -204,6 +204,7 @@ HitInfo vobj_march_object(
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
+    info.water_depth = 0.0;
 
     VoxelObjectGPU obj = objects[object_idx];
 

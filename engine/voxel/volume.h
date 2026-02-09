@@ -236,7 +236,8 @@ extern "C"
     void volume_rebuild_all_occupancy(VoxelVolume *vol);
     void volume_rebuild_dirty_occupancy(VoxelVolume *vol);
     float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist,
-                         Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material);
+                         Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material,
+                         uint32_t skip_flags);
 
     void volume_edit_begin(VoxelVolume *vol);
     void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material);

@@ -94,8 +94,8 @@ TEST(volume_raycast_determinism)
     Vec3 normal1, normal2;
     uint8_t mat1, mat2;
 
-    float dist1 = volume_raycast(vol, origin, dir, 20.0f, &hit1, &normal1, &mat1);
-    float dist2 = volume_raycast(vol, origin, dir, 20.0f, &hit2, &normal2, &mat2);
+    float dist1 = volume_raycast(vol, origin, dir, 20.0f, &hit1, &normal1, &mat1, 0);
+    float dist2 = volume_raycast(vol, origin, dir, 20.0f, &hit2, &normal2, &mat2, 0);
 
     ASSERT(fabsf(dist1 - dist2) < 0.0001f);
     ASSERT(fabsf(hit1.x - hit2.x) < 0.0001f);

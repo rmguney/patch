@@ -87,6 +87,7 @@ HitInfo raymarch_voxels(vec3 ro, vec3 rd) {
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
+    info.water_depth = 0.0;
     info.step_mask = bvec3(false, true, false);
 
     vec2 box_hit = hdda_intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
@@ -418,7 +419,7 @@ void main() {
     out_linear_depth = hit.t;
 
     vec3 world_pos = ray_origin + ray_world * hit.t;
-    out_world_pos = vec4(world_pos, 1.0);
+    out_world_pos = vec4(world_pos, hit.water_depth);
     vec4 prev_clip = prev_view_proj * vec4(world_pos, 1.0);
     vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
     out_motion_vector = prev_uv - in_uv;

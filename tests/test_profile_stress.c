@@ -234,7 +234,7 @@ static StressResult run_stress_iteration(int32_t chunks_dim)
     PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
     for (int i = 0; i < 100; i++)
     {
-        volume_raycast(vol, origin, dir, size * 4.0f, &hit_pos, &hit_normal, &hit_mat);
+        volume_raycast(vol, origin, dir, size * 4.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
     result.raycast_100_ms = profile_get_last_ms(PROFILE_VOXEL_RAYCAST);
@@ -302,7 +302,7 @@ TEST(stress_raycast_scaling)
         PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
         for (int j = 0; j < count; j++)
         {
-            volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat);
+            volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
         }
         PROFILE_END(PROFILE_VOXEL_RAYCAST);
 

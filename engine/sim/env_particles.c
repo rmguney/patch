@@ -1,5 +1,6 @@
 #include "env_particles.h"
 #include "content/materials.h"
+#include "engine/voxel/chunk.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -135,6 +136,20 @@ void env_particles_update(EnvParticleSystem *sys, float dt, double time)
         }
     }
 
+    /* Spawn weather particles from above the scene */
+    if (sys->weather_intensity > 0.05f && beats > 0)
+    {
+        int32_t spawn_count = (int32_t)(sys->weather_intensity * 40.0f * (float)beats);
+        for (int32_t i = 0; i < spawn_count; i++)
+        {
+            float x = rng_range_f32(&sys->rng, sys->spawn_bounds.min_x, sys->spawn_bounds.max_x);
+            float z = rng_range_f32(&sys->rng, sys->spawn_bounds.min_z, sys->spawn_bounds.max_z);
+            float y = sys->spawn_bounds.max_y + rng_range_f32(&sys->rng, -1.0f, 2.0f);
+            Vec3 pos = vec3_create(x, y, z);
+            spawn_particle(sys, pos, sys->weather_type, 0);
+        }
+    }
+
     /* Update active particles */
     int32_t active = 0;
     int32_t updated = 0;
@@ -203,26 +218,45 @@ void env_particles_register_emitters(EnvParticleSystem *sys,
     if (!sys || !vol)
         return;
 
+    sys->spawn_bounds = vol->bounds;
     sys->emitter_count = 0;
     RngState scan_rng;
     rng_seed(&scan_rng, 54321);
 
-    for (float x = vol->bounds.min_x; x < vol->bounds.max_x; x += voxel_size)
+    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
+    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
+    int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+
+    for (int32_t gx = 0; gx < total_x; gx++)
     {
-        for (float z = vol->bounds.min_z; z < vol->bounds.max_z; z += voxel_size)
+        int32_t cx = gx >> CHUNK_SIZE_BITS;
+        int32_t lx = gx & CHUNK_SIZE_MASK;
+        float x = vol->bounds.min_x + gx * voxel_size;
+
+        for (int32_t gz = 0; gz < total_z; gz++)
         {
+            int32_t cz = gz >> CHUNK_SIZE_BITS;
+            int32_t lz = gz & CHUNK_SIZE_MASK;
+
             if (sys->emitter_count >= ENV_EMITTER_MAX)
                 return;
 
-            for (float y = vol->bounds.max_y - voxel_size; y > vol->bounds.min_y; y -= voxel_size)
+            for (int32_t gy = total_y - 1; gy > 0; gy--)
             {
-                Vec3 pos = vec3_create(x, y, z);
-                uint8_t mat = volume_get_at(vol, pos);
+                int32_t cy = gy >> CHUNK_SIZE_BITS;
+                int32_t ly = gy & CHUNK_SIZE_MASK;
+                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                uint8_t mat = chunk_get(&vol->chunks[idx], lx, ly, lz);
                 if (mat == 0)
                     continue;
 
-                Vec3 above = vec3_create(x, y + voxel_size, z);
-                if (volume_get_at(vol, above) != 0)
+                int32_t ay = gy + 1;
+                if (ay >= total_y)
+                    break;
+                int32_t acy = ay >> CHUNK_SIZE_BITS;
+                int32_t aly = ay & CHUNK_SIZE_MASK;
+                int32_t aidx = cx + acy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                if (chunk_get(&vol->chunks[aidx], lx, aly, lz) != 0)
                     break;
 
                 uint8_t emitter_type = 255;
@@ -250,8 +284,9 @@ void env_particles_register_emitters(EnvParticleSystem *sys,
 
                 if (emitter_type != 255)
                 {
+                    float above_y = vol->bounds.min_y + (float)ay * voxel_size;
                     EnvEmitter *e = &sys->emitters[sys->emitter_count++];
-                    e->position = above;
+                    e->position = vec3_create(x, above_y, vol->bounds.min_z + gz * voxel_size);
                     e->type = emitter_type;
                     e->source_material = source_mat;
                 }
@@ -260,6 +295,14 @@ void env_particles_register_emitters(EnvParticleSystem *sys,
             }
         }
     }
+}
+
+void env_particles_set_weather(EnvParticleSystem *sys, uint8_t type, float intensity)
+{
+    if (!sys)
+        return;
+    sys->weather_type = type;
+    sys->weather_intensity = intensity;
 }
 
 void env_particles_set_wind(EnvParticleSystem *sys, Vec3 direction, float strength)

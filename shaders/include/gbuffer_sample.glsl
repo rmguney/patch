@@ -12,6 +12,7 @@ struct GBufferSample {
     float roughness;
     float metallic;
     float emissive;
+    float water_depth;
     bool is_sky;
 };
 
@@ -37,7 +38,9 @@ GBufferSample sample_gbuffer(
     s.emissive = material.b;
 
     s.linear_depth = texture(gbuffer_depth, uv).r;
-    s.world_pos = texture(gbuffer_world_pos, uv).xyz;
+    vec4 wp = texture(gbuffer_world_pos, uv);
+    s.world_pos = wp.xyz;
+    s.water_depth = wp.w;
 
     return s;
 }
@@ -61,6 +64,7 @@ GBufferSample sample_gbuffer_shadow(
     s.roughness = 0.0;
     s.metallic = 0.0;
     s.emissive = 0.0;
+    s.water_depth = 0.0;
 
     return s;
 }

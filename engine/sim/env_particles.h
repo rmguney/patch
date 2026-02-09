@@ -73,6 +73,10 @@ extern "C"
         float wind_turbulence;
         HeartbeatScheduler scheduler;
         RngState rng;
+
+        uint8_t weather_type;
+        float weather_intensity;
+        Bounds3D spawn_bounds;
     } EnvParticleSystem;
 
     EnvParticleSystem *env_particles_create(uint32_t seed);
@@ -82,6 +86,7 @@ extern "C"
                                           const VoxelVolume *vol,
                                           float voxel_size);
     void env_particles_set_wind(EnvParticleSystem *sys, Vec3 direction, float strength);
+    void env_particles_set_weather(EnvParticleSystem *sys, uint8_t type, float intensity);
     int32_t env_particles_get_active(const EnvParticleSystem *sys);
 
 #ifdef __cplusplus

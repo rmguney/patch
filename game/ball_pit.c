@@ -1,6 +1,9 @@
 #include "game/ball_pit.h"
 #include "game/terrain_gen.h"
 #include "game/scatter_gen.h"
+#include "game/shrub_gen.h"
+#include "game/day_night.h"
+#include "game/weather.h"
 #include "engine/platform/platform.h"
 #include "engine/core/profile.h"
 #include "engine/core/math.h"
@@ -199,21 +202,31 @@ bool ball_pit_init_step(Scene *scene, LoadingState *state)
                             p->num_pillars, p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
         break;
     case 2:
+        loading_state_advance(state, "Filling water");
+        terrain_gen_water(data->terrain, data->voxel_size,
+                          p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        break;
+    case 3:
         loading_state_advance(state, "Planting trees");
         terrain_gen_trees(data->terrain, data->voxel_size, 0.6f,
                           p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
         break;
-    case 3:
+    case 4:
+        loading_state_advance(state, "Growing shrubs");
+        shrub_gen_place(data->terrain, data->voxel_size,
+                        p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
+        break;
+    case 5:
         loading_state_advance(state, "Scattering flora");
         scatter_gen_apply(data->terrain, data->voxel_size, g_scatter_configs,
                           g_scatter_config_count, desc->rng_seed);
         break;
-    case 4:
+    case 6:
         loading_state_advance(state, "Building occupancy");
         volume_rebuild_all_occupancy(data->terrain);
         data->detach_ready = connectivity_work_init(&data->detach_work, data->terrain);
         break;
-    case 5:
+    case 7:
     {
         loading_state_advance(state, "Placing objects");
         data->objects = voxel_object_world_create(scene->bounds, data->voxel_size);
@@ -237,7 +250,7 @@ bool ball_pit_init_step(Scene *scene, LoadingState *state)
         data->spawn_timer = p->spawn_interval;
         break;
     }
-    case 6:
+    case 8:
         loading_state_advance(state, "Starting physics");
         data->particles = particle_system_create(scene->bounds);
         data->env_particles = env_particles_create(desc->rng_seed);
@@ -247,6 +260,10 @@ bool ball_pit_init_step(Scene *scene, LoadingState *state)
             env_particles_set_wind(data->env_particles, vec3_create(1.0f, 0.0f, 0.3f), 0.5f);
         }
         data->physics = physics_world_create(data->objects, data->terrain);
+        data->day_night = day_night_create(300.0f);
+        data->day_night.time_of_day = 0.35f;
+        data->weather = weather_create(desc->rng_seed + 999);
+        data->lighting = scene_lighting_default();
         loading_state_complete(state);
         data->init_stage++;
         return true;
@@ -314,10 +331,30 @@ static void ball_pit_tick(Scene *scene)
         PROFILE_END(PROFILE_PROP_SPAWN);
     }
 
+    /* Day/night + weather */
+    day_night_update(&data->day_night, dt);
+    weather_update(&data->weather, dt, 0.3f);
+
+    {
+        const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
+        data->lighting = desc->lighting;
+        day_night_apply_lighting(&data->day_night, &data->lighting);
+        weather_apply_lighting(&data->weather, &data->lighting);
+    }
+
+    if (data->weather.current == WEATHER_SNOW && data->weather.intensity > 0.3f)
+    {
+        const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
+        weather_accumulate_snow(&data->weather, data->terrain, data->voxel_size,
+                                data->params.terrain_amplitude, data->params.terrain_frequency,
+                                desc->rng_seed, dt);
+    }
+
     PROFILE_BEGIN(PROFILE_SIM_PARTICLES);
     particle_system_update(data->particles, dt, data->terrain, data->objects);
     if (data->env_particles)
     {
+        weather_apply_env_particles(&data->weather, data->env_particles);
         double sim_time = (double)data->stats.tick_count * (double)dt;
         env_particles_update(data->env_particles, dt, sim_time);
     }
@@ -363,7 +400,8 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
         if (data->terrain)
         {
             terrain_dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir,
-                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat);
+                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat,
+                                          MAT_FLAG_LIQUID);
             if (terrain_dist >= 0.0f && terrain_mat != 0)
                 target = terrain_hit_pos;
         }
@@ -396,7 +434,8 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
         if (data->terrain)
         {
             terrain_dist = volume_raycast(data->terrain, data->ray_origin, data->ray_dir,
-                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat);
+                                          100.0f, &terrain_hit_pos, &terrain_hit_normal, &terrain_mat,
+                                          MAT_FLAG_LIQUID);
             terrain_hit = (terrain_dist >= 0.0f && terrain_mat != 0);
         }
 
@@ -457,7 +496,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
                         if (dist_sq <= destroy_radius * destroy_radius)
                         {
                             uint8_t mat = volume_get_at(data->terrain, pos);
-                            if (mat != 0)
+                            if (mat != 0 && material_is_breakable(mat))
                             {
                                 volume_edit_set(data->terrain, pos, 0);
 
@@ -674,4 +713,39 @@ PhysicsWorld *ball_pit_get_physics(Scene *scene)
     if (!scene || !scene->user_data)
         return NULL;
     return ((BallPitData *)scene->user_data)->physics;
+}
+
+const SceneLighting *ball_pit_get_lighting(Scene *scene)
+{
+    if (!scene || !scene->user_data)
+        return NULL;
+    return &((BallPitData *)scene->user_data)->lighting;
+}
+
+void ball_pit_set_time_of_day(Scene *scene, float time)
+{
+    if (!scene || !scene->user_data)
+        return;
+    BallPitData *data = (BallPitData *)scene->user_data;
+    data->day_night.time_of_day = time;
+}
+
+void ball_pit_set_weather(Scene *scene, int weather_state)
+{
+    if (!scene || !scene->user_data)
+        return;
+    if (weather_state < 0 || weather_state >= WEATHER_COUNT)
+        return;
+    BallPitData *data = (BallPitData *)scene->user_data;
+    data->weather.current = (WeatherState)weather_state;
+    data->weather.target = (WeatherState)weather_state;
+    data->weather.transition = 1.0f;
+    data->weather.state_timer = 60.0f;
+
+    if (weather_state == WEATHER_RAIN || weather_state == WEATHER_SNOW)
+        data->weather.intensity = 0.7f;
+    else if (weather_state == WEATHER_CLOUDY)
+        data->weather.intensity = 0.3f;
+    else
+        data->weather.intensity = 0.0f;
 }

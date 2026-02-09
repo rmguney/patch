@@ -123,8 +123,16 @@ void debug_info_populate_profiler(DebugInfo *info);
 
 bool export_debug_report(const char *filename, const DebugInfo *info);
 
-bool draw_debug_overlay(patch::Renderer &renderer,
+struct DebugOverlayActions
+{
+    bool export_clicked;
+    int time_preset;    /* -1=none, 0=dawn, 1=noon, 2=dusk, 3=night */
+    int weather_preset; /* -1=none, 0=clear, 1=cloudy, 2=rain, 3=snow */
+};
+
+void draw_debug_overlay(patch::Renderer &renderer,
                         int32_t window_width, int32_t window_height,
                         const DebugInfo *info,
                         float mouse_x, float mouse_y, bool mouse_clicked,
-                        const DebugExportFeedback *feedback);
+                        const DebugExportFeedback *feedback,
+                        DebugOverlayActions *out_actions);

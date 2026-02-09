@@ -109,7 +109,10 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
+    info.water_depth = 0.0;
     info.step_mask = bvec3(false, true, false);
+
+    float water_entry_t = -1.0;
 
     vec2 box_hit = hdda_intersect_aabb(ro, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
@@ -216,36 +219,62 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         /* Level 0: Per-voxel check */
         uint mat = sample_material(map_pos);
         if (mat != 0u) {
-            info.hit = true;
-            info.material_id = mat;
-            info.color = get_material_color(mat);
-            info.emissive = get_material_emissive(mat);
-            info.roughness = get_material_roughness(mat);
-            info.metallic = get_material_metallic(mat);
-            info.step_mask = last_mask;
-
             vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
             vec3 voxel_max = voxel_min + pc.voxel_size;
             vec2 voxel_hit = hdda_intersect_aabb(ro, rd, voxel_min, voxel_max);
-            info.t = voxel_hit.x;
-            info.pos = ro + rd * info.t;
 
-            info.normal = vec3(0.0);
-            if (last_mask.x) {
-                info.normal.x = -sign(rd.x);
-            } else if (last_mask.y) {
-                info.normal.y = -sign(rd.y);
+            if (is_material_transparent(mat)) {
+                /* Transparent voxel (water/ice): record entry point, keep marching */
+                if (water_entry_t < 0.0) {
+                    water_entry_t = voxel_hit.x;
+                }
             } else {
-                info.normal.z = -sign(rd.z);
-            }
+                /* Solid hit */
+                info.hit = true;
+                info.material_id = mat;
+                info.color = get_material_color(mat);
+                info.emissive = get_material_emissive(mat);
+                info.roughness = get_material_roughness(mat);
+                info.metallic = get_material_metallic(mat);
+                info.step_mask = last_mask;
+                info.t = voxel_hit.x;
+                info.pos = ro + rd * info.t;
 
-            return info;
+                if (water_entry_t >= 0.0) {
+                    info.water_depth = info.t - water_entry_t;
+                }
+
+                info.normal = vec3(0.0);
+                if (last_mask.x) {
+                    info.normal.x = -sign(rd.x);
+                } else if (last_mask.y) {
+                    info.normal.y = -sign(rd.y);
+                } else {
+                    info.normal.z = -sign(rd.z);
+                }
+
+                return info;
+            }
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
         last_mask = mask;
         side_dist += vec3(mask) * delta_dist;
         map_pos += ivec3(mask) * step_dir;
+    }
+
+    /* If we traversed water but found no solid behind it, render the water surface */
+    if (!info.hit && water_entry_t >= 0.0) {
+        info.hit = true;
+        info.t = water_entry_t;
+        info.pos = ro + rd * water_entry_t;
+        info.normal = vec3(0.0, 1.0, 0.0);
+        info.material_id = 0u;
+        info.color = vec3(0.15, 0.3, 0.55);
+        info.emissive = 0.0;
+        info.roughness = 0.05;
+        info.metallic = 0.0;
+        info.water_depth = box_hit.y - water_entry_t;
     }
 
     return info;
@@ -352,7 +381,7 @@ void main() {
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
         imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));
-        imageStore(out_world_pos, pixel, vec4(best_hit.pos, 1.0));
+        imageStore(out_world_pos, pixel, vec4(best_hit.pos, best_hit.water_depth));
 
         /* Motion vectors for temporal effects */
         vec2 curr_uv = (vec2(pixel) + 0.5) / vec2(screen_size);
