@@ -49,6 +49,8 @@ set(ENGINE_CORE_SOURCES
     engine/core/types.h
     engine/core/math.h
     engine/core/rng.h
+    engine/core/noise.h
+    engine/core/noise.c
     engine/core/spatial_hash.h
     engine/core/spatial_hash.c
     engine/core/arena.h
@@ -134,6 +136,7 @@ set(ENGINE_SIM_SOURCES
     engine/sim/detach.h
     engine/sim/detach.c
     engine/sim/heartbeat.h
+    engine/sim/loading.h
     engine/sim/env_particles.h
     engine/sim/env_particles.c
 )
@@ -165,6 +168,8 @@ set(CONTENT_SOURCES
     content/materials.c
     content/scenes.h
     content/scenes.c
+    content/scatter.h
+    content/scatter.c
     content/voxel_shapes.h
     content/voxel_shapes.c
     ${CONTENT_SHAPE_SOURCES}
@@ -235,6 +240,7 @@ set(ENGINE_RENDER_SOURCES
     engine/render/gpu_memory.h
     engine/render/gpu_memory.cpp
     engine/render/gpu_chunk.h
+    engine/render/gpu_bvh.h
     engine/render/gpu_volume.h
     engine/render/voxel_push_constants.h
     engine/render/draw_list.h
@@ -266,6 +272,7 @@ endif()
 # Static library: game (C++ for renderers, C for rest)
 # -----------------------------------------------------------------------------
 set(GAME_C_SOURCES
+    game/biome.h
     game/terrain_gen.h
     game/terrain_gen.c
     game/tree_gen.h

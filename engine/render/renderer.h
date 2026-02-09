@@ -82,7 +82,7 @@ namespace patch
     {
     public:
         static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-        static constexpr int32_t RAYMARCH_MAX_STEPS = 512;
+        static constexpr int32_t RAYMARCH_MIN_STEPS = 512;
 
         static constexpr uint32_t GBUFFER_ALBEDO = 0;
         static constexpr uint32_t GBUFFER_NORMAL = 1;
@@ -396,6 +396,7 @@ namespace patch
         void *staging_headers_mapped_ = nullptr;
 
         int32_t voxel_total_chunks_ = 0;
+        int32_t raymarch_max_steps_ = RAYMARCH_MIN_STEPS;
         bool voxel_resources_initialized_ = false;
 
         bool rt_supported_ = false;

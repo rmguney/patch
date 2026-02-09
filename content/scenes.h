@@ -60,7 +60,7 @@ extern "C"
         .wrap_bias      = 0.4f,                                             \
         .rim_strength   = 0.10f,                                            \
         .emissive_multiplier = 2.0f,                                        \
-        .shadow_max_dist = 50.0f                                            \
+        .shadow_max_dist = 80.0f                                            \
     }
 
     static inline SceneLighting scene_lighting_default(void)

@@ -545,7 +545,7 @@ namespace patch
         pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.max_steps = raymarch_max_steps_;
         pc.near_plane = perspective_near_;
         pc.far_plane = perspective_far_;
         pc.object_count = 0;
@@ -636,7 +636,7 @@ namespace patch
         pc.object_shadow_quality = object_shadow_quality_;
         pc.debug_mode = terrain_debug_mode_;
         pc.is_orthographic = (projection_mode_ == ProjectionMode::Orthographic) ? 1 : 0;
-        pc.max_steps = RAYMARCH_MAX_STEPS;
+        pc.max_steps = raymarch_max_steps_;
         pc.object_count = 0;
         pc.shadow_quality = shadow_quality_;
         pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;

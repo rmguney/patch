@@ -1,21 +1,11 @@
 #include "scatter_gen.h"
-#include "terrain_gen.h"
+#include "game/biome.h"
 #include "content/materials.h"
+#include "engine/core/noise.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
 
 #define SCATTER_SEED_OFFSET 99999
-
-static float biome_closeness(float value, float center, float tolerance)
-{
-    if (tolerance <= 0.0f)
-        return 1.0f;
-    float dist = fabsf(value - center);
-    if (dist >= tolerance)
-        return 0.0f;
-    float t = 1.0f - dist / tolerance;
-    return t * t;
-}
 
 void scatter_gen_apply(VoxelVolume *vol, float voxel_size,
                        const ScatterConfig *configs, int32_t config_count,
@@ -30,8 +20,8 @@ void scatter_gen_apply(VoxelVolume *vol, float voxel_size,
     {
         for (float z = vol->bounds.min_z; z < vol->bounds.max_z; z += voxel_size)
         {
-            float temp = terrain_noise_2d(x * 0.1f, z * 0.1f, seed + 3000);
-            float humidity = terrain_noise_2d(x * 0.15f, z * 0.15f, seed + 4000);
+            float temp = biome_temperature(x, z, seed);
+            float humidity = biome_humidity(x, z, seed);
 
             for (float y = vol->bounds.max_y - voxel_size; y > vol->bounds.min_y; y -= voxel_size)
             {
@@ -58,7 +48,7 @@ void scatter_gen_apply(VoxelVolume *vol, float voxel_size,
 
                     if (cfg->noise_wavelength > 0.0f)
                     {
-                        float noise = terrain_noise_2d(
+                        float noise = noise_value_2d(
                             x / cfg->noise_wavelength,
                             z / cfg->noise_wavelength,
                             seed + (uint32_t)c * 7919);

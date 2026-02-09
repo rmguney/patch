@@ -25,7 +25,7 @@ static uint8_t pick_pastel_material(RngState *rng)
 }
 
 static void spawn_gary_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
-                                   float amplitude, float frequency, uint32_t seed)
+                                  float amplitude, float frequency, uint32_t seed)
 {
     const VoxelShape *gary = voxel_shape_get(SHAPE_GARY);
     if (!gary)
@@ -54,7 +54,7 @@ static void spawn_gary_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
 }
 
 static void spawn_metal_cube_on_terrain(VoxelObjectWorld *world, Bounds3D bounds,
-                                         float amplitude, float frequency, uint32_t seed)
+                                        float amplitude, float frequency, uint32_t seed)
 {
     const VoxelShape *cube = voxel_shape_get(SHAPE_CUBE);
     if (!cube)
@@ -142,8 +142,8 @@ static void throw_random_shape(BallPitData *data, Scene *scene, Vec3 target)
 
     Vec3 spawn_pos = vec3_add(data->ray_origin, vec3_scale(data->ray_dir, 0.5f));
     int32_t obj_idx = voxel_object_world_add_from_voxels(data->objects, remapped,
-                                                          shape->size_x, shape->size_y, shape->size_z,
-                                                          spawn_pos, data->objects->voxel_size);
+                                                         shape->size_x, shape->size_y, shape->size_z,
+                                                         spawn_pos, data->objects->voxel_size);
     free(remapped);
 
     if (obj_idx < 0)
@@ -175,7 +175,6 @@ static void throw_random_shape(BallPitData *data, Scene *scene, Vec3 target)
     data->stats.spawn_count++;
 }
 
-
 bool ball_pit_init_step(Scene *scene, LoadingState *state)
 {
     BallPitData *data = (BallPitData *)scene->user_data;
@@ -205,18 +204,10 @@ bool ball_pit_init_step(Scene *scene, LoadingState *state)
                           p->terrain_amplitude, p->terrain_frequency, desc->rng_seed);
         break;
     case 3:
-    {
         loading_state_advance(state, "Scattering flora");
-        static const ScatterConfig scatter_configs[] = {
-            {MAT_FLOWER_RED, MAT_GRASS, 0.025f, 8.0f, 0.3f, 0.0f, 0.7f, 0.3f, 0.5f},
-            {MAT_FLOWER_BLUE, MAT_GRASS, 0.02f, 10.0f, 0.35f, -0.1f, 0.6f, 0.5f, 0.4f},
-            {MAT_FLOWER_YELLOW, MAT_GRASS, 0.02f, 12.0f, 0.3f, 0.3f, 0.6f, 0.2f, 0.5f},
-            {MAT_MUSHROOM, MAT_DIRT, 0.015f, 5.0f, 0.5f, -0.2f, 0.5f, 0.5f, 0.4f},
-        };
-        scatter_gen_apply(data->terrain, data->voxel_size, scatter_configs,
-                          sizeof(scatter_configs) / sizeof(scatter_configs[0]), desc->rng_seed);
+        scatter_gen_apply(data->terrain, data->voxel_size, g_scatter_configs,
+                          g_scatter_config_count, desc->rng_seed);
         break;
-    }
     case 4:
         loading_state_advance(state, "Building occupancy");
         volume_rebuild_all_occupancy(data->terrain);
@@ -598,10 +589,10 @@ BallPitParams ball_pit_default_params(void)
     p.initial_spawns = 0;
     p.spawn_interval = 1.0f;
     p.spawn_batch = 1;
-    p.max_spawns = 0; /* Automatic spawning disabled - use right-click to throw objects */
-    p.num_pillars = 25;
-    p.terrain_amplitude = 3.0f;
-    p.terrain_frequency = 0.1f;
+    p.max_spawns = 0;
+    p.num_pillars = 40;
+    p.terrain_amplitude = 8.0f;
+    p.terrain_frequency = 0.06f;
     return p;
 }
 

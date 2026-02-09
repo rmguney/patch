@@ -17,7 +17,7 @@ extern "C"
 #define GPU_UPLOAD_BUDGET_PER_FRAME 16
 
 /* Maximum total GPU chunks (mission-scale guardrail) */
-#define GPU_MAX_ACTIVE_CHUNKS 512
+#define GPU_MAX_ACTIVE_CHUNKS (64 * 32 * 64)
 
 /*
  * VoxelInstance: GPU-visible per-voxel instance data.

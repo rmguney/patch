@@ -17,7 +17,7 @@ extern "C"
         int32_t num_pillars;
     } TerrainGenParams;
 
-#define TERRAIN_BASE_HEIGHT 2.0f
+#define TERRAIN_BASE_HEIGHT 10.0f
 
     float terrain_noise_2d(float x, float z, uint32_t seed);
     float terrain_gen_height(float x, float z, float amplitude, float frequency, uint32_t seed);

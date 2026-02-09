@@ -4,6 +4,7 @@
 #include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -246,6 +247,17 @@ namespace patch
 
         /* Reset scene-dependent state for clean temporal accumulation */
         reset_scene_state();
+
+        /* Compute raymarch max steps from volume diagonal */
+        {
+            float gx = static_cast<float>(vol->chunks_x * CHUNK_SIZE);
+            float gy = static_cast<float>(vol->chunks_y * CHUNK_SIZE);
+            float gz = static_cast<float>(vol->chunks_z * CHUNK_SIZE);
+            float diag = sqrtf(gx * gx + gy * gy + gz * gz);
+            raymarch_max_steps_ = static_cast<int32_t>(diag * 1.1f);
+            if (raymarch_max_steps_ < RAYMARCH_MIN_STEPS)
+                raymarch_max_steps_ = RAYMARCH_MIN_STEPS;
+        }
 
         if (!voxel_resources_initialized_ || voxel_total_chunks_ != vol->total_chunks)
         {

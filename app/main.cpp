@@ -21,8 +21,8 @@ static constexpr uint64_t DEFAULT_RNG_SEED = 12345;
 static constexpr float DEFAULT_FOV = 60.0f;
 static constexpr float DEFAULT_NEAR = 0.1f;
 static constexpr float DEFAULT_FAR = 200.0f;
-static constexpr float DEFAULT_ORTHO_WIDTH = 60.0f;
-static constexpr float DEFAULT_ORTHO_HEIGHT = 60.0f;
+static constexpr float DEFAULT_ORTHO_WIDTH = 120.0f;
+static constexpr float DEFAULT_ORTHO_HEIGHT = 120.0f;
 static constexpr float MAX_FRAME_DT = 0.1f;
 static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
 static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
@@ -253,6 +253,12 @@ int patch_main(int argc, char *argv[])
         renderer.set_view_angle(45.0f, 26.0f);
     }
 
+    {
+        SceneLighting menu_lighting = scene_lighting_default();
+        menu_lighting.sky_color = vec3_create(0.05f, 0.07f, 0.10f);
+        renderer.set_scene_lighting(&menu_lighting);
+    }
+
     bool escape_was_down = false;
     bool f1_was_down = false;
     bool f2_was_down = false;
@@ -269,7 +275,7 @@ int patch_main(int argc, char *argv[])
     /* Free camera state */
     bool free_camera_active = false;
     bool free_camera_mouse_captured = false;
-    Vec3 free_camera_pos = vec3_create(20.0f, 12.0f, 20.0f);
+    Vec3 free_camera_pos = vec3_create(20.0f, 25.0f, 20.0f);
     float free_camera_yaw = -135.0f;
     float free_camera_pitch = -30.0f;
     float last_mouse_x = 0.0f;
@@ -500,6 +506,11 @@ int patch_main(int argc, char *argv[])
             }
             app_state = AppState::Menu;
             app_ui_show_screen(&ui, APP_SCREEN_MAIN_MENU);
+            {
+                SceneLighting menu_lighting = scene_lighting_default();
+                menu_lighting.sky_color = vec3_create(0.05f, 0.07f, 0.10f);
+                renderer.set_scene_lighting(&menu_lighting);
+            }
             renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
             if (free_camera_active)
                 renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);

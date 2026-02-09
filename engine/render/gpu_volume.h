@@ -14,7 +14,7 @@ extern "C"
 /* GPU raymarching ABI structs. Sizes/layout must match shaders (see static_assert). */
 
 /* Maximum chunks the GPU can hold */
-#define GPU_VOLUME_MAX_CHUNKS 512
+#define GPU_VOLUME_MAX_CHUNKS (64 * 32 * 64)
 
 /* Maximum materials in palette */
 #define GPU_MATERIAL_PALETTE_SIZE 256

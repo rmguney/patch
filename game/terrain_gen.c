@@ -1,6 +1,8 @@
 #include "terrain_gen.h"
 #include "tree_gen.h"
+#include "game/biome.h"
 #include "content/materials.h"
+#include "engine/core/noise.h"
 #include "engine/core/rng.h"
 #include <math.h>
 
@@ -15,68 +17,32 @@
 #define PILLAR_HEIGHT_MAX 8.0f
 #define PILLAR_RADIUS_MIN 0.3f
 #define PILLAR_RADIUS_MAX 0.6f
+#define SLOPE_STEEP_THRESHOLD 2.0f
 
 static const uint8_t PASTEL_MATERIALS[] = {
     MAT_PINK, MAT_CYAN, MAT_PEACH, MAT_MINT, MAT_LAVENDER,
     MAT_SKY, MAT_TEAL, MAT_CORAL, MAT_CLOUD, MAT_ROSE};
 static const int32_t PASTEL_COUNT = sizeof(PASTEL_MATERIALS) / sizeof(PASTEL_MATERIALS[0]);
 
-static float noise_hash(int32_t x, int32_t z, uint32_t seed)
-{
-    uint32_t n = (uint32_t)x + (uint32_t)z * 57 + seed * 131;
-    n = (n << 13) ^ n;
-    return 1.0f - (float)((n * (n * n * 15731 + 789221) + 1376312589) & 0x7FFFFFFF) / 1073741824.0f;
-}
-
-static float noise_lerp(float a, float b, float t)
-{
-    return a + t * (b - a);
-}
-
-static float noise_smooth(float t)
-{
-    return t * t * (3.0f - 2.0f * t);
-}
-
 float terrain_noise_2d(float x, float z, uint32_t seed)
 {
-    int32_t ix = (int32_t)floorf(x);
-    int32_t iz = (int32_t)floorf(z);
-    float fx = x - (float)ix;
-    float fz = z - (float)iz;
-
-    float v00 = noise_hash(ix, iz, seed);
-    float v10 = noise_hash(ix + 1, iz, seed);
-    float v01 = noise_hash(ix, iz + 1, seed);
-    float v11 = noise_hash(ix + 1, iz + 1, seed);
-
-    float sx = noise_smooth(fx);
-    float sz = noise_smooth(fz);
-
-    float nx0 = noise_lerp(v00, v10, sx);
-    float nx1 = noise_lerp(v01, v11, sx);
-
-    return noise_lerp(nx0, nx1, sz);
+    return noise_value_2d(x, z, seed);
 }
 
 float terrain_gen_height(float x, float z, float amplitude, float frequency, uint32_t seed)
 {
-    float height = 0.0f;
-    float amp = amplitude;
-    float freq = frequency;
+    float base = noise_fbm_2d(x * frequency, z * frequency, seed, 6, 2.0f, 0.5f) * amplitude;
 
-    for (int32_t octave = 0; octave < 4; octave++)
-    {
-        height += terrain_noise_2d(x * freq, z * freq, seed + (uint32_t)octave * 1000) * amp;
-        amp *= 0.5f;
-        freq *= 2.0f;
-    }
+    float ridge = noise_ridged_2d(x * frequency * 0.5f, z * frequency * 0.5f,
+                                   seed + 2000, 4, 2.2f, 0.5f);
+    float ridge_mask = noise_value_2d(x * frequency * 0.1f, z * frequency * 0.1f, seed + 6000);
+    ridge_mask = fmaxf(0.0f, ridge_mask);
 
-    return height;
+    return base + ridge * ridge_mask * amplitude * 0.5f;
 }
 
 void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
-                           float frequency, uint32_t seed)
+                            float frequency, uint32_t seed)
 {
     float base_height = TERRAIN_BASE_HEIGHT;
 
@@ -87,16 +53,37 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
             float h = terrain_gen_height(x, z, amplitude, frequency, seed);
             float surface_y = base_height + h;
 
+            float temp = biome_temperature(x, z, seed);
+            float humidity = biome_humidity(x, z, seed);
+            float relative_alt = (amplitude > 0.0f) ? (h / amplitude) : 0.0f;
+            BiomeKind biome = biome_classify(temp, humidity, relative_alt);
+
+            uint8_t surface_mat = biome_surface_material(biome);
+            uint8_t sub_mat = biome_subsurface_material(biome);
+
+            float h_dx = terrain_gen_height(x + voxel_size, z, amplitude, frequency, seed);
+            float h_dz = terrain_gen_height(x, z + voxel_size, amplitude, frequency, seed);
+            float slope = fabsf(h_dx - h) + fabsf(h_dz - h);
+            bool steep = slope > voxel_size * SLOPE_STEEP_THRESHOLD;
+
+            float grass_depth = voxel_size * GRASS_DEPTH_MULT;
+            if (biome == BIOME_DESERT || biome == BIOME_MOUNTAIN)
+                grass_depth = voxel_size * DIRT_DEPTH_MULT;
+            else if (biome == BIOME_SWAMP)
+                grass_depth *= 0.5f;
+
             for (float y = vol->bounds.min_y; y < surface_y && y < vol->bounds.max_y; y += voxel_size)
             {
                 Vec3 pos = vec3_create(x, y, z);
                 float depth = surface_y - y;
 
                 uint8_t mat;
-                if (depth < voxel_size * GRASS_DEPTH_MULT)
-                    mat = MAT_GRASS;
+                if (steep)
+                    mat = MAT_STONE;
+                else if (depth < grass_depth)
+                    mat = surface_mat;
                 else if (depth < voxel_size * DIRT_DEPTH_MULT)
-                    mat = MAT_DIRT;
+                    mat = sub_mat;
                 else
                     mat = MAT_STONE;
 
@@ -107,7 +94,7 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
 }
 
 static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float radius,
-                            uint8_t material, float voxel_size)
+                             uint8_t material, float voxel_size)
 {
     for (float y = 0.0f; y < height; y += voxel_size)
     {
@@ -132,7 +119,7 @@ static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float rad
 }
 
 void terrain_gen_pillars(VoxelVolume *vol, float voxel_size, int32_t count,
-                         float amplitude, float frequency, uint32_t seed)
+                          float amplitude, float frequency, uint32_t seed)
 {
     RngState rng;
     rng_seed(&rng, seed + STRUCTURE_SEED);
@@ -158,35 +145,71 @@ void terrain_gen_pillars(VoxelVolume *vol, float voxel_size, int32_t count,
     }
 }
 
+/* ---- Tree proclivity system ---- */
+
 #define TREE_SEED_OFFSET 77777
-#define TREE_SPACING 5.0f  /* world units between tree placement candidates */
+#define TREE_SPACING 5.0f
 #define TREE_MARGIN 3.0f
 #define TREE_SCALE 0.2f
-#define TREE_MAX_DEPTH_SMALL 3  /* cap depth for small-scale trees */
+#define TREE_MAX_DEPTH_SMALL 3
+
+typedef struct
+{
+    TreeType type;
+    float ideal_temp;
+    float ideal_humidity;
+    float temp_tolerance;
+    float hum_tolerance;
+    float weight;
+} TreeProclivity;
+
+static const TreeProclivity TREE_PROCLIVITIES[] = {
+    { TREE_OAK,        0.1f,  0.5f, 0.5f, 0.4f, 10.0f },
+    { TREE_PINE,      -0.3f,  0.3f, 0.4f, 0.5f,  8.0f },
+    { TREE_FROSTPINE, -0.6f,  0.4f, 0.3f, 0.4f,  6.0f },
+    { TREE_BIRCH,      0.0f,  0.5f, 0.4f, 0.3f,  6.0f },
+    { TREE_JUNGLE,     0.7f,  0.7f, 0.3f, 0.3f,  5.0f },
+    { TREE_BAOBAB,     0.6f,  0.2f, 0.3f, 0.3f,  2.0f },
+    { TREE_ACACIA,     0.5f,  0.3f, 0.3f, 0.3f,  5.0f },
+    { TREE_CHERRY,     0.2f,  0.4f, 0.3f, 0.3f,  3.0f },
+    { TREE_DEAD,       0.0f,  0.1f, 0.8f, 0.3f,  0.5f },
+    { TREE_MANGROVE,   0.4f,  0.7f, 0.3f, 0.2f,  2.0f },
+    { TREE_REDWOOD,    0.1f,  0.6f, 0.3f, 0.2f,  1.5f },
+    { TREE_CEDAR,     -0.1f,  0.3f, 0.4f, 0.3f,  4.0f },
+    { TREE_MAPLE,      0.1f,  0.4f, 0.4f, 0.3f,  5.0f },
+    { TREE_PALM,       0.7f,  0.5f, 0.3f, 0.4f,  4.0f },
+    { TREE_SWAMP,      0.3f,  0.8f, 0.3f, 0.2f,  3.0f },
+    { TREE_AUTUMN,     0.0f,  0.3f, 0.4f, 0.4f,  5.0f },
+    { TREE_CHESTNUT,   0.1f,  0.5f, 0.4f, 0.3f,  4.0f },
+};
+#define TREE_PROCLIVITY_COUNT (int32_t)(sizeof(TREE_PROCLIVITIES) / sizeof(TREE_PROCLIVITIES[0]))
 
 static TreeType pick_tree_type(float temp, float humidity, RngState *rng)
 {
-    if (temp < -0.3f)
+    float weights[TREE_PROCLIVITY_COUNT];
+    float total = 0.0f;
+
+    for (int32_t i = 0; i < TREE_PROCLIVITY_COUNT; i++)
     {
-        if (humidity > 0.3f)
-            return TREE_FROSTPINE;
-        return rng_float(rng) < 0.7f ? TREE_PINE : TREE_DEAD;
+        const TreeProclivity *p = &TREE_PROCLIVITIES[i];
+        float tw = biome_closeness(temp, p->ideal_temp, p->temp_tolerance);
+        float hw = biome_closeness(humidity, p->ideal_humidity, p->hum_tolerance);
+        weights[i] = tw * hw * p->weight;
+        total += weights[i];
     }
-    if (temp > 0.5f)
-    {
-        if (humidity > 0.5f)
-            return rng_float(rng) < 0.6f ? TREE_JUNGLE : TREE_PALM;
-        if (humidity > 0.2f)
-            return TREE_ACACIA;
+
+    if (total <= 0.0f)
         return TREE_DEAD;
+
+    float roll = rng_float(rng) * total;
+    float cumulative = 0.0f;
+    for (int32_t i = 0; i < TREE_PROCLIVITY_COUNT; i++)
+    {
+        cumulative += weights[i];
+        if (roll <= cumulative)
+            return TREE_PROCLIVITIES[i].type;
     }
-    /* Temperate zone */
-    float roll = rng_float(rng);
-    if (humidity > 0.6f)
-        return roll < 0.4f ? TREE_OAK : (roll < 0.7f ? TREE_BIRCH : TREE_CHESTNUT);
-    if (humidity > 0.3f)
-        return roll < 0.3f ? TREE_OAK : (roll < 0.5f ? TREE_MAPLE : (roll < 0.7f ? TREE_CHERRY : TREE_AUTUMN));
-    return roll < 0.5f ? TREE_PINE : TREE_CEDAR;
+    return TREE_OAK;
 }
 
 static bool is_structure_at(const VoxelVolume *vol, float x, float z,
@@ -200,7 +223,8 @@ static bool is_structure_at(const VoxelVolume *vol, float x, float z,
             {
                 Vec3 pos = vec3_create(x + dx, surface_y + dy, z + dz);
                 uint8_t mat = volume_get_at(vol, pos);
-                if (mat != 0 && mat != MAT_GRASS && mat != MAT_DIRT && mat != MAT_STONE)
+                if (mat != 0 && mat != MAT_GRASS && mat != MAT_DIRT && mat != MAT_STONE
+                    && mat != MAT_SAND && mat != MAT_SNOW)
                     return true;
             }
         }
@@ -209,7 +233,7 @@ static bool is_structure_at(const VoxelVolume *vol, float x, float z,
 }
 
 void terrain_gen_trees(VoxelVolume *vol, float voxel_size, float tree_density,
-                       float amplitude, float frequency, uint32_t seed)
+                        float amplitude, float frequency, uint32_t seed)
 {
     RngState rng;
     rng_seed(&rng, seed + TREE_SEED_OFFSET);
@@ -223,7 +247,7 @@ void terrain_gen_trees(VoxelVolume *vol, float voxel_size, float tree_density,
     {
         for (float z = vol->bounds.min_z + margin; z < vol->bounds.max_z - margin; z += spacing)
         {
-            float density = terrain_noise_2d(x * 0.25f, z * 0.25f, seed + 5000);
+            float density = noise_value_2d(x * 0.25f, z * 0.25f, seed + 5000);
             density = (density + 1.0f) * 0.5f;
             if (density < (1.0f - tree_density))
                 continue;
@@ -239,8 +263,12 @@ void terrain_gen_trees(VoxelVolume *vol, float voxel_size, float tree_density,
             if (is_structure_at(vol, jx, jz, surface_y, voxel_size, voxel_size * 2.0f))
                 continue;
 
-            float temp = terrain_noise_2d(jx * 0.1f, jz * 0.1f, seed + 3000);
-            float humidity = terrain_noise_2d(jx * 0.15f, jz * 0.15f, seed + 4000);
+            float temp = biome_temperature(jx, jz, seed);
+            float humidity = biome_humidity(jx, jz, seed);
+
+            BiomeKind biome = biome_classify(temp, humidity, 0.0f);
+            if (biome == BIOME_DESERT)
+                continue;
 
             TreeType type = pick_tree_type(temp, humidity, &rng);
             TreeConfig config = tree_config_create(type, &rng, TREE_SCALE);
