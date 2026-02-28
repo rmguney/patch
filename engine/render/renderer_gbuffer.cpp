@@ -664,7 +664,7 @@ namespace patch
             blit_denoised_to_swapchain(image_index);
             PROFILE_END(PROFILE_RENDER_DENOISE);
 
-            /* Start new render pass for UI rendering (loads color, keeps depth) */
+            /* Start new render pass for UI rendering (loads color, clears depth) */
             VkClearValue clear_ui[2]{};
             clear_ui[1].depthStencil = {1.0f, 0};
 

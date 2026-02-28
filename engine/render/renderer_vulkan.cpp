@@ -477,13 +477,15 @@ namespace patch
             true,
             false,
             VK_CULL_MODE_NONE,
-            &ui_pipeline_);
+            &ui_pipeline_,
+            false);
     }
 
     bool Renderer::create_pipeline(const uint32_t *vert_code, size_t vert_size,
                                    const uint32_t *frag_code, size_t frag_size,
                                    bool enable_blend, bool depth_write,
-                                   VkCullModeFlags cull_mode, VkPipeline *out_pipeline)
+                                   VkCullModeFlags cull_mode, VkPipeline *out_pipeline,
+                                   bool depth_test)
     {
         VkShaderModuleCreateInfo vert_module_info{};
         vert_module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -587,7 +589,7 @@ namespace patch
 
         VkPipelineDepthStencilStateCreateInfo depth_stencil{};
         depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil.depthTestEnable = VK_TRUE;
+        depth_stencil.depthTestEnable = depth_test ? VK_TRUE : VK_FALSE;
         depth_stencil.depthWriteEnable = depth_write ? VK_TRUE : VK_FALSE;
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
 

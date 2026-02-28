@@ -72,6 +72,7 @@ extern const MaterialDescriptor g_mat_weak_rock;
 extern const MaterialDescriptor g_mat_glowing_rock;
 extern const MaterialDescriptor g_mat_glowing_mushroom;
 extern const MaterialDescriptor g_mat_water;
+extern const MaterialDescriptor g_mat_lava;
 
 /*
  * Global material registration table.
@@ -120,9 +121,10 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_GLOWING_ROCK] = &g_mat_glowing_rock,
     [MAT_GLOWING_MUSHROOM] = &g_mat_glowing_mushroom,
     [MAT_WATER] = &g_mat_water,
+    [MAT_LAVA] = &g_mat_lava,
 };
 
-const int32_t g_material_count = 42;
+const int32_t g_material_count = 43;
 
-STATIC_ASSERT(MAT_WATER + 1 == 42, "Material count must match g_material_count");
-STATIC_ASSERT(MAT_WATER < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+STATIC_ASSERT(MAT_LAVA + 1 == 43, "Material count must match g_material_count");
+STATIC_ASSERT(MAT_LAVA < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

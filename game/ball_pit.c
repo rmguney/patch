@@ -387,8 +387,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
     (void)mouse_x;
     (void)mouse_y;
 
-    static bool right_was_down = false;
-    if (right_down && !right_was_down)
+    if (right_down && !data->right_was_down)
     {
         Vec3 target = vec3_add(data->ray_origin, vec3_scale(data->ray_dir, 20.0f));
 
@@ -408,7 +407,7 @@ static void ball_pit_handle_input(Scene *scene, float mouse_x, float mouse_y, bo
 
         throw_random_shape(data, scene, target);
     }
-    right_was_down = right_down;
+    data->right_was_down = right_down;
 
     if (left_down)
     {

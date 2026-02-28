@@ -60,6 +60,7 @@ extern "C"
         double last_connectivity_time; /* Time of last connectivity analysis (for throttling) */
         Vec3 last_destroy_point;    /* Last terrain destruction center (for detach impulse) */
         int32_t init_stage;
+        bool right_was_down;
 
         /* Day/night + weather */
         DayNightCycle day_night;

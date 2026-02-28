@@ -239,6 +239,7 @@ STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
 #define MAT_GLOWING_ROCK 39
 #define MAT_GLOWING_MUSHROOM 40
 #define MAT_WATER 41
+#define MAT_LAVA 42
 
 #ifdef __cplusplus
 }

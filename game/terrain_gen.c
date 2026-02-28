@@ -6,6 +6,7 @@
 #include "engine/core/rng.h"
 #include "engine/voxel/chunk.h"
 #include <math.h>
+#include <stdlib.h>
 
 #define GRASS_DEPTH_MULT 1.5f
 #define DIRT_DEPTH_MULT 4.0f
@@ -114,62 +115,137 @@ void terrain_gen_heightmap(VoxelVolume *vol, float voxel_size, float amplitude,
 void terrain_gen_water(VoxelVolume *vol, float voxel_size, float amplitude,
                        float frequency, uint32_t seed)
 {
-    (void)amplitude;
-    (void)frequency;
-    (void)seed;
-
-    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
-    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
-    int32_t sea_gy = (int32_t)((TERRAIN_SEA_LEVEL - vol->bounds.min_y) / voxel_size);
-    if (sea_gy <= 0)
-        return;
+    int32_t nx = vol->chunks_x * CHUNK_SIZE;
+    int32_t nz = vol->chunks_z * CHUNK_SIZE;
     int32_t total_y = vol->chunks_y * CHUNK_SIZE;
-    if (sea_gy > total_y)
-        sea_gy = total_y;
+    int32_t ncells = nx * nz;
+
+    float *terrain_h = (float *)malloc((size_t)ncells * sizeof(float));
+    float *water_h = (float *)malloc((size_t)ncells * sizeof(float));
+    if (!terrain_h || !water_h)
+    {
+        free(terrain_h);
+        free(water_h);
+        return;
+    }
+
+    float sea_level = TERRAIN_SEA_LEVEL;
+
+    for (int32_t gz = 0; gz < nz; gz++)
+    {
+        float z = vol->bounds.min_z + gz * voxel_size;
+        for (int32_t gx = 0; gx < nx; gx++)
+        {
+            float x = vol->bounds.min_x + gx * voxel_size;
+            float h = TERRAIN_BASE_HEIGHT + terrain_gen_height(x, z, amplitude, frequency, seed);
+            int32_t i = gz * nx + gx;
+            terrain_h[i] = h;
+
+            bool boundary = (gx == 0 || gx == nx - 1 || gz == 0 || gz == nz - 1);
+            water_h[i] = boundary ? fmaxf(h, sea_level) : 1e30f;
+        }
+    }
+
+    for (int32_t pass = 0; pass < 2000; pass++)
+    {
+        bool changed = false;
+        for (int32_t gz = 1; gz < nz - 1; gz++)
+        {
+            for (int32_t gx = 1; gx < nx - 1; gx++)
+            {
+                int32_t i = gz * nx + gx;
+                float th = terrain_h[i];
+                float wh = water_h[i];
+
+                float mn = water_h[i - 1];
+                float n = water_h[i + 1];
+                if (n < mn) mn = n;
+                n = water_h[i - nx];
+                if (n < mn) mn = n;
+                n = water_h[i + nx];
+                if (n < mn) mn = n;
+
+                if (th >= mn)
+                {
+                    if (wh != th)
+                    {
+                        water_h[i] = th;
+                        changed = true;
+                    }
+                }
+                else
+                {
+                    float new_wh = mn > th ? mn : th;
+                    if (new_wh < wh)
+                    {
+                        water_h[i] = new_wh;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if (!changed)
+            break;
+    }
 
     volume_edit_begin(vol);
 
-    for (int32_t gz = 0; gz < total_z; gz++)
+    int32_t max_water_cy = 0;
+    for (int32_t gz = 0; gz < nz; gz++)
     {
         int32_t cz = gz >> CHUNK_SIZE_BITS;
         int32_t lz = gz & CHUNK_SIZE_MASK;
 
-        for (int32_t gx = 0; gx < total_x; gx++)
+        for (int32_t gx = 0; gx < nx; gx++)
         {
+            int32_t i = gz * nx + gx;
+            float wh = water_h[i];
+            float th = terrain_h[i];
+            if (wh <= th + voxel_size * 0.5f)
+                continue;
+
             int32_t cx = gx >> CHUNK_SIZE_BITS;
             int32_t lx = gx & CHUNK_SIZE_MASK;
 
-            for (int32_t gy = sea_gy - 1; gy >= 0; gy--)
+            int32_t terrain_gy = (int32_t)ceilf((th - vol->bounds.min_y) / voxel_size);
+            int32_t water_gy = (int32_t)ceilf((wh - vol->bounds.min_y) / voxel_size);
+            if (terrain_gy < 0) terrain_gy = 0;
+            if (water_gy > total_y) water_gy = total_y;
+
+            for (int32_t gy = terrain_gy; gy < water_gy; gy++)
             {
                 int32_t cy = gy >> CHUNK_SIZE_BITS;
                 int32_t ly = gy & CHUNK_SIZE_MASK;
                 int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
                 Chunk *chunk = &vol->chunks[idx];
 
-                if (chunk_get(chunk, lx, ly, lz) != 0)
-                    break;
-                chunk_set(chunk, lx, ly, lz, MAT_WATER);
+                if (chunk_get(chunk, lx, ly, lz) == 0)
+                    chunk_set(chunk, lx, ly, lz, MAT_WATER);
+
+                if (cy + 1 > max_water_cy)
+                    max_water_cy = cy + 1;
             }
         }
     }
 
-    /* Mark all chunks at or below sea level as dirty */
-    int32_t max_cy = (sea_gy >> CHUNK_SIZE_BITS) + 1;
-    if (max_cy > vol->chunks_y)
-        max_cy = vol->chunks_y;
+    if (max_water_cy > vol->chunks_y)
+        max_water_cy = vol->chunks_y;
     for (int32_t cz = 0; cz < vol->chunks_z; cz++)
     {
-        for (int32_t cy = 0; cy < max_cy; cy++)
+        for (int32_t cy = 0; cy < max_water_cy; cy++)
         {
-            for (int32_t cx = 0; cx < vol->chunks_x; cx++)
+            for (int32_t cx_d = 0; cx_d < vol->chunks_x; cx_d++)
             {
-                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+                int32_t idx = cx_d + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
                 vol->chunks[idx].dirty_frame = vol->current_frame;
             }
         }
     }
 
     volume_edit_end(vol);
+
+    free(terrain_h);
+    free(water_h);
 }
 
 static void generate_pillar(VoxelVolume *vol, Vec3 base, float height, float radius,

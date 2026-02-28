@@ -252,7 +252,8 @@ namespace patch
         bool create_pipeline(const uint32_t *vert_code, size_t vert_size,
                              const uint32_t *frag_code, size_t frag_size,
                              bool enable_blend, bool depth_write,
-                             VkCullModeFlags cull_mode, VkPipeline *out_pipeline);
+                             VkCullModeFlags cull_mode, VkPipeline *out_pipeline,
+                             bool depth_test = true);
         bool create_pipelines();
         bool create_pipeline_cache();
         void save_pipeline_cache();

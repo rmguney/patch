@@ -278,7 +278,7 @@ int patch_main(int argc, char *argv[])
     /* Free camera state */
     bool free_camera_active = false;
     bool free_camera_mouse_captured = false;
-    Vec3 free_camera_pos = vec3_create(20.0f, 25.0f, 20.0f);
+    Vec3 free_camera_pos = vec3_create(30.0f, 30.0f, 30.0f);
     float free_camera_yaw = -135.0f;
     float free_camera_pitch = -30.0f;
     float last_mouse_x = 0.0f;
