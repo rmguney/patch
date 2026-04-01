@@ -1,5 +1,6 @@
 #include "tree_gen.h"
 #include "content/materials.h"
+#include "engine/core/noise.h"
 #include <math.h>
 #include <string.h>
 
@@ -205,33 +206,40 @@ static void voxelize_branch(const TreeBranch *branches, int32_t idx,
     Vec3 we = vec3_add(origin, b->end);
 
     float step = voxel_size;
+    float wood_r2 = b->wood_radius * b->wood_radius;
+    bool has_leaves = b->leaf_radius > 0.0f;
+    Vec3 mid = vec3_scale(vec3_add(ws, we), 0.5f);
+    float yscale = b->leaf_vertical_scale;
+    if (yscale < K_EPSILON)
+        yscale = 1.0f;
+
     for (float x = world_aabb.min_x; x <= world_aabb.max_x; x += step)
     {
         for (float z = world_aabb.min_z; z <= world_aabb.max_z; z += step)
         {
+            float n1 = noise_value_2d(x * 2.0f, z * 2.0f, 88888);
+            float n2 = noise_value_2d(x * 5.0f, z * 5.0f, 99999);
+            float noisy_r = b->leaf_radius * (1.0f + n1 * 0.3f + n2 * 0.15f);
+            float noisy_r2 = noisy_r * noisy_r;
+
             for (float y = world_aabb.min_y; y <= world_aabb.max_y; y += step)
             {
                 Vec3 pos = vec3_create(x, y, z);
                 float d2 = dist_to_line_segment_sq(pos, ws, we);
 
-                if (d2 <= b->wood_radius * b->wood_radius)
+                if (d2 <= wood_r2)
                 {
                     volume_set_at(vol, pos, config->bark_material);
                 }
-                else if (b->leaf_radius > 0.0f)
+                else if (has_leaves)
                 {
-                    Vec3 mid = vec3_scale(vec3_add(ws, we), 0.5f);
                     Vec3 diff = vec3_sub(pos, mid);
-                    float yscale = b->leaf_vertical_scale;
-                    if (yscale < K_EPSILON)
-                        yscale = 1.0f;
                     float scaled_y = diff.y / yscale;
                     float leaf_d2 = diff.x * diff.x + scaled_y * scaled_y + diff.z * diff.z;
-                    if (leaf_d2 <= b->leaf_radius * b->leaf_radius)
+                    if (leaf_d2 <= noisy_r2)
                     {
-                        Vec3 vpos = vec3_create(x, y, z);
-                        if (!volume_is_solid_at(vol, vpos))
-                            volume_set_at(vol, vpos, config->leaf_material);
+                        if (!volume_is_solid_at(vol, pos))
+                            volume_set_at(vol, pos, config->leaf_material);
                     }
                 }
             }

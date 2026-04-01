@@ -146,7 +146,7 @@ void terrain_gen_water(VoxelVolume *vol, float voxel_size, float amplitude,
         }
     }
 
-    for (int32_t pass = 0; pass < 2000; pass++)
+    for (int32_t pass = 0; pass < 500; pass++)
     {
         bool changed = false;
         for (int32_t gz = 1; gz < nz - 1; gz++)
