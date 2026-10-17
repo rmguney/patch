@@ -718,10 +718,8 @@ static const uint8_t k_gary_voxels[6 * 8 * 14] = {
 #undef _
 
 const VoxelShape g_shape_gary = {
-    .name = "gary",
     .size_x = 6,
     .size_y = 8,
     .size_z = 14,
     .voxels = k_gary_voxels,
-    .solid_count = 152,
 };

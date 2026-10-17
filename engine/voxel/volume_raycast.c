@@ -6,7 +6,7 @@
 
 #define DDA_DIR_EPSILON  0.0001f
 #define DDA_LARGE_DIST   1e10f
-#define VOLUME_RAYCAST_MISS -1.0f
+#define VOLUME_RAYCAST_MISS (-1.0f)
 
 float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist,
                      Vec3 *out_hit_pos, Vec3 *out_hit_normal, uint8_t *out_material,
@@ -14,7 +14,8 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
 {
     PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
 
-    /* DDA ray marching with occupancy-accelerated skipping */
+    /* Voxel DDA; cached chunk and 8x8x8-region occupancy bits skip the voxel
+     * lookup in empty space */
     float inv_voxel = 1.0f / vol->voxel_size;
 
     /* Transform to voxel coordinates */
@@ -42,17 +43,16 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
     float delta_y = (fabsf(dir.y) > DDA_DIR_EPSILON) ? fabsf(1.0f / dir.y) : DDA_LARGE_DIST;
     float delta_z = (fabsf(dir.z) > DDA_DIR_EPSILON) ? fabsf(1.0f / dir.z) : DDA_LARGE_DIST;
 
-    /* Initial t to next voxel boundary */
-    float t_max_x = ((step_x > 0 ? (float)(vx + 1) : (float)vx) - pos.x) / dir.x;
-    float t_max_y = ((step_y > 0 ? (float)(vy + 1) : (float)vy) - pos.y) / dir.y;
-    float t_max_z = ((step_z > 0 ? (float)(vz + 1) : (float)vz) - pos.z) / dir.z;
-
-    if (fabsf(dir.x) < DDA_DIR_EPSILON)
-        t_max_x = DDA_LARGE_DIST;
-    if (fabsf(dir.y) < DDA_DIR_EPSILON)
-        t_max_y = DDA_LARGE_DIST;
-    if (fabsf(dir.z) < DDA_DIR_EPSILON)
-        t_max_z = DDA_LARGE_DIST;
+    /* Initial t to next voxel boundary (an axis the ray barely moves along never steps) */
+    float t_max_x = (fabsf(dir.x) > DDA_DIR_EPSILON)
+                        ? ((step_x > 0 ? (float)(vx + 1) : (float)vx) - pos.x) / dir.x
+                        : DDA_LARGE_DIST;
+    float t_max_y = (fabsf(dir.y) > DDA_DIR_EPSILON)
+                        ? ((step_y > 0 ? (float)(vy + 1) : (float)vy) - pos.y) / dir.y
+                        : DDA_LARGE_DIST;
+    float t_max_z = (fabsf(dir.z) > DDA_DIR_EPSILON)
+                        ? ((step_z > 0 ? (float)(vz + 1) : (float)vz) - pos.z) / dir.z
+                        : DDA_LARGE_DIST;
 
     float t = 0.0f;
     float max_t = max_dist * inv_voxel;
@@ -89,12 +89,9 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
                 chunk_level0 = chunk->occupancy.level0;
             }
 
-            /* Skip empty chunks entirely */
+            /* Empty chunk: no voxel to look up */
             if (!chunk_has_any)
-            {
-                /* Advance to chunk boundary */
                 goto advance_voxel;
-            }
 
             /* Check 8x8x8 region occupancy (level0) */
             int32_t rx = lx / 8;
@@ -103,10 +100,7 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
             int32_t region_bit = rx + ry * CHUNK_MIP0_SIZE + rz * CHUNK_MIP0_SIZE * CHUNK_MIP0_SIZE;
 
             if (!((chunk_level0 >> region_bit) & 1))
-            {
-                /* Region is empty, skip to region boundary */
                 goto advance_voxel;
-            }
 
             /* Region is occupied, check actual voxel */
             uint8_t mat = chunk_get(&vol->chunks[chunk_idx], lx, ly, lz);
@@ -175,93 +169,4 @@ float volume_raycast(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_di
 
     PROFILE_END(PROFILE_VOXEL_RAYCAST);
     return VOLUME_RAYCAST_MISS;
-}
-
-bool volume_ray_hits_any_occupancy(const VoxelVolume *vol, Vec3 origin, Vec3 dir, float max_dist)
-{
-    if (!vol || vol->total_solid_voxels == 0)
-        return false;
-
-    float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
-    float inv_chunk_size = 1.0f / chunk_world_size;
-
-    /* Transform to chunk coordinates */
-    float pos_x = (origin.x - vol->bounds.min_x) * inv_chunk_size;
-    float pos_y = (origin.y - vol->bounds.min_y) * inv_chunk_size;
-    float pos_z = (origin.z - vol->bounds.min_z) * inv_chunk_size;
-
-    /* Current chunk coordinates */
-    int32_t cx = (int32_t)floorf(pos_x);
-    int32_t cy = (int32_t)floorf(pos_y);
-    int32_t cz = (int32_t)floorf(pos_z);
-
-    /* Step direction */
-    int32_t step_x = (dir.x >= 0) ? 1 : -1;
-    int32_t step_y = (dir.y >= 0) ? 1 : -1;
-    int32_t step_z = (dir.z >= 0) ? 1 : -1;
-
-    /* Delta t for moving one chunk in each axis */
-    float delta_x = (fabsf(dir.x) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.x) : DDA_LARGE_DIST;
-    float delta_y = (fabsf(dir.y) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.y) : DDA_LARGE_DIST;
-    float delta_z = (fabsf(dir.z) > DDA_DIR_EPSILON) ? fabsf(chunk_world_size / dir.z) : DDA_LARGE_DIST;
-
-    /* Initial t to next chunk boundary */
-    float t_max_x = ((step_x > 0 ? (float)(cx + 1) : (float)cx) - pos_x) * chunk_world_size / dir.x;
-    float t_max_y = ((step_y > 0 ? (float)(cy + 1) : (float)cy) - pos_y) * chunk_world_size / dir.y;
-    float t_max_z = ((step_z > 0 ? (float)(cz + 1) : (float)cz) - pos_z) * chunk_world_size / dir.z;
-
-    if (fabsf(dir.x) < DDA_DIR_EPSILON)
-        t_max_x = DDA_LARGE_DIST;
-    if (fabsf(dir.y) < DDA_DIR_EPSILON)
-        t_max_y = DDA_LARGE_DIST;
-    if (fabsf(dir.z) < DDA_DIR_EPSILON)
-        t_max_z = DDA_LARGE_DIST;
-
-    float t = 0.0f;
-
-    /* Traverse chunks using DDA */
-    while (t < max_dist)
-    {
-        /* Check if we're inside volume bounds */
-        if (cx >= 0 && cx < vol->chunks_x &&
-            cy >= 0 && cy < vol->chunks_y &&
-            cz >= 0 && cz < vol->chunks_z)
-        {
-            int32_t chunk_idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-            if (vol->chunks[chunk_idx].occupancy.has_any)
-            {
-                return true;
-            }
-        }
-
-        /* Advance to next chunk */
-        if (t_max_x < t_max_y && t_max_x < t_max_z)
-        {
-            t = t_max_x;
-            t_max_x += delta_x;
-            cx += step_x;
-        }
-        else if (t_max_y < t_max_z)
-        {
-            t = t_max_y;
-            t_max_y += delta_y;
-            cy += step_y;
-        }
-        else
-        {
-            t = t_max_z;
-            t_max_z += delta_z;
-            cz += step_z;
-        }
-
-        /* Early exit if outside volume */
-        if ((step_x > 0 && cx >= vol->chunks_x) || (step_x < 0 && cx < 0) ||
-            (step_y > 0 && cy >= vol->chunks_y) || (step_y < 0 && cy < 0) ||
-            (step_z > 0 && cz >= vol->chunks_z) || (step_z < 0 && cz < 0))
-        {
-            break;
-        }
-    }
-
-    return false;
 }

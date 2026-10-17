@@ -1,17 +1,19 @@
 #include "engine/platform/window.h"
 #include "engine/platform/platform.h"
 #include "engine/render/renderer.h"
-#include "engine/render/voxel_push_constants.h"
 #include "engine/render/ui_renderer.h"
 #include "engine/sim/scene.h"
 #include "app/app_ui.h"
 #include "app/app_debug.h"
-#include "game/ball_pit.h"
+#include "game/world_scene.h"
+#include "game/destruction_script.h"
 #include "engine/core/rng.h"
 #include "engine/core/profile.h"
-#include "engine/sim/detach.h"
 #include "content/materials.h"
 #include "content/scenes.h"
+#include <cerrno>
+#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,42 +23,103 @@ static constexpr uint64_t DEFAULT_RNG_SEED = 12345;
 static constexpr float DEFAULT_FOV = 60.0f;
 static constexpr float DEFAULT_NEAR = 0.1f;
 static constexpr float DEFAULT_FAR = 200.0f;
-static constexpr float DEFAULT_ORTHO_WIDTH = 120.0f;
-static constexpr float DEFAULT_ORTHO_HEIGHT = 120.0f;
 static constexpr float MAX_FRAME_DT = 0.1f;
 static constexpr float FREE_CAM_SENSITIVITY = 0.2f;
 static constexpr float FREE_CAM_PITCH_LIMIT = 89.0f;
 static constexpr float FREE_CAM_MOVE_SPEED = 20.0f;
-static constexpr int TERRAIN_DEBUG_MODE_COUNT = 17;
-
-static BallPitParams params_from_settings(const AppSettings *s)
-{
-    BallPitParams p = ball_pit_default_params();
-    p.initial_spawns = s->initial_spawns;
-    p.spawn_interval = s->spawn_interval_ms / 1000.0f;
-    p.spawn_batch = s->spawn_batch;
-    p.max_spawns = s->max_spawns;
-    return p;
-}
+/* Start pose: 80 units out from 2 above the scene's floor center at yaw 45 and 35.26 degrees
+ * elevation (world scene: 46.2, 48.2, 46.2), facing back toward it with a 30 degree downward pitch */
+static constexpr float START_CAM_DISTANCE = 80.0f;
+static constexpr float START_CAM_ORBIT_YAW = 45.0f;
+static constexpr float START_CAM_ELEVATION = 35.26f;
+static constexpr float START_CAM_YAW = -135.0f;
+static constexpr float START_CAM_PITCH = -30.0f;
+/* Right button released within this distance of its press point is a click (throw), not a look drag */
+static constexpr float RIGHT_CLICK_MAX_MOVE_PX = 4.0f;
+/* --test-resize (test runs): the window cycles through these client sizes, one every
+ * TEST_RESIZE_INTERVAL frames, and the frames in between must render at exactly that size:
+ * degenerate and odd sizes, 1080p, and 1440p (beyond a 1080p monitor) */
+static constexpr int32_t TEST_RESIZE_SIZES[][2] = {{1, 1}, {1, 97}, {97, 1}, {1023, 577}, {3, 2}, {2560, 1440}, {640, 360}, {1920, 1080}};
+static constexpr int TEST_RESIZE_INTERVAL = 4;
+/* Exit codes test_launch tells apart (3 is abort()'s) */
+static constexpr int EXIT_INVALID_SCENE = 2;
+static constexpr int EXIT_INVALID_ARGUMENT = 5; /* a command-line value did not parse */
+static constexpr int EXIT_TEST_FAILED = 4; /* a test run failed a check or ended before its last frame */
 
 using namespace patch;
 
-enum class AppState
+/* Free camera pose; yaw / pitch in degrees */
+struct FreeCamera
+{
+    Vec3 pos;
+    float yaw;
+    float pitch;
+};
+
+static FreeCamera free_camera_start_pose(const Bounds3D &bounds)
+{
+    Vec3 center = vec3_create(
+        (bounds.min_x + bounds.max_x) * 0.5f,
+        bounds.min_y + 2.0f,
+        (bounds.min_z + bounds.max_z) * 0.5f);
+
+    float orbit_yaw = START_CAM_ORBIT_YAW * K_DEG_TO_RAD;
+    float elevation = START_CAM_ELEVATION * K_DEG_TO_RAD;
+    Vec3 offset = vec3_create(
+        START_CAM_DISTANCE * sinf(orbit_yaw) * cosf(elevation),
+        START_CAM_DISTANCE * sinf(elevation),
+        START_CAM_DISTANCE * cosf(orbit_yaw) * cosf(elevation));
+
+    FreeCamera cam;
+    cam.pos = vec3_add(center, offset);
+    cam.yaw = START_CAM_YAW;
+    cam.pitch = START_CAM_PITCH;
+    return cam;
+}
+
+enum class AppState : uint8_t
 {
     Menu,
     Playing,
     Paused
 };
 
-enum class ActiveScene
+enum class ActiveScene : uint8_t
 {
     None,
-    BallPit
+    World
 };
+
+/* Command-line numbers must parse completely: a typo fails the run instead of quietly
+ * becoming 0 */
+static bool parse_int_arg(const char *text, int *out)
+{
+    char *end = nullptr;
+    errno = 0;
+    const long value = strtol(text, &end, 10);
+    if (end == text || *end != '\0' || errno == ERANGE || value < INT_MIN || value > INT_MAX)
+        return false;
+    *out = static_cast<int>(value);
+    return true;
+}
+
+static bool parse_float_arg(const char *text, float *out)
+{
+    char *end = nullptr;
+    errno = 0;
+    const float value = strtof(text, &end);
+    if (end == text || *end != '\0' || errno == ERANGE || !std::isfinite(value))
+        return false;
+    *out = value;
+    return true;
+}
 
 int patch_main(int argc, char *argv[])
 {
-    setvbuf(stdout, NULL, _IONBF, 0);
+    /* An unbuffered write per printf costs up to milliseconds when stdout is redirected; the
+     * main loop flushes once per frame, so harnesses still read the log as it happens.
+     * stderr stays unbuffered. */
+    setvbuf(stdout, NULL, _IOFBF, 1 << 16);
     setvbuf(stderr, NULL, _IONBF, 0);
 
     int test_scene = -1;
@@ -67,52 +130,115 @@ int patch_main(int argc, char *argv[])
     bool has_camera_approach = false;
     float camera_start[3] = {0.0f, 0.0f, 0.0f};
     float camera_end[3] = {0.0f, 0.0f, 0.0f};
-    bool test_destruction = false;
-    int test_destruction_interval = 10; /* frames between destructions */
+    bool has_camera_target = false;
+    float camera_target[3] = {0.0f, 0.0f, 0.0f};
+    float test_time_of_day = -1.0f;
+    int test_weather = -1;
+    DestructionScript destruction_script = {};
+    WindowMode window_mode = WindowMode::Fullscreen;
+    int32_t windowed_width = 0;
+    int32_t windowed_height = 0;
+    bool test_resize = false;
+
+    /* Reads the value after argv[i] into *out; false (after an error message) when it is
+     * missing or does not parse */
+    auto int_value = [&](int &i, int *out) {
+        if (i + 1 < argc && parse_int_arg(argv[i + 1], out))
+        {
+            i++;
+            return true;
+        }
+        fprintf(stderr, "Invalid or missing integer after %s\n", argv[i]);
+        return false;
+    };
+    auto float_values = [&](int &i, float *out, int count) {
+        const char *flag = argv[i];
+        for (int k = 0; k < count; k++)
+        {
+            if (i + 1 >= argc || !parse_float_arg(argv[i + 1], &out[k]))
+            {
+                fprintf(stderr, "Invalid or missing number %d after %s\n", k + 1, flag);
+                return false;
+            }
+            i++;
+        }
+        return true;
+    };
+    /* An optional value follows when the next argument is not another flag */
+    auto has_value = [&](int i) { return i + 1 < argc && argv[i + 1][0] != '-'; };
 
     for (int i = 1; i < argc; i++)
     {
-        if (strcmp(argv[i], "--scene") == 0 && i + 1 < argc)
+        bool ok = true;
+        if (strcmp(argv[i], "--scene") == 0)
         {
-            test_scene = atoi(argv[++i]);
+            ok = int_value(i, &test_scene);
         }
-        else if (strcmp(argv[i], "--test-frames") == 0 && i + 1 < argc)
+        else if (strcmp(argv[i], "--test-frames") == 0)
         {
-            test_frames = atoi(argv[++i]);
+            ok = int_value(i, &test_frames);
         }
         else if (strcmp(argv[i], "--profile-csv") == 0 && i + 1 < argc)
         {
             profile_csv = argv[++i];
         }
-        else if (strcmp(argv[i], "--camera-pos") == 0 && i + 3 < argc)
+        else if (strcmp(argv[i], "--camera-pos") == 0)
         {
-            camera_pos_x = static_cast<float>(atof(argv[++i]));
-            camera_pos_y = static_cast<float>(atof(argv[++i]));
-            camera_pos_z = static_cast<float>(atof(argv[++i]));
-            has_camera_pos = true;
+            float pos[3] = {};
+            ok = float_values(i, pos, 3);
+            camera_pos_x = pos[0];
+            camera_pos_y = pos[1];
+            camera_pos_z = pos[2];
+            has_camera_pos = ok;
         }
-        else if (strcmp(argv[i], "--camera-approach") == 0 && i + 6 < argc)
+        else if (strcmp(argv[i], "--camera-approach") == 0)
         {
-            camera_start[0] = static_cast<float>(atof(argv[++i]));
-            camera_start[1] = static_cast<float>(atof(argv[++i]));
-            camera_start[2] = static_cast<float>(atof(argv[++i]));
-            camera_end[0] = static_cast<float>(atof(argv[++i]));
-            camera_end[1] = static_cast<float>(atof(argv[++i]));
-            camera_end[2] = static_cast<float>(atof(argv[++i]));
-            has_camera_approach = true;
+            float path[6] = {};
+            ok = float_values(i, path, 6);
+            memcpy(camera_start, path, sizeof(camera_start));
+            memcpy(camera_end, path + 3, sizeof(camera_end));
+            has_camera_approach = ok;
+        }
+        else if (strcmp(argv[i], "--camera-target") == 0)
+        {
+            ok = float_values(i, camera_target, 3);
+            has_camera_target = ok;
+        }
+        else if (strcmp(argv[i], "--time-of-day") == 0)
+        {
+            ok = float_values(i, &test_time_of_day, 1);
+        }
+        else if (strcmp(argv[i], "--weather") == 0)
+        {
+            ok = int_value(i, &test_weather);
         }
         else if (strcmp(argv[i], "--test-destruction") == 0)
         {
-            test_destruction = true;
-            if (i + 1 < argc && argv[i + 1][0] != '-')
-                test_destruction_interval = atoi(argv[++i]);
+            int interval = 10; /* frames between destructions */
+            if (has_value(i))
+                ok = int_value(i, &interval);
+            /* 0: every frame (0 would turn the script off) */
+            destruction_script.interval_frames = interval < 1 ? 1 : interval;
         }
+        else if (strcmp(argv[i], "--windowed") == 0)
+        {
+            window_mode = WindowMode::Windowed;
+            /* Optional client size in pixels */
+            if (has_value(i))
+                ok = int_value(i, &windowed_width) && int_value(i, &windowed_height);
+        }
+        else if (strcmp(argv[i], "--test-resize") == 0)
+        {
+            test_resize = true;
+        }
+        if (!ok)
+            return EXIT_INVALID_ARGUMENT;
     }
 
     if (test_scene >= SCENE_TYPE_COUNT)
     {
         fprintf(stderr, "Invalid scene ID: %d (max: %d)\n", test_scene, SCENE_TYPE_COUNT - 1);
-        return 3;
+        return EXIT_INVALID_SCENE;
     }
 
     printf("Patch\n\n");
@@ -124,8 +250,7 @@ int patch_main(int argc, char *argv[])
         rng_seed_value = static_cast<uint64_t>(strtoull(seed_env, nullptr, 10));
     }
 
-    bool headless = (test_frames > 0);
-    Window window(1280, 720, "Patch", headless);
+    Window window("Patch", test_frames > 0 ? WindowMode::Test : window_mode, windowed_width, windowed_height);
     Renderer renderer(window);
     if (!renderer.init())
     {
@@ -137,13 +262,6 @@ int patch_main(int argc, char *argv[])
         /* Convert sRGB colors to linear space for correct lighting calculations.
          * Material RGB values are defined in sRGB (what color pickers use).
          * The shader performs lighting in linear space then applies gamma correction. */
-        auto srgb_to_linear = [](float srgb) -> float
-        {
-            if (srgb <= 0.04045f)
-                return srgb / 12.92f;
-            return powf((srgb + 0.055f) / 1.055f, 2.4f);
-        };
-
         MaterialEntry materials[MATERIAL_MAX_COUNT];
         for (int32_t i = 0; i < g_material_count; i++)
         {
@@ -160,7 +278,7 @@ int patch_main(int argc, char *argv[])
             materials[i].flags = static_cast<float>(mat->flags);
             materials[i].pad = 0.0f;
         }
-        renderer.set_material_palette_full(materials, g_material_count);
+        renderer.set_material_palette(materials, g_material_count);
     }
 
     bool window_shown = false;
@@ -173,43 +291,95 @@ int patch_main(int argc, char *argv[])
     Scene *active_scene = nullptr;
     int frames_remaining = test_frames;
 
+    /*
+     * Loads a new World scene behind the loading screen: the scene's init stages, then the
+     * renderer's terrain stages, with a loading screen frame between polls. The bar runs once
+     * over both, each stage taking an equal share. False when the window closed first: the
+     * caller leaves the half-built scene to the end of the main loop, which destroys it.
+     */
+    auto load_world_scene = [&](Scene *scene) -> bool
+    {
+        constexpr float SCENE_SHARE = static_cast<float>(WORLD_SCENE_INIT_STAGES) /
+                                      static_cast<float>(WORLD_SCENE_INIT_STAGES + Renderer::SCENE_LOAD_STAGES);
+        LoadingState scene_state;
+        LoadingState terrain_state;
+        loading_state_init(&scene_state, WORLD_SCENE_INIT_STAGES);
+        loading_state_init(&terrain_state, Renderer::SCENE_LOAD_STAGES);
+        bool scene_loaded = false;
+        while (!window.should_close())
+        {
+            if (!scene_loaded)
+            {
+                scene_loaded = world_scene_init_step(scene, &scene_state);
+                /* Without a terrain (out of memory) there is nothing to upload */
+                VoxelVolume *terrain = scene_loaded ? world_scene_get_terrain(scene) : nullptr;
+                if (terrain)
+                    renderer.begin_scene_load(terrain, VOBJ_MAX_OBJECTS, &terrain_state);
+                else if (scene_loaded)
+                    break;
+            }
+            else if (renderer.poll_scene_load(&terrain_state))
+            {
+                break;
+            }
+
+            window.poll_events();
+            if (window.consume_resize())
+                renderer.on_resize();
+            LoadingState shown = scene_loaded ? terrain_state : scene_state;
+            shown.progress = scene_loaded ? SCENE_SHARE + (1.0f - SCENE_SHARE) * terrain_state.progress
+                                          : SCENE_SHARE * scene_state.progress;
+            uint32_t li = 0;
+            /* Skipped while minimized or while the swapchain is being rebuilt */
+            if (renderer.begin_frame(&li))
+            {
+                renderer.begin_main_pass(li);
+                patch::render_loading_screen(renderer, &shown, window.width(), window.height());
+                renderer.end_frame(li);
+            }
+            fflush(stdout);
+            if (renderer.quit_requested())
+                window.request_close();
+            if (!window_shown)
+            {
+                window.show();
+                window_shown = true;
+            }
+        }
+        return !window.should_close();
+    };
+
     if (test_scene >= 0)
     {
         const SceneDescriptor *desc = nullptr;
         switch (test_scene)
         {
-        case SCENE_TYPE_BALL_PIT:
-            desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
-            active_scene = ball_pit_scene_create(desc->bounds, desc->voxel_size, nullptr);
-            current_scene = ActiveScene::BallPit;
+        case SCENE_TYPE_WORLD:
+            desc = scene_get_descriptor(SCENE_TYPE_WORLD);
+            active_scene = world_scene_create(desc->bounds, desc->voxel_size, nullptr);
+            current_scene = ActiveScene::World;
+            break;
+        default:
             break;
         }
         if (active_scene)
         {
             rng_seed(&active_scene->rng, rng_seed_value++);
-            scene_init(active_scene);
+            /* A fading menu blocks gameplay for a wall-clock time, which would make what a
+             * test run simulates depend on the frame rate */
+            app_ui_hide_now(&ui);
             app_state = AppState::Playing;
-            app_ui_hide(&ui);
-
-            ui.settings.master_preset = QUALITY_PRESET_FAIR;
-            ui.settings.adaptive_quality = 0;
-            ui.settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
-            ui.settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
-            ui.settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
-            ui.settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
-            ui.settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
-            ui.settings.taa_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].taa;
+            load_world_scene(active_scene);
 
             renderer.set_scene_lighting(&desc->lighting);
 
-            if (current_scene == ActiveScene::BallPit)
+            if (current_scene == ActiveScene::World)
             {
-                VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
-                if (terrain)
-                {
-                    renderer.init_volume_for_raymarching(terrain);
-                }
-                renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
+                /* Test runs can start at a time of day and in a weather (lookdev captures) */
+                if (test_time_of_day >= 0.0f)
+                    world_scene_set_time_of_day(active_scene, test_time_of_day);
+                if (test_weather >= 0)
+                    world_scene_set_weather(active_scene, test_weather);
             }
 
             printf("Test mode: scene %d (%s), frames %d\n", test_scene, desc->name, test_frames);
@@ -223,13 +393,18 @@ int patch_main(int argc, char *argv[])
     static constexpr int WARMUP_FRAMES = 5;
     int warmup_remaining = (test_frames > 0) ? WARMUP_FRAMES : 0;
 
-    /* Camera setup: use test camera position if specified, otherwise default isometric */
+    /* Camera setup: the free camera, unless test mode asks for a fixed or moving test camera
+     * aimed at the scene center */
+    renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
+
     bool test_camera_active = false;
     bool test_camera_approach = false;
     Vec3 test_camera_pos = vec3_create(0.0f, 0.0f, 0.0f);
     Vec3 test_camera_start = vec3_create(0.0f, 0.0f, 0.0f);
     Vec3 test_camera_end = vec3_create(0.0f, 0.0f, 0.0f);
     int frames_elapsed = 0;
+    int test_resizes = 0;
+    bool test_failed = false;
 
     if (test_frames > 0 && has_camera_approach)
     {
@@ -238,7 +413,6 @@ int patch_main(int argc, char *argv[])
         test_camera_pos = test_camera_start;
         test_camera_active = true;
         test_camera_approach = true;
-        renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
         printf("Test mode: camera approach (%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) over %d frames\n",
                camera_start[0], camera_start[1], camera_start[2],
                camera_end[0], camera_end[1], camera_end[2], test_frames);
@@ -247,13 +421,7 @@ int patch_main(int argc, char *argv[])
     {
         test_camera_pos = vec3_create(camera_pos_x, camera_pos_y, camera_pos_z);
         test_camera_active = true;
-        renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
         printf("Test mode: camera at (%.1f, %.1f, %.1f)\n", camera_pos_x, camera_pos_y, camera_pos_z);
-    }
-    else
-    {
-        renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
-        renderer.set_view_angle(45.0f, 26.0f);
     }
 
     {
@@ -263,24 +431,57 @@ int patch_main(int argc, char *argv[])
     }
 
     bool escape_was_down = false;
-    bool f1_was_down = false;
     bool f2_was_down = false;
     bool f3_was_down = false;
     bool f4_was_down = false;
     bool f5_was_down = false;
     bool mouse_was_down = false;
+    bool overlay_press = false; /* the left button went down on an F2 overlay button */
     bool show_overlay = false;
     int32_t dbg_total_uploaded = 0;
     DebugInfo dbg_info = {};
     DebugExportFeedback dbg_feedback = {};
-    float fps_smooth = 0.0f;
 
-    /* Free camera state */
-    bool free_camera_active = false;
-    bool free_camera_mouse_captured = false;
-    Vec3 free_camera_pos = vec3_create(30.0f, 30.0f, 30.0f);
-    float free_camera_yaw = -135.0f;
-    float free_camera_pitch = -30.0f;
+    /* Debug info (scene-agnostic), gathered only for the overlay and the reports */
+    auto populate_debug_info = [&]
+    {
+        debug_info_clear(&dbg_info);
+        VoxelVolume *dbg_terrain = nullptr;
+        VoxelObjectWorld *dbg_objects = nullptr;
+        ParticleSystem *dbg_particles = nullptr;
+
+        if (active_scene && current_scene == ActiveScene::World)
+        {
+            dbg_info.scene_name = "World";
+            dbg_terrain = world_scene_get_terrain(active_scene);
+            dbg_objects = world_scene_get_objects(active_scene);
+            dbg_particles = world_scene_get_particles(active_scene);
+            const WorldSceneStats *stats = world_scene_get_stats(active_scene);
+            if (stats)
+            {
+                dbg_info.spawn_count = stats->spawn_count;
+                dbg_info.tick_count = stats->tick_count;
+            }
+        }
+
+        debug_info_populate_volume(&dbg_info, dbg_terrain);
+        debug_info_populate_objects(&dbg_info, dbg_objects);
+        debug_info_populate_particles(&dbg_info, dbg_particles);
+        debug_info_populate_renderer(&dbg_info, &renderer);
+        debug_info_populate_profiler(&dbg_info);
+        dbg_info.total_uploaded = dbg_total_uploaded;
+    };
+
+    /* Free camera: reset to the start pose whenever a scene starts */
+    FreeCamera free_camera = {vec3_zero(), START_CAM_YAW, START_CAM_PITCH};
+    if (active_scene)
+        free_camera = free_camera_start_pose(active_scene->bounds);
+
+    /* Right button: a click throws a shape, a drag past RIGHT_CLICK_MAX_MOVE_PX looks around */
+    bool right_was_down = false;
+    bool right_dragging = false;
+    float right_press_x = 0.0f;
+    float right_press_y = 0.0f;
     float last_mouse_x = 0.0f;
     float last_mouse_y = 0.0f;
 
@@ -296,11 +497,13 @@ int patch_main(int argc, char *argv[])
         if (dt > MAX_FRAME_DT)
             dt = MAX_FRAME_DT;
 
-        PROFILE_BEGIN(PROFILE_SIM_COLLISION);
+        PROFILE_BEGIN(PROFILE_POLL_EVENTS);
         window.poll_events();
-        PROFILE_END(PROFILE_SIM_COLLISION);
+        PROFILE_END(PROFILE_POLL_EVENTS);
 
-        if (window.consume_resize() && window.width() > 0 && window.height() > 0)
+        /* Every WM_SIZE (including minimize to 0x0 and restore) is forwarded; the renderer
+         * compares the surface extent in begin_frame and skips frames while it is 0x0. */
+        if (window.consume_resize())
         {
             renderer.on_resize();
         }
@@ -308,27 +511,6 @@ int patch_main(int argc, char *argv[])
         bool escape_down = window.keys().escape;
         bool escape_pressed = escape_down && !escape_was_down;
         escape_was_down = escape_down;
-
-        /* F1: Camera mode switch */
-        bool f1_down = window.keys().f1;
-        bool f1_pressed = f1_down && !f1_was_down;
-        f1_was_down = f1_down;
-        if (f1_pressed)
-        {
-            free_camera_active = !free_camera_active;
-            if (free_camera_active)
-            {
-                free_camera_pos = renderer.get_camera_position();
-                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
-            }
-            else
-            {
-                renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
-                window.set_mouse_capture(false);
-                window.set_cursor_visible(true);
-                free_camera_mouse_captured = false;
-            }
-        }
 
         if (escape_pressed)
         {
@@ -388,79 +570,56 @@ int patch_main(int argc, char *argv[])
             renderer.DEBUG_set_terrain_debug_mode((mode + TERRAIN_DEBUG_MODE_COUNT - 1) % TERRAIN_DEBUG_MODE_COUNT);
         }
 
-        /* Mouse click detection */
-        bool mouse_down = window.mouse().left_down;
-        bool mouse_clicked = !mouse_down && mouse_was_down;
+        /* Left button: a press on an F2 overlay button (as drawn last frame, from last frame's
+         * info) is the overlay's until its release, the click; the scene never sees it */
+        const bool mouse_down = window.mouse().left_down;
+        const bool mouse_released = !mouse_down && mouse_was_down;
+        if (mouse_down && !mouse_was_down)
+            overlay_press = show_overlay && active_scene &&
+                            debug_overlay_hit(window.width(), window.height(), &dbg_info, window.mouse().x, window.mouse().y);
         mouse_was_down = mouse_down;
+        const bool overlay_clicked = overlay_press && mouse_released;
+        const bool scene_left_down = mouse_down && !overlay_press;
+        if (mouse_released)
+            overlay_press = false;
 
         /* Update feedback timer */
         if (dbg_feedback.timer > 0.0f)
             dbg_feedback.timer -= dt;
 
         bool do_export = f3_pressed;
-        (void)do_export;
 
-        PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
+        PROFILE_BEGIN(PROFILE_UI_UPDATE);
         app_ui_update(&ui, dt, window.mouse().x, window.mouse().y,
                       window.mouse().left_down, window.width(), window.height());
-        PROFILE_END(PROFILE_SIM_CONNECTIVITY);
+        PROFILE_END(PROFILE_UI_UPDATE);
 
         AppAction action = app_ui_get_action(&ui);
         switch (action)
         {
-        case APP_ACTION_START_BALL_PIT:
+        case APP_ACTION_START_WORLD:
         {
             if (active_scene)
             {
                 renderer.prepare_for_scene_switch();
                 scene_destroy(active_scene);
             }
-            const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_BALL_PIT);
-            const AppSettings *settings_snap = app_ui_get_settings(&ui);
-            float voxel_size = settings_snap->voxel_size_mm / 1000.0f;
-            BallPitParams bp = params_from_settings(settings_snap);
-            active_scene = ball_pit_scene_create(desc->bounds, voxel_size, &bp);
+            const SceneDescriptor *desc = scene_get_descriptor(SCENE_TYPE_WORLD);
+            active_scene = world_scene_create(desc->bounds, desc->voxel_size, nullptr);
             rng_seed(&active_scene->rng, rng_seed_value++);
 
-            {
-                LoadingState load_state;
-                loading_state_init(&load_state, BALL_PIT_INIT_STAGES);
-                while (!ball_pit_init_step(active_scene, &load_state))
-                {
-                    window.poll_events();
-                    uint32_t li;
-                    renderer.begin_frame(&li);
-                    renderer.begin_main_pass(li);
-                    patch::render_loading_screen(renderer, &load_state,
-                                                 window.width(), window.height());
-                    renderer.end_frame(li);
-                }
-            }
+            /* Closed while loading: straight to the end of the main loop, which destroys
+             * the half-built scene (the rest of this frame would use it) */
+            if (!load_world_scene(active_scene))
+                continue;
 
-            current_scene = ActiveScene::BallPit;
+            current_scene = ActiveScene::World;
             app_state = AppState::Playing;
             app_ui_hide(&ui);
-            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
-            if (free_camera_active)
-                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
+            free_camera = free_camera_start_pose(active_scene->bounds);
             renderer.set_scene_lighting(&desc->lighting);
 
-            VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
-            if (terrain)
-            {
-                renderer.init_volume_for_raymarching(terrain);
-            }
-            renderer.init_voxel_object_resources(VOBJ_MAX_OBJECTS);
-
             printf("Started: %s\n", scene_get_name(active_scene));
-            break;
-        }
-
-        case APP_ACTION_RUN_STRESS_TEST:
-        {
-            printf("Running stress test in background...\n");
-            const char *cmd = "start \"Stress Test\" cmd /c \"test_render_perf.exe patch_samples.exe & pause\"";
-            system(cmd);
             break;
         }
 
@@ -474,12 +633,10 @@ int patch_main(int argc, char *argv[])
             break;
 
         case APP_ACTION_SETTINGS:
-            app_ui_refresh_settings_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_SETTINGS);
             break;
 
         case APP_ACTION_GRAPHICS:
-            app_ui_refresh_graphics_menu(&ui);
             app_ui_show_screen(&ui, APP_SCREEN_GRAPHICS);
             break;
 
@@ -490,8 +647,8 @@ int patch_main(int argc, char *argv[])
             }
             else if (ui.current_screen == APP_SCREEN_SETTINGS)
             {
-                AppScreen target = (ui.previous_screen == APP_SCREEN_PAUSE) ? APP_SCREEN_PAUSE : APP_SCREEN_MAIN_MENU;
-                app_ui_show_screen(&ui, target);
+                /* By game state, not previous_screen: a visit to GRAPHICS overwrites that */
+                app_ui_show_screen(&ui, app_state == AppState::Paused ? APP_SCREEN_PAUSE : APP_SCREEN_MAIN_MENU);
             }
             else
             {
@@ -514,9 +671,6 @@ int patch_main(int argc, char *argv[])
                 menu_lighting.sky_color = vec3_create(0.05f, 0.07f, 0.10f);
                 renderer.set_scene_lighting(&menu_lighting);
             }
-            renderer.set_orthographic(DEFAULT_ORTHO_WIDTH, DEFAULT_ORTHO_HEIGHT, DEFAULT_FAR);
-            if (free_camera_active)
-                renderer.set_perspective(DEFAULT_FOV, DEFAULT_NEAR, DEFAULT_FAR);
             break;
 
         case APP_ACTION_QUIT:
@@ -527,223 +681,75 @@ int patch_main(int argc, char *argv[])
             break;
         }
 
-        if (app_state == AppState::Playing && active_scene && !app_ui_is_blocking(&ui))
+        const bool gameplay_input = app_state == AppState::Playing && active_scene != nullptr && !app_ui_is_blocking(&ui);
+
+        /* Right button, gameplay only (the window captures the mouse while it is down, so the
+         * release always arrives): moving past RIGHT_CLICK_MAX_MOVE_PX turns it into a look drag
+         * (cursor hidden), a release before that is a click. Leaving gameplay mid-press ends it
+         * without a click. */
+        bool right_clicked = false;
         {
-            PROFILE_BEGIN(PROFILE_SIM_TICK);
+            const MouseState &mouse = window.mouse();
+            const bool right_down = gameplay_input && mouse.right_down;
+            const float dx = mouse.x - right_press_x;
+            const float dy = mouse.y - right_press_y;
+            const bool moved = dx * dx + dy * dy > RIGHT_CLICK_MAX_MOVE_PX * RIGHT_CLICK_MAX_MOVE_PX;
+            if (right_down && !right_was_down)
+            {
+                right_press_x = last_mouse_x = mouse.x;
+                right_press_y = last_mouse_y = mouse.y;
+            }
+            else if (right_down && !right_dragging && moved)
+            {
+                right_dragging = true;
+                window.set_cursor_visible(false);
+            }
+            else if (!right_down && right_was_down)
+            {
+                right_clicked = gameplay_input && !right_dragging && !moved;
+                if (right_dragging)
+                    window.set_cursor_visible(true);
+                right_dragging = false;
+            }
+            right_was_down = right_down;
+        }
+
+        if (gameplay_input)
+        {
+            /* PROFILE_SIM_TICK is recorded per fixed tick inside the scene (world_scene_tick) */
             Vec3 ray_origin, ray_dir;
             renderer.screen_to_ray(window.mouse().x, window.mouse().y, &ray_origin, &ray_dir);
 
-            if (current_scene == ActiveScene::BallPit)
+            if (current_scene == ActiveScene::World)
             {
-                ball_pit_set_ray(active_scene, ray_origin, ray_dir);
+                world_scene_set_ray(active_scene, ray_origin, ray_dir);
+                /* The scene throws on a rising edge of its right-button input: a recognised
+                 * click arrives as a one-frame press, a look drag never does */
                 scene_handle_input(active_scene, window.mouse().x, window.mouse().y,
-                                   window.mouse().left_down, window.mouse().right_down);
+                                   scene_left_down, right_clicked);
             }
 
             scene_update(active_scene, dt);
 
-            if (current_scene == ActiveScene::BallPit)
+            if (current_scene == ActiveScene::World)
             {
-                const SceneLighting *scene_lighting = ball_pit_get_lighting(active_scene);
+                const SceneLighting *scene_lighting = world_scene_get_lighting(active_scene);
                 if (scene_lighting)
                     renderer.set_scene_lighting(scene_lighting);
-            }
-            PROFILE_END(PROFILE_SIM_TICK);
 
-            /* Programmatic destruction for test mode */
-            if (test_destruction && current_scene == ActiveScene::BallPit &&
-                frames_elapsed > 0 && (frames_elapsed % test_destruction_interval) == 0)
-            {
-                BallPitData *bp_data = (BallPitData *)active_scene->user_data;
-                if (bp_data && bp_data->terrain)
-                {
-                    /* Pick a random destruction point on the terrain surface */
-                    float cx = (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f;
-                    float cz = (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f;
-                    float range_x = (active_scene->bounds.max_x - active_scene->bounds.min_x) * 0.3f;
-                    float range_z = (active_scene->bounds.max_z - active_scene->bounds.min_z) * 0.3f;
-                    float px = cx + (rng_float(&active_scene->rng) * 2.0f - 1.0f) * range_x;
-                    float pz = cz + (rng_float(&active_scene->rng) * 2.0f - 1.0f) * range_z;
-
-                    /* Raycast down to find terrain surface */
-                    Vec3 ray_o = vec3_create(px, active_scene->bounds.max_y, pz);
-                    Vec3 ray_d = vec3_create(0.0f, -1.0f, 0.0f);
-                    Vec3 hit_pos = vec3_zero();
-                    Vec3 hit_normal = vec3_zero();
-                    uint8_t hit_mat = 0;
-                    float hit_dist = volume_raycast(bp_data->terrain, ray_o, ray_d,
-                                                     50.0f, &hit_pos, &hit_normal, &hit_mat,
-                                                     MAT_FLAG_LIQUID);
-
-                    if (hit_dist >= 0.0f && hit_mat != 0)
-                    {
-                        float destroy_radius = bp_data->terrain->voxel_size * 3.0f;
-
-                        /* Carve sphere out of terrain */
-                        volume_edit_begin(bp_data->terrain);
-                        int32_t destroyed_count = 0;
-                        Vec3 destroyed_positions[64];
-                        Vec3 destroyed_colors[64];
-
-                        for (float dx = -destroy_radius; dx <= destroy_radius; dx += bp_data->terrain->voxel_size)
-                        {
-                            for (float dy = -destroy_radius; dy <= destroy_radius; dy += bp_data->terrain->voxel_size)
-                            {
-                                for (float dz = -destroy_radius; dz <= destroy_radius; dz += bp_data->terrain->voxel_size)
-                                {
-                                    float dist_sq = dx * dx + dy * dy + dz * dz;
-                                    if (dist_sq <= destroy_radius * destroy_radius)
-                                    {
-                                        Vec3 pos = vec3_create(hit_pos.x + dx, hit_pos.y + dy, hit_pos.z + dz);
-                                        uint8_t mat = volume_get_at(bp_data->terrain, pos);
-                                        if (mat != 0 && material_is_breakable(mat))
-                                        {
-                                            volume_edit_set(bp_data->terrain, pos, 0);
-                                            if (destroyed_count < 64)
-                                            {
-                                                destroyed_positions[destroyed_count] = pos;
-                                                destroyed_colors[destroyed_count] = material_get_color(mat);
-                                                destroyed_count++;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        volume_edit_end(bp_data->terrain);
-
-                        /* Spawn debris particles */
-                        if (bp_data->particles)
-                        {
-                            for (int32_t i = 0; i < destroyed_count; i++)
-                            {
-                                Vec3 dir = vec3_sub(destroyed_positions[i], hit_pos);
-                                float d = vec3_length(dir);
-                                if (d > 0.001f)
-                                    dir = vec3_scale(dir, 1.0f / d);
-                                else
-                                    dir = vec3_create(0.0f, 1.0f, 0.0f);
-                                float speed = 2.0f + rng_float(&active_scene->rng) * 2.0f;
-                                Vec3 velocity = vec3_scale(dir, speed);
-                                velocity.y += 1.0f;
-                                particle_system_add(bp_data->particles, &active_scene->rng,
-                                                    destroyed_positions[i], velocity,
-                                                    destroyed_colors[i],
-                                                    bp_data->terrain->voxel_size * 0.4f);
-                            }
-                        }
-
-                        /* Wake physics near destruction */
-                        if (bp_data->physics)
-                            physics_world_wake_in_region(bp_data->physics, hit_pos, destroy_radius * 2.0f);
-
-                        /* Run connectivity analysis + detach */
-                        if (bp_data->detach_ready && bp_data->objects)
-                        {
-                            PROFILE_BEGIN(PROFILE_SIM_CONNECTIVITY);
-                            DetachConfig cfg = detach_config_default();
-                            DetachResult detach_result;
-                            detach_terrain_process(bp_data->terrain, bp_data->objects,
-                                                   &cfg, &bp_data->detach_work, &detach_result,
-                                                   bp_data->particles, &active_scene->rng);
-                            PROFILE_END(PROFILE_SIM_CONNECTIVITY);
-
-                            if (detach_result.bodies_spawned > 0 && bp_data->physics)
-                            {
-                                physics_world_sync_objects(bp_data->physics);
-                                int32_t count = detach_result.bodies_spawned;
-                                if (count > DETACH_MAX_SPAWNED) count = DETACH_MAX_SPAWNED;
-                                for (int32_t i = 0; i < count; i++)
-                                {
-                                    int32_t obj_idx = detach_result.spawned_indices[i];
-                                    VoxelObject *obj = &bp_data->objects->objects[obj_idx];
-                                    if (!obj->active) continue;
-                                    int32_t body_idx = physics_world_find_body_for_object(bp_data->physics, obj_idx);
-                                    if (body_idx < 0) continue;
-                                    Vec3 dir = vec3_sub(obj->position, hit_pos);
-                                    float dist = vec3_length(dir);
-                                    if (dist > 0.001f) dir = vec3_scale(dir, 1.0f / dist);
-                                    else dir = vec3_create(0.0f, 1.0f, 0.0f);
-                                    Vec3 velocity = vec3_scale(dir, 3.0f);
-                                    velocity.y += 1.5f;
-                                    physics_body_set_velocity(bp_data->physics, body_idx, velocity);
-                                }
-                            }
-                        }
-                    }
-                }
+                destruction_script_frame(&destruction_script, active_scene, frames_elapsed);
             }
         }
 
-        /* Free camera controls */
-        if (free_camera_active)
+        if (test_camera_active && active_scene)
         {
-            if (window.mouse().right_down && !free_camera_mouse_captured)
-            {
-                free_camera_mouse_captured = true;
-                window.set_mouse_capture(true);
-                window.set_cursor_visible(false);
-                last_mouse_x = window.mouse().x;
-                last_mouse_y = window.mouse().y;
-            }
-            else if (!window.mouse().right_down && free_camera_mouse_captured)
-            {
-                free_camera_mouse_captured = false;
-                window.set_mouse_capture(false);
-                window.set_cursor_visible(true);
-            }
-
-            if (free_camera_mouse_captured)
-            {
-                float dx = window.mouse().x - last_mouse_x;
-                float dy = window.mouse().y - last_mouse_y;
-                last_mouse_x = window.mouse().x;
-                last_mouse_y = window.mouse().y;
-
-                free_camera_yaw -= dx * FREE_CAM_SENSITIVITY;
-                free_camera_pitch -= dy * FREE_CAM_SENSITIVITY;
-
-                if (free_camera_pitch > FREE_CAM_PITCH_LIMIT)
-                    free_camera_pitch = FREE_CAM_PITCH_LIMIT;
-                if (free_camera_pitch < -FREE_CAM_PITCH_LIMIT)
-                    free_camera_pitch = -FREE_CAM_PITCH_LIMIT;
-            }
-
-            float yaw_rad = free_camera_yaw * 3.14159f / 180.0f;
-            float pitch_rad = free_camera_pitch * 3.14159f / 180.0f;
-
-            Vec3 forward;
-            forward.x = cosf(pitch_rad) * sinf(yaw_rad);
-            forward.y = sinf(pitch_rad);
-            forward.z = cosf(pitch_rad) * cosf(yaw_rad);
-
-            Vec3 right = vec3_cross(forward, vec3_create(0.0f, 1.0f, 0.0f));
-            right = vec3_normalize(right);
-
-            const float move_speed = FREE_CAM_MOVE_SPEED * dt;
-            if (window.keys().w)
-                free_camera_pos = vec3_add(free_camera_pos, vec3_scale(forward, move_speed));
-            if (window.keys().s)
-                free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(forward, move_speed));
-            if (window.keys().d)
-                free_camera_pos = vec3_add(free_camera_pos, vec3_scale(right, move_speed));
-            if (window.keys().a)
-                free_camera_pos = vec3_sub(free_camera_pos, vec3_scale(right, move_speed));
-            if (window.keys().space)
-                free_camera_pos.y += move_speed;
-            if (window.keys().shift)
-                free_camera_pos.y -= move_speed;
-
-            Vec3 target = vec3_add(free_camera_pos, forward);
-            renderer.set_look_at(free_camera_pos, target);
-        }
-        else if (test_camera_active && active_scene)
-        {
-            /* Test mode: fixed or interpolated camera looking at scene center */
-            Vec3 center = vec3_create(
-                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
-                active_scene->bounds.min_y + 2.0f,
-                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+            /* Test mode: fixed or interpolated camera looking at --camera-target, or else at
+             * the scene center */
+            Vec3 center = has_camera_target
+                              ? vec3_create(camera_target[0], camera_target[1], camera_target[2])
+                              : vec3_create((active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
+                                            active_scene->bounds.min_y + 2.0f,
+                                            (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
 
             if (test_camera_approach && test_frames > 0)
             {
@@ -758,19 +764,63 @@ int patch_main(int argc, char *argv[])
 
             renderer.set_look_at(test_camera_pos, center);
         }
-        else if (active_scene && current_scene == ActiveScene::BallPit)
+        else
         {
-            float content_y = active_scene->bounds.min_y + 2.0f;
-            Vec3 center = vec3_create(
-                (active_scene->bounds.min_x + active_scene->bounds.max_x) * 0.5f,
-                content_y,
-                (active_scene->bounds.min_z + active_scene->bounds.max_z) * 0.5f);
+            /* Free camera: right-drag to look, WASD / Space / Shift to move (gameplay only) */
+            if (right_dragging)
+            {
+                float dx = window.mouse().x - last_mouse_x;
+                float dy = window.mouse().y - last_mouse_y;
+                last_mouse_x = window.mouse().x;
+                last_mouse_y = window.mouse().y;
 
-            renderer.set_view_angle_at(45.0f, 80.0f, center, dt);
+                free_camera.yaw -= dx * FREE_CAM_SENSITIVITY;
+                free_camera.pitch -= dy * FREE_CAM_SENSITIVITY;
+
+                if (free_camera.pitch > FREE_CAM_PITCH_LIMIT)
+                    free_camera.pitch = FREE_CAM_PITCH_LIMIT;
+                if (free_camera.pitch < -FREE_CAM_PITCH_LIMIT)
+                    free_camera.pitch = -FREE_CAM_PITCH_LIMIT;
+            }
+
+            float yaw_rad = free_camera.yaw * 3.14159f / 180.0f;
+            float pitch_rad = free_camera.pitch * 3.14159f / 180.0f;
+
+            Vec3 forward;
+            forward.x = cosf(pitch_rad) * sinf(yaw_rad);
+            forward.y = sinf(pitch_rad);
+            forward.z = cosf(pitch_rad) * cosf(yaw_rad);
+
+            if (gameplay_input)
+            {
+                Vec3 right = vec3_cross(forward, vec3_create(0.0f, 1.0f, 0.0f));
+                right = vec3_normalize(right);
+
+                const float move_speed = FREE_CAM_MOVE_SPEED * dt;
+                if (window.keys().w)
+                    free_camera.pos = vec3_add(free_camera.pos, vec3_scale(forward, move_speed));
+                if (window.keys().s)
+                    free_camera.pos = vec3_sub(free_camera.pos, vec3_scale(forward, move_speed));
+                if (window.keys().d)
+                    free_camera.pos = vec3_add(free_camera.pos, vec3_scale(right, move_speed));
+                if (window.keys().a)
+                    free_camera.pos = vec3_sub(free_camera.pos, vec3_scale(right, move_speed));
+                if (window.keys().space)
+                    free_camera.pos.y += move_speed;
+                if (window.keys().shift)
+                    free_camera.pos.y -= move_speed;
+            }
+
+            Vec3 target = vec3_add(free_camera.pos, forward);
+            renderer.set_look_at(free_camera.pos, target);
         }
 
-        uint32_t image_index;
-        renderer.begin_frame(&image_index);
+        uint32_t image_index = 0;
+        /* false while minimized, while the swapchain is being rebuilt, or after a fatal
+         * renderer error: nothing may be recorded or submitted this iteration */
+        const bool frame_ok = renderer.begin_frame(&image_index);
+        if (!frame_ok && renderer.quit_requested())
+            window.request_close();
 
         const AppSettings *settings = app_ui_get_settings(&ui);
         AppSettings test_settings;
@@ -782,7 +832,6 @@ int patch_main(int argc, char *argv[])
             test_settings.shadow_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow;
             test_settings.shadow_contact_hardening = QUALITY_PRESETS[QUALITY_PRESET_FAIR].shadow_contact;
             test_settings.ao_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].ao;
-            test_settings.lod_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].lod;
             test_settings.denoise_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].denoise;
             test_settings.taa_quality = QUALITY_PRESETS[QUALITY_PRESET_FAIR].taa;
             settings = &test_settings;
@@ -800,10 +849,8 @@ int patch_main(int argc, char *argv[])
             else
             {
                 renderer.set_shadow_quality(settings->shadow_quality);
-                renderer.set_object_shadow_quality(settings->object_shadow_quality);
                 renderer.set_shadow_contact_hardening(settings->shadow_contact_hardening != 0);
                 renderer.set_ao_quality(settings->ao_quality);
-                renderer.set_lod_quality(settings->lod_quality);
                 renderer.set_denoise_quality(settings->denoise_quality);
                 renderer.set_taa_quality(settings->taa_quality);
             }
@@ -813,25 +860,17 @@ int patch_main(int argc, char *argv[])
 
         PROFILE_BEGIN(PROFILE_RENDER_MAIN);
 
-        if (active_scene && current_scene == ActiveScene::BallPit)
+        if (frame_ok && active_scene && current_scene == ActiveScene::World)
         {
-            VoxelVolume *terrain = ball_pit_get_terrain(active_scene);
-            VoxelObjectWorld *objects = ball_pit_get_objects(active_scene);
-            ParticleSystem *particles = ball_pit_get_particles(active_scene);
-            EnvParticleSystem *env_particles = ball_pit_get_env_particles(active_scene);
+            VoxelVolume *terrain = world_scene_get_terrain(active_scene);
+            VoxelObjectWorld *objects = world_scene_get_objects(active_scene);
+            ParticleSystem *particles = world_scene_get_particles(active_scene);
+            EnvParticleSystem *env_particles = world_scene_get_env_particles(active_scene);
 
-            bool has_objects_or_particles = (objects && objects->object_count > 0) ||
-                                            (particles && particles->count > 0) ||
-                                            (env_particles && env_particles->active_count > 0);
-
-            if (particles || env_particles)
+            /* Objects and particles are drawn between their last two simulation steps */
             {
-                float interp_alpha = active_scene->sim_accumulator / SIM_TIMESTEP;
-                if (interp_alpha < 0.0f)
-                    interp_alpha = 0.0f;
-                if (interp_alpha > 1.0f)
-                    interp_alpha = 1.0f;
-                renderer.set_interp_alpha(interp_alpha);
+                const WorldSceneStats *stats = world_scene_get_stats(active_scene);
+                renderer.set_interp_alpha(scene_interp_alpha(active_scene), stats ? stats->tick_count : 0);
             }
 
             if (terrain)
@@ -850,30 +889,16 @@ int patch_main(int argc, char *argv[])
                 }
                 PROFILE_END(PROFILE_RENDER_CHUNK_UPLOAD);
 
-                if (uploaded > 0 || has_objects_or_particles)
-                {
-                    PROFILE_BEGIN(PROFILE_RENDER_SHADOW_VOLUME);
-                    renderer.update_shadow_volume(terrain, objects, particles);
-                    PROFILE_END(PROFILE_RENDER_SHADOW_VOLUME);
-                }
-            }
+                PROFILE_BEGIN(PROFILE_RENDER_SHADOW_VOLUME);
+                renderer.update_shadow_volume(terrain);
+                PROFILE_END(PROFILE_RENDER_SHADOW_VOLUME);
 
-            if (terrain)
-            {
                 PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
-                bool need_depth_prime = (objects && objects->object_count > 0) || particles || env_particles;
-                renderer.prepare_gbuffer_compute(terrain, nullptr, need_depth_prime);
+                renderer.prepare_gbuffer_compute();
                 PROFILE_END(PROFILE_RENDER_GBUFFER);
             }
 
             renderer.begin_gbuffer_pass();
-
-            if (terrain)
-            {
-                PROFILE_BEGIN(PROFILE_RENDER_GBUFFER);
-                renderer.render_gbuffer_terrain(terrain);
-                PROFILE_END(PROFILE_RENDER_GBUFFER);
-            }
 
             if (objects)
             {
@@ -892,61 +917,37 @@ int patch_main(int argc, char *argv[])
             renderer.render_deferred_lighting(image_index);
             PROFILE_END(PROFILE_RENDER_LIGHTING);
         }
-        else
+        else if (frame_ok)
         {
             renderer.begin_main_pass(image_index);
         }
         PROFILE_END(PROFILE_RENDER_MAIN);
 
-        /* Populate debug info (scene-agnostic) */
-        debug_info_clear(&dbg_info);
-        VoxelVolume *dbg_terrain = nullptr;
-        VoxelObjectWorld *dbg_objects = nullptr;
-        ParticleSystem *dbg_particles = nullptr;
-
-        if (active_scene && current_scene == ActiveScene::BallPit)
-        {
-            dbg_info.scene_name = "Ball Pit";
-            dbg_terrain = ball_pit_get_terrain(active_scene);
-            dbg_objects = ball_pit_get_objects(active_scene);
-            dbg_particles = ball_pit_get_particles(active_scene);
-            BallPitData *data = (BallPitData *)active_scene->user_data;
-            if (data)
-            {
-                dbg_info.spawn_count = data->stats.spawn_count;
-                dbg_info.tick_count = data->stats.tick_count;
-            }
-        }
-
-        debug_info_populate_volume(&dbg_info, dbg_terrain);
-        debug_info_populate_objects(&dbg_info, dbg_objects);
-        debug_info_populate_particles(&dbg_info, dbg_particles);
-        debug_info_populate_renderer(&dbg_info, &renderer);
-        debug_info_populate_profiler(&dbg_info);
-        dbg_info.total_uploaded = dbg_total_uploaded;
+        if (show_overlay || do_export)
+            populate_debug_info();
 
         DebugOverlayActions dbg_actions = {};
         dbg_actions.time_preset = -1;
         dbg_actions.weather_preset = -1;
         bool render_ui = show_overlay || app_ui_is_blocking(&ui);
-        if (show_overlay && active_scene)
+        if (frame_ok && show_overlay && active_scene)
         {
             PROFILE_BEGIN(PROFILE_RENDER_UI_OVERLAY);
             draw_debug_overlay(renderer,
                                window.width(), window.height(),
                                &dbg_info,
                                window.mouse().x, window.mouse().y,
-                               mouse_clicked, &dbg_feedback, &dbg_actions);
+                               overlay_clicked, &dbg_feedback, &dbg_actions);
             PROFILE_END(PROFILE_RENDER_UI_OVERLAY);
         }
 
-        if (active_scene && current_scene == ActiveScene::BallPit)
+        if (active_scene && current_scene == ActiveScene::World)
         {
             static const float time_presets[] = {0.25f, 0.5f, 0.75f, 0.0f};
             if (dbg_actions.time_preset >= 0 && dbg_actions.time_preset < 4)
-                ball_pit_set_time_of_day(active_scene, time_presets[dbg_actions.time_preset]);
-            if (dbg_actions.weather_preset >= 0 && dbg_actions.weather_preset < 4)
-                ball_pit_set_weather(active_scene, dbg_actions.weather_preset);
+                world_scene_set_time_of_day(active_scene, time_presets[dbg_actions.time_preset]);
+            if (dbg_actions.weather_preset >= 0)
+                world_scene_set_weather(active_scene, dbg_actions.weather_preset);
         }
 
         if (active_scene && (do_export || dbg_actions.export_clicked))
@@ -957,7 +958,7 @@ int patch_main(int argc, char *argv[])
             dbg_feedback.timer = 3.0f;
         }
 
-        if (render_ui)
+        if (frame_ok && render_ui)
         {
             PROFILE_BEGIN(PROFILE_RENDER_UI);
             ui_render(&ui.ctx, app_ui_get_active_menu(&ui), renderer, window.width(), window.height());
@@ -966,15 +967,18 @@ int patch_main(int argc, char *argv[])
 
         PROFILE_END(PROFILE_RENDER_TOTAL);
 
-        renderer.end_frame(image_index);
+        if (frame_ok)
+            renderer.end_frame(image_index);
+        else if (!window.should_close())
+            Sleep(5); /* minimized: don't spin a core at 100% */
 
-        if (!window_shown && test_frames == 0)
+        if (!window_shown)
         {
             window.show();
             window_shown = true;
         }
 
-        if (test_frames > 0)
+        if (test_frames > 0 && frame_ok)
         {
             /* Warmup period: reset profiling after first few frames to exclude init spike */
             if (warmup_remaining > 0)
@@ -993,11 +997,38 @@ int patch_main(int argc, char *argv[])
                 frames_elapsed++;
             }
 
+            /* The size requested last must be the one the frames since rendered at */
+            if (test_resize && warmup_remaining <= 0 && frames_elapsed % TEST_RESIZE_INTERVAL == 0)
+            {
+                constexpr int SIZE_COUNT = static_cast<int>(sizeof(TEST_RESIZE_SIZES) / sizeof(TEST_RESIZE_SIZES[0]));
+                const VkExtent2D extent = renderer.get_render_extent();
+                if (test_resizes > 0)
+                {
+                    const int32_t *requested = TEST_RESIZE_SIZES[(test_resizes - 1) % SIZE_COUNT];
+                    if (static_cast<int32_t>(extent.width) != requested[0] || static_cast<int32_t>(extent.height) != requested[1])
+                    {
+                        fprintf(stderr, "Test mode: rendered at %ux%u after a resize to %dx%d\n",
+                                extent.width, extent.height, requested[0], requested[1]);
+                        test_failed = true;
+                        window.request_close();
+                    }
+                }
+                const int32_t *next = TEST_RESIZE_SIZES[test_resizes % SIZE_COUNT];
+                window.set_client_size(next[0], next[1]);
+                test_resizes++;
+            }
+
             if (frames_remaining <= 0 && warmup_remaining <= 0)
             {
                 printf("Test mode: completed %d frames\n", test_frames);
+                if (destruction_script.interval_frames > 0)
+                    printf("Test mode: %d scripted destructions removed %d voxels\n",
+                           destruction_script.destructions, destruction_script.voxels_removed);
+                if (test_resize)
+                    printf("Test mode: %d window resizes\n", test_resizes);
                 PROFILE_END(PROFILE_FRAME_TOTAL);
                 PROFILE_FRAME_END();
+                populate_debug_info();
                 export_debug_report(profile_csv, &dbg_info);
                 printf("Debug report exported to %s\n", profile_csv);
                 break;
@@ -1007,19 +1038,20 @@ int patch_main(int argc, char *argv[])
         PROFILE_END(PROFILE_FRAME_TOTAL);
         PROFILE_FRAME_END();
 
-        renderer.update_adaptive_quality(profile_get_avg_ms(PROFILE_FRAME_TOTAL));
-
-#ifdef PATCH_PROFILE
-        float fps = profile_get_fps();
-        fps_smooth = fps_smooth < 0.01f ? fps : fps_smooth * 0.9f + fps * 0.1f;
-#endif
+        renderer.update_adaptive_quality();
+        fflush(stdout);
     }
 
     if (active_scene)
     {
+        /* A load still running reads the scene */
+        renderer.prepare_for_scene_switch();
         scene_destroy(active_scene);
     }
 
+    /* A renderer failure or a closed window ends a test run early: it must not pass */
+    if (test_frames > 0 && (frames_remaining > 0 || test_failed))
+        return EXIT_TEST_FAILED;
     return 0;
 }
 

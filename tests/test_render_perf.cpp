@@ -2,13 +2,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
-#include <cmath>
 #include <ctime>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 
 static const int LAUNCH_WAIT_MS = 15000; /* 15 seconds max per test */
+
+/* Counted frames of every scenario whose frame-time distribution is judged (p95 / avg,
+ * max / avg): with 15 samples the 95th percentile is the maximum, and a ratio of the two
+ * says nothing about pacing */
+static const int SCENARIO_FRAMES = 60;
 
 static const float FRAME_BUDGET_MS = 16.667f;
 static const char *TEMP_CSV = "profile_temp.csv";
@@ -29,11 +34,9 @@ struct PerfThreshold
 static const PerfThreshold THRESHOLD_50 = {10.0f, 11.0f, 13.0f};
 static const PerfThreshold THRESHOLD_250 = {10.0f, 11.5f, 14.0f};
 static const PerfThreshold THRESHOLD_500 = {13.0f, 16.0f, 20.0f};
-static const PerfThreshold THRESHOLD_1000 = {14.0f, 17.0f, 22.0f};
 static const PerfThreshold THRESHOLD_CLOSEUP = {15.0f, 17.0f, 20.0f};         /* Close-up 250 objects */
 static const PerfThreshold THRESHOLD_TERRAIN_CLOSEUP = {16.0f, 18.0f, 22.0f};  /* Terrain close-up + camera motion */
 static const PerfThreshold THRESHOLD_EXTREME_CLOSEUP = {16.0f, 18.0f, 22.0f}; /* Extreme close-up (nearly touching) */
-static const PerfThreshold THRESHOLD_TOPDOWN = {16.0f, 19.0f, 25.0f};          /* Looking straight down into object pile */
 
 /* CPU dispatch timing thresholds */
 struct PassThreshold
@@ -65,11 +68,13 @@ enum PerfStatus
     PERF_FAIL
 };
 
+/* Green up to pass_ms, red past fail_ms; in between yellow (the result line says when it is
+ * past warn_ms, close to failing) */
 static PerfStatus evaluate_perf(float frame_ms, const PerfThreshold &thresh)
 {
     if (frame_ms <= thresh.pass_ms)
         return PERF_PASS;
-    if (frame_ms <= thresh.warn_ms)
+    if (frame_ms <= thresh.fail_ms)
         return PERF_WARN;
     return PERF_FAIL;
 }
@@ -88,6 +93,16 @@ static const char *status_string(PerfStatus s)
     return "UNKNOWN";
 }
 
+/* The average frame's verdict, printed as the scenario's result line */
+static PerfStatus report_perf(float frame_ms, const PerfThreshold &thresh)
+{
+    const PerfStatus status = evaluate_perf(frame_ms, thresh);
+    printf("Result: %s (%.2fms avg, thresholds: %.1fms pass / %.1fms warn / %.1fms fail)%s\n", status_string(status),
+           frame_ms, thresh.pass_ms, thresh.warn_ms, thresh.fail_ms,
+           status == PERF_WARN && frame_ms > thresh.warn_ms ? ", close to failing" : "");
+    return status;
+}
+
 struct ProfileData
 {
     float frame_avg_ms;
@@ -100,7 +115,7 @@ struct ProfileData
     float sim_tick_avg_ms;
     float sim_tick_max_ms;
     float sim_physics_avg_ms;
-    float sim_collision_avg_ms;
+    float poll_events_avg_ms;
     float sim_connectivity_avg_ms;
     float sim_connectivity_max_ms;
     float sim_particles_avg_ms;
@@ -183,6 +198,7 @@ static int launch_app(const char *exe_path, const char *args, int wait_ms, int s
     else
     {
         /* Timeout - kill process and wait for cleanup */
+        printf("TIMEOUT: still running after %d ms\n", wait_ms);
         TerminateProcess(pi.hProcess, 1);
         WaitForSingleObject(pi.hProcess, 2000); /* Wait up to 2s for process to die */
         CloseHandle(pi.hProcess);
@@ -192,11 +208,41 @@ static int launch_app(const char *exe_path, const char *args, int wait_ms, int s
     }
 }
 
-static void cleanup_stale_processes()
+/* Stop copies of the app under test left over from earlier runs (they hold the GPU). Other
+ * patch_samples instances, such as one the developer is running from another build, stay. */
+static void cleanup_stale_processes(const char *exe_path)
 {
-    /* Kill any lingering patch_samples.exe processes from previous runs */
-    system("taskkill /F /IM patch_samples.exe >NUL 2>&1");
-    Sleep(1000); /* Wait for GPU resources to be released */
+    char target[MAX_PATH];
+    if (GetFullPathNameA(exe_path, MAX_PATH, target, nullptr) == 0)
+        return;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return;
+
+    bool stopped = false;
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    for (BOOL ok = Process32FirstW(snapshot, &entry); ok; ok = Process32NextW(snapshot, &entry))
+    {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE,
+                                     FALSE, entry.th32ProcessID);
+        if (!process)
+            continue;
+        char image[MAX_PATH];
+        DWORD length = MAX_PATH;
+        if (QueryFullProcessImageNameA(process, 0, image, &length) && _stricmp(image, target) == 0)
+        {
+            TerminateProcess(process, 1);
+            WaitForSingleObject(process, 5000);
+            stopped = true;
+        }
+        CloseHandle(process);
+    }
+    CloseHandle(snapshot);
+
+    if (stopped)
+        Sleep(1000); /* Let the driver release the GPU resources */
 }
 
 static float parse_csv_value(const char *line, const char *category, int col)
@@ -257,7 +303,7 @@ static void parse_gpu_passes_header(const char *line, ProfileData *data)
     const char *v;
     if ((v = strstr(p, "gbuffer="))) data->gpu_gbuffer_ms = (float)atof(v + 8);
     if ((v = strstr(p, "tshadow="))) data->gpu_temporal_shadow_ms = (float)atof(v + 8);
-    if ((v = strstr(p, "ao="))) data->gpu_ao_ms = (float)atof(v + 3);
+    if ((v = strstr(p, " ao="))) data->gpu_ao_ms = (float)atof(v + 4);
     if ((v = strstr(p, "tao="))) data->gpu_temporal_ao_ms = (float)atof(v + 4);
     if ((v = strstr(p, "taa="))) data->gpu_taa_ms = (float)atof(v + 4);
     if ((v = strstr(p, "denoise="))) data->gpu_denoise_ms = (float)atof(v + 8);
@@ -363,8 +409,8 @@ static ProfileData parse_profile_csv(const char *filepath)
         }
         else if ((val = parse_csv_value(line, "sim_physics", 0)) >= 0.0f)
             data.sim_physics_avg_ms = val;
-        else if ((val = parse_csv_value(line, "sim_collision", 0)) >= 0.0f)
-            data.sim_collision_avg_ms = val;
+        else if ((val = parse_csv_value(line, "poll_events", 0)) >= 0.0f)
+            data.poll_events_avg_ms = val;
         else if ((val = parse_csv_value(line, "sim_connectivity", 0)) >= 0.0f)
         {
             data.sim_connectivity_avg_ms = val;
@@ -402,7 +448,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("================================================================================\n");
     printf("  %s\n", test_name);
     printf("================================================================================\n");
-    printf("Configuration: %d frames, %d objects%s\n", frames, stress_objects > 0 ? stress_objects : 10,
+    printf("Configuration: %d frames, %d spawned objects%s\n", frames, stress_objects,
            camera_pos ? " (close-up)" : "");
     printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n\n",
            threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
@@ -471,7 +517,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     printf("Simulation Breakdown (%5.1f%% of budget):\n", sim_pct);
     printf("  Tick:        %7.2f ms\n", data.sim_tick_avg_ms);
     printf("  Physics:     %7.2f ms\n", data.sim_physics_avg_ms);
-    printf("  Collision:   %7.2f ms\n", data.sim_collision_avg_ms);
+    printf("  Poll events: %7.2f ms\n", data.poll_events_avg_ms);
     if (data.sim_connectivity_avg_ms > 0.0f || data.sim_particles_avg_ms > 0.0f)
     {
         printf("  Connectivity:%7.2f ms (max: %.2fms)\n", data.sim_connectivity_avg_ms, data.sim_connectivity_max_ms);
@@ -479,9 +525,7 @@ static bool run_perf_test(const char *exe_path, const char *test_name, int frame
     }
     printf("\n");
 
-    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
-    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
-           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+    PerfStatus status = report_perf(data.frame_avg_ms, threshold);
 
     int spike_issues = 0;
 
@@ -705,9 +749,7 @@ static bool run_approach_test(const char *exe_path, const char *test_name, int f
     }
     printf("\n");
 
-    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
-    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
-           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+    PerfStatus status = report_perf(data.frame_avg_ms, threshold);
 
     int spike_issues = 0;
 
@@ -818,8 +860,8 @@ static bool run_destruction_test(const char *exe_path, const char *test_name, in
     printf("================================================================================\n");
     printf("  %s\n", test_name);
     printf("================================================================================\n");
-    printf("Configuration: %d frames, %d objects, destruction every %d frames%s\n",
-           frames, stress_objects > 0 ? stress_objects : 10, destroy_interval,
+    printf("Configuration: %d frames, %d spawned objects, destruction every %d frames%s\n",
+           frames, stress_objects, destroy_interval,
            camera_pos ? " (close-up)" : "");
     printf("Thresholds: PASS <%.1fms | WARN <%.1fms | FAIL >%.1fms\n",
            threshold.pass_ms, threshold.warn_ms, threshold.fail_ms);
@@ -867,7 +909,7 @@ static bool run_destruction_test(const char *exe_path, const char *test_name, in
     printf("Simulation Breakdown (%5.1f%% of budget):\n", sim_pct);
     printf("  Tick:        %7.2f ms (max: %.2fms)\n", data.sim_tick_avg_ms, data.sim_tick_max_ms);
     printf("  Physics:     %7.2f ms\n", data.sim_physics_avg_ms);
-    printf("  Collision:   %7.2f ms\n", data.sim_collision_avg_ms);
+    printf("  Poll events: %7.2f ms\n", data.poll_events_avg_ms);
     printf("  Connectivity:%7.2f ms (max: %.2fms)\n", data.sim_connectivity_avg_ms, data.sim_connectivity_max_ms);
     printf("  Particles:   %7.2f ms (max: %.2fms)\n", data.sim_particles_avg_ms, data.sim_particles_max_ms);
 
@@ -883,9 +925,7 @@ static bool run_destruction_test(const char *exe_path, const char *test_name, in
     }
     printf("\n");
 
-    PerfStatus status = evaluate_perf(data.frame_avg_ms, threshold);
-    printf("Result: %s (%.2fms avg, threshold: %.1fms pass / %.1fms warn)\n",
-           status_string(status), data.frame_avg_ms, threshold.pass_ms, threshold.warn_ms);
+    PerfStatus status = report_perf(data.frame_avg_ms, threshold);
 
     int spike_issues = 0;
 
@@ -971,10 +1011,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Clean up any stale processes from previous runs that might hold GPU resources */
-    cleanup_stale_processes();
-
     const char *exe_path = argv[1];
+    cleanup_stale_processes(exe_path);
     int passed = 0;
     int warned = 0;
     int failed = 0;
@@ -984,7 +1022,7 @@ int main(int argc, char *argv[])
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
     printf("################################################################################\n");
-    printf("#                        PATCH ENGINE BUILD REPORT                            #\n");
+    printf("#                        RENDER PERFORMANCE TESTS                             #\n");
     printf("################################################################################\n");
     printf("Generated: %s\n", time_str);
     printf("Executable: %s\n", exe_path);
@@ -998,39 +1036,38 @@ int main(int argc, char *argv[])
     launch_app(exe_path, warmup_args, LAUNCH_WAIT_MS, 50);
     Sleep(200); /* Brief pause after warmup */
 
-    run_perf_test(exe_path, "BASELINE (50 objects)", 15, 50,
+    run_perf_test(exe_path, "BASELINE (50 objects)", SCENARIO_FRAMES, 50,
                   THRESHOLD_50, &passed, &warned, &failed);
-    run_perf_test(exe_path, "STRESS TEST (250 objects)", 15, 250,
+    run_perf_test(exe_path, "STRESS TEST (250 objects)", SCENARIO_FRAMES, 250,
                   THRESHOLD_250, &passed, &warned, &failed);
-    run_perf_test(exe_path, "HEAVY STRESS (500 objects)", 15, 500,
+    /* 500 is close to the object capacity (VOBJ_MAX_OBJECTS = 512) */
+    run_perf_test(exe_path, "HEAVY STRESS (500 objects)", SCENARIO_FRAMES, 500,
                   THRESHOLD_500, &passed, &warned, &failed);
-    run_perf_test(exe_path, "ANXIETY IS KILLING ME (1000 objects)", 15, 1000,
-                  THRESHOLD_1000, &passed, &warned, &failed);
 
     /* Close-up test: camera very close to objects */
     float closeup_camera[3] = {3.0f, 4.0f, 3.0f};
-    run_perf_test(exe_path, "CLOSE-UP STRESS (250 objects)", 15, 250,
+    run_perf_test(exe_path, "CLOSE-UP STRESS (250 objects)", SCENARIO_FRAMES, 250,
                   THRESHOLD_CLOSEUP, &passed, &warned, &failed, closeup_camera, 0);
 
     /* Terrain close-up test: camera close to terrain surface */
     float terrain_closeup_camera[3] = {2.0f, 4.0f, 2.0f};
-    run_perf_test(exe_path, "TERRAIN CLOSE-UP", 15, 0,
+    run_perf_test(exe_path, "TERRAIN CLOSE-UP", SCENARIO_FRAMES, 0,
                   THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, terrain_closeup_camera);
 
     /* Spike test: catches spikes at problematic camera positions */
     float delayed_spike_camera[3] = {-4.42f, 13.41f, 1.60f};
-    run_perf_test(exe_path, "SPIKE TEST", 60, 0,
+    run_perf_test(exe_path, "SPIKE TEST", SCENARIO_FRAMES, 0,
                   THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed, delayed_spike_camera);
 
     /* Extreme close-up test: camera nearly touching objects */
     float extreme_closeup_camera[3] = {1.5f, 2.0f, 1.5f};
-    run_perf_test(exe_path, "EXTREME CLOSE-UP (250 objects)", 15, 250,
+    run_perf_test(exe_path, "EXTREME CLOSE-UP (250 objects)", SCENARIO_FRAMES, 250,
                   THRESHOLD_EXTREME_CLOSEUP, &passed, &warned, &failed, extreme_closeup_camera, 0);
 
     /* Camera approach test: detect spikes during camera motion toward terrain */
     float approach_start_far[3] = {30.0f, 20.0f, 30.0f};
     float approach_end_close[3] = {2.0f, 3.0f, 2.0f};
-    run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", 60, approach_start_far, approach_end_close,
+    run_approach_test(exe_path, "APPROACH TERRAIN (far->close)", SCENARIO_FRAMES, approach_start_far, approach_end_close,
                       THRESHOLD_TERRAIN_CLOSEUP, &passed, &warned, &failed);
 
     /* Destruction stress tests: exercise terrain carving, connectivity, particles */
@@ -1038,11 +1075,11 @@ int main(int argc, char *argv[])
     static const PerfThreshold THRESHOLD_DESTRUCTION_HEAVY = {18.0f, 22.0f, 30.0f};
 
     float dest_camera[3] = {5.0f, 6.0f, 5.0f};
-    run_destruction_test(exe_path, "DESTRUCTION LIGHT (10 objects)", 60, 10, 10,
+    run_destruction_test(exe_path, "DESTRUCTION LIGHT (10 objects)", SCENARIO_FRAMES, 10, 10,
                          THRESHOLD_DESTRUCTION, DESTRUCTION_THRESHOLD_NORMAL,
                          &passed, &warned, &failed, dest_camera);
 
-    run_destruction_test(exe_path, "DESTRUCTION HEAVY (50 objects)", 60, 50, 5,
+    run_destruction_test(exe_path, "DESTRUCTION HEAVY (50 objects)", SCENARIO_FRAMES, 50, 5,
                          THRESHOLD_DESTRUCTION_HEAVY, DESTRUCTION_THRESHOLD_HEAVY,
                          &passed, &warned, &failed, dest_camera);
 
@@ -1068,16 +1105,15 @@ int main(int argc, char *argv[])
 
         DeleteFileA(TEMP_CSV);
         int result = launch_app(exe_path, args, LAUNCH_WAIT_MS, 0);
-
-        if (result == 0)
+        ProfileData data = (result == 0) ? parse_profile_csv(TEMP_CSV) : ProfileData{};
+        if (!data.valid)
         {
-            ProfileData data = parse_profile_csv(TEMP_CSV);
-            if (data.valid)
-            {
-                distance_results[i] = data.frame_avg_ms;
-                printf("  Distance %5.0f: %7.2f ms\n", dist, data.frame_avg_ms);
-            }
+            printf("  Distance %5.0f: FAIL (exit code %d, no profile data)\n", dist, result);
+            failed++;
+            continue;
         }
+        distance_results[i] = data.frame_avg_ms;
+        printf("  Distance %5.0f: %7.2f ms\n", dist, data.frame_avg_ms);
     }
 
     if (distance_results[0] > 0 && distance_results[NUM_DISTANCE_TESTS - 1] > 0)

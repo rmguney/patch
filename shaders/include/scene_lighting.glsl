@@ -1,4 +1,4 @@
-layout(std140, SET_BINDING(LIGHTING_SET, 0)) uniform SceneLightingBlock {
+layout(std140, set = LIGHTING_SET, binding = 0) uniform SceneLightingBlock {
     vec4 sun_dir;           /* .w = wrap_bias */
     vec4 sun_color;         /* .w = strength */
     vec4 fill_dir;          /* .w = strength */

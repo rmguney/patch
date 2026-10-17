@@ -1,9 +1,9 @@
 #include "volume.h"
-#include "engine/core/math.h"
+#include "content/materials.h"
 #include "engine/core/profile.h"
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -49,12 +49,34 @@ static inline int32_t bitmap_find_first_set(const uint64_t *bitmap, int32_t word
     return -1;
 }
 
-static VoxelVolume *volume_create_internal(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z,
-                                           Bounds3D bounds, float voxel_size)
+static void voxel_box_reset(VoxelBox *box)
+{
+    box->min_x = box->min_y = box->min_z = INT32_MAX;
+    box->max_x = box->max_y = box->max_z = INT32_MIN;
+}
+
+static void voxel_box_add(VoxelBox *box, int32_t gx, int32_t gy, int32_t gz)
+{
+    if (gx < box->min_x) box->min_x = gx;
+    if (gy < box->min_y) box->min_y = gy;
+    if (gz < box->min_z) box->min_z = gz;
+    if (gx > box->max_x) box->max_x = gx;
+    if (gy > box->max_y) box->max_y = gy;
+    if (gz > box->max_z) box->max_z = gz;
+}
+
+static void volume_log_removal(VoxelVolume *vol, const VoxelBox *box)
+{
+    vol->removal_log[vol->removal_count % VOLUME_REMOVAL_LOG_SIZE] = *box;
+    vol->removal_count++;
+}
+
+VoxelVolume *volume_create_dims(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z,
+                                Vec3 origin, float voxel_size)
 {
     PROFILE_BEGIN(PROFILE_VOLUME_INIT);
 
-    if (chunks_x <= 0 || chunks_y <= 0 || chunks_z <= 0)
+    if (chunks_x <= 0 || chunks_y <= 0 || chunks_z <= 0 || !(voxel_size > 0.0f))
     {
         PROFILE_END(PROFILE_VOLUME_INIT);
         return NULL;
@@ -73,6 +95,8 @@ static VoxelVolume *volume_create_internal(int32_t chunks_x, int32_t chunks_y, i
         return NULL;
     }
 
+    /* Zeroed chunks are empty, CHUNK_STATE_ACTIVE and have exact occupancy, so nothing
+     * walks them here: their pages stay untouched until something is written */
     int32_t total = chunks_x * chunks_y * chunks_z;
     vol->chunks = (Chunk *)calloc((size_t)total, sizeof(Chunk));
     if (!vol->chunks)
@@ -86,136 +110,18 @@ static VoxelVolume *volume_create_internal(int32_t chunks_x, int32_t chunks_y, i
     vol->chunks_y = chunks_y;
     vol->chunks_z = chunks_z;
     vol->total_chunks = total;
-    vol->bounds = bounds;
     vol->voxel_size = voxel_size;
-
-    for (int32_t cz = 0; cz < chunks_z; cz++)
-    {
-        for (int32_t cy = 0; cy < chunks_y; cy++)
-        {
-            for (int32_t cx = 0; cx < chunks_x; cx++)
-            {
-                int32_t idx = cx + cy * chunks_x + cz * chunks_x * chunks_y;
-                chunk_init(&vol->chunks[idx], cx, cy, cz);
-                vol->chunks[idx].state = CHUNK_STATE_ACTIVE;
-            }
-        }
-    }
-
-    vol->dirty_count = 0;
-    vol->current_frame = 0;
-    vol->dirty_ring_head = 0;
-    vol->dirty_ring_tail = 0;
-    vol->total_solid_voxels = 0;
-    vol->active_chunks = total;
-
-    vol->shadow_dirty_count = 0;
+    vol->inv_voxel_size = 1.0f / voxel_size;
+    vol->bounds.min_x = origin.x;
+    vol->bounds.min_y = origin.y;
+    vol->bounds.min_z = origin.z;
+    vol->bounds.max_x = origin.x + (float)(chunks_x * CHUNK_SIZE) * voxel_size;
+    vol->bounds.max_y = origin.y + (float)(chunks_y * CHUNK_SIZE) * voxel_size;
+    vol->bounds.max_z = origin.z + (float)(chunks_z * CHUNK_SIZE) * voxel_size;
     vol->shadow_needs_full_rebuild = true;
 
     PROFILE_END(PROFILE_VOLUME_INIT);
     return vol;
-}
-
-/* Push a chunk index to the dirty ring buffer (dedup: skip if chunk already dirty) */
-static void volume_push_dirty_ring(VoxelVolume *vol, int32_t chunk_index)
-{
-    /* Always set dirty bitmap for O(1) recovery during overflow */
-    bitmap_set(vol->dirty_bitmap, chunk_index);
-
-    int32_t next_head = (vol->dirty_ring_head + 1) % VOLUME_DIRTY_RING_SIZE;
-    if (next_head == vol->dirty_ring_tail)
-    {
-        /* Ring is full - set overflow flag for fallback scan using bitmap */
-        vol->dirty_ring_overflow = true;
-        return; /* Don't overwrite, bitmap scan will catch all dirty chunks */
-    }
-    vol->dirty_ring[vol->dirty_ring_head] = chunk_index;
-    vol->dirty_ring_head = next_head;
-}
-
-static inline int32_t volume_pack_voxel_pos(int32_t cx, int32_t cy, int32_t cz,
-                                             int32_t lx, int32_t ly, int32_t lz)
-{
-    return (cx << 26) | (cy << 21) | (cz << 15) | (lx << 10) | (ly << 5) | lz;
-}
-
-static void volume_record_cut_boundary(VoxelVolume *vol,
-                                        int32_t cx, int32_t cy, int32_t cz,
-                                        int32_t lx, int32_t ly, int32_t lz)
-{
-    if (vol->cut_boundary.overflow)
-        return;
-
-    static const int32_t OFFSETS[6][3] = {
-        {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
-
-    for (int32_t n = 0; n < 6; n++)
-    {
-        int32_t nx = lx + OFFSETS[n][0];
-        int32_t ny = ly + OFFSETS[n][1];
-        int32_t nz = lz + OFFSETS[n][2];
-        int32_t ncx = cx, ncy = cy, ncz = cz;
-
-        if (nx < 0) { ncx--; nx = CHUNK_SIZE - 1; }
-        else if (nx >= CHUNK_SIZE) { ncx++; nx = 0; }
-        if (ny < 0) { ncy--; ny = CHUNK_SIZE - 1; }
-        else if (ny >= CHUNK_SIZE) { ncy++; ny = 0; }
-        if (nz < 0) { ncz--; nz = CHUNK_SIZE - 1; }
-        else if (nz >= CHUNK_SIZE) { ncz++; nz = 0; }
-
-        if (ncx < 0 || ncx >= vol->chunks_x ||
-            ncy < 0 || ncy >= vol->chunks_y ||
-            ncz < 0 || ncz >= vol->chunks_z)
-            continue;
-
-        Chunk *neighbor_chunk = volume_get_chunk(vol, ncx, ncy, ncz);
-        if (!neighbor_chunk || chunk_get(neighbor_chunk, nx, ny, nz) == 0)
-            continue;
-
-        if (vol->cut_boundary.count < VOLUME_MAX_CUT_BOUNDARY)
-        {
-            vol->cut_boundary.packed_positions[vol->cut_boundary.count++] =
-                volume_pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
-        }
-        else
-        {
-            vol->cut_boundary.overflow = true;
-            return;
-        }
-    }
-}
-
-VoxelVolume *volume_create(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z, Bounds3D bounds)
-{
-    float width = bounds.max_x - bounds.min_x;
-    float height = bounds.max_y - bounds.min_y;
-    float depth = bounds.max_z - bounds.min_z;
-
-    float voxels_x = (float)(chunks_x * CHUNK_SIZE);
-    float voxels_y = (float)(chunks_y * CHUNK_SIZE);
-    float voxels_z = (float)(chunks_z * CHUNK_SIZE);
-
-    float vs_x = width / voxels_x;
-    float vs_y = height / voxels_y;
-    float vs_z = depth / voxels_z;
-    float voxel_size = (vs_x < vs_y) ? (vs_x < vs_z ? vs_x : vs_z) : (vs_y < vs_z ? vs_y : vs_z);
-
-    return volume_create_internal(chunks_x, chunks_y, chunks_z, bounds, voxel_size);
-}
-
-VoxelVolume *volume_create_dims(int32_t chunks_x, int32_t chunks_y, int32_t chunks_z,
-                                Vec3 origin, float voxel_size)
-{
-    float chunk_world_size = voxel_size * CHUNK_SIZE;
-    Bounds3D bounds;
-    bounds.min_x = origin.x;
-    bounds.min_y = origin.y;
-    bounds.min_z = origin.z;
-    bounds.max_x = origin.x + chunks_x * chunk_world_size;
-    bounds.max_y = origin.y + chunks_y * chunk_world_size;
-    bounds.max_z = origin.z + chunks_z * chunk_world_size;
-
-    return volume_create_internal(chunks_x, chunks_y, chunks_z, bounds, voxel_size);
 }
 
 void volume_destroy(VoxelVolume *vol)
@@ -227,347 +133,249 @@ void volume_destroy(VoxelVolume *vol)
     }
 }
 
-void volume_clear(VoxelVolume *vol)
+/* Queue a chunk for GPU upload. dirty_bitmap marks every queued chunk, so a chunk
+ * edited many times before the next volume_begin_frame is queued (and handed to the
+ * renderer) once. Once the ring overflows the bitmap alone holds the queue. */
+static void volume_push_dirty_ring(VoxelVolume *vol, int32_t chunk_index)
 {
-    for (int32_t i = 0; i < vol->total_chunks; i++)
+    if (bitmap_test(vol->dirty_bitmap, chunk_index))
+        return;
+    bitmap_set(vol->dirty_bitmap, chunk_index);
+
+    if (vol->dirty_ring_overflow)
+        return;
+
+    int32_t next_head = (vol->dirty_ring_head + 1) % VOLUME_DIRTY_RING_SIZE;
+    if (next_head == vol->dirty_ring_tail)
     {
-        chunk_fill(&vol->chunks[i], MATERIAL_EMPTY);
-        vol->chunks[i].state = CHUNK_STATE_DIRTY;
+        vol->dirty_ring_overflow = true;
+        return;
     }
-    vol->total_solid_voxels = 0;
+    vol->dirty_ring[vol->dirty_ring_head] = chunk_index;
+    vol->dirty_ring_head = next_head;
+}
+
+/* Dequeue a chunk into this frame's upload list (skipped if already uploaded) */
+static void volume_take_dirty(VoxelVolume *vol, int32_t chunk_index)
+{
+    bitmap_clear(vol->dirty_bitmap, chunk_index);
+    if (vol->chunks[chunk_index].state == CHUNK_STATE_DIRTY)
+        vol->dirty_queue[vol->dirty_count++] = chunk_index;
+}
+
+static void volume_mark_shadow_dirty(VoxelVolume *vol, int32_t chunk_idx)
+{
+    /* The pending whole-volume pack covers every chunk */
+    if (vol->shadow_needs_full_rebuild || bitmap_test(vol->shadow_dirty_bitmap, chunk_idx))
+        return;
+
+    bitmap_set(vol->shadow_dirty_bitmap, chunk_idx);
+    if (vol->shadow_dirty_count < VOLUME_SHADOW_DIRTY_MAX)
+        vol->shadow_dirty_chunks[vol->shadow_dirty_count++] = chunk_idx;
+    else
+        vol->shadow_dirty_overflow = true;
+}
+
+/* Account for one voxel of chunk having changed from old_mat to new_mat */
+static void volume_count_voxel_change(VoxelVolume *vol, const Chunk *chunk, uint8_t old_mat, uint8_t new_mat)
+{
+    if (old_mat == MATERIAL_EMPTY && new_mat != MATERIAL_EMPTY)
+    {
+        vol->total_solid_voxels++;
+        if (chunk->occupancy.solid_count == 1)
+            vol->active_chunks++;
+    }
+    else if (old_mat != MATERIAL_EMPTY && new_mat == MATERIAL_EMPTY)
+    {
+        vol->total_solid_voxels--;
+        if (chunk->occupancy.solid_count == 0)
+            vol->active_chunks--;
+    }
+}
+
+/* Add a chunk to the current edit batch (deduplicated by edit_touched_bitmap) */
+static void volume_track_touched_chunk(VoxelVolume *vol, int32_t chunk_idx)
+{
+    if (bitmap_test(vol->edit_touched_bitmap, chunk_idx))
+        return;
+    bitmap_set(vol->edit_touched_bitmap, chunk_idx);
+    if (vol->edit_touched_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
+        vol->edit_touched_chunks[vol->edit_touched_count++] = chunk_idx;
+    else
+        vol->edit_touched_overflow = true;
+}
+
+/* Material of face neighbour n (0..5) of a voxel, across chunk borders, and its packed
+ * position. MATERIAL_EMPTY outside the volume. */
+static uint8_t volume_face_neighbor(VoxelVolume *vol, int32_t cx, int32_t cy, int32_t cz,
+                                    int32_t lx, int32_t ly, int32_t lz, int32_t n, int32_t *out_packed)
+{
+    static const int32_t OFFSETS[6][3] = {
+        {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
+
+    int32_t nx = lx + OFFSETS[n][0];
+    int32_t ny = ly + OFFSETS[n][1];
+    int32_t nz = lz + OFFSETS[n][2];
+    int32_t ncx = cx, ncy = cy, ncz = cz;
+
+    if (nx < 0) { ncx--; nx = CHUNK_SIZE - 1; }
+    else if (nx >= CHUNK_SIZE) { ncx++; nx = 0; }
+    if (ny < 0) { ncy--; ny = CHUNK_SIZE - 1; }
+    else if (ny >= CHUNK_SIZE) { ncy++; ny = 0; }
+    if (nz < 0) { ncz--; nz = CHUNK_SIZE - 1; }
+    else if (nz >= CHUNK_SIZE) { ncz++; nz = 0; }
+
+    Chunk *neighbor_chunk = volume_get_chunk(vol, ncx, ncy, ncz);
+    if (!neighbor_chunk)
+        return MATERIAL_EMPTY;
+
+    *out_packed = volume_pack_voxel_pos(ncx, ncy, ncz, nx, ny, nz);
+    return chunk_get(neighbor_chunk, nx, ny, nz);
+}
+
+/* Add an analysis seed to the batch's cut boundary; false once it overflowed */
+static bool volume_push_cut_boundary(VoxelVolume *vol, int32_t packed)
+{
+    if (vol->cut_boundary.overflow)
+        return false;
+    if (vol->cut_boundary.count >= VOLUME_MAX_CUT_BOUNDARY)
+    {
+        vol->cut_boundary.overflow = true;
+        return false;
+    }
+    vol->cut_boundary.packed_positions[vol->cut_boundary.count++] = packed;
+    return true;
+}
+
+/* A removed voxel: its solid neighbours seed the analysis */
+static void volume_record_cut_boundary(VoxelVolume *vol,
+                                        int32_t cx, int32_t cy, int32_t cz,
+                                        int32_t lx, int32_t ly, int32_t lz)
+{
+    for (int32_t n = 0; n < 6; n++)
+    {
+        int32_t packed = 0;
+        if (volume_face_neighbor(vol, cx, cy, cz, lx, ly, lz, n, &packed) != MATERIAL_EMPTY &&
+            !volume_push_cut_boundary(vol, packed))
+            return;
+    }
+}
+
+/* A placed voxel: one touching no solid voxel may start a floating piece, so it
+ * seeds the analysis itself. Returns whether it did. */
+static bool volume_record_placed_voxel(VoxelVolume *vol,
+                                       int32_t cx, int32_t cy, int32_t cz,
+                                       int32_t lx, int32_t ly, int32_t lz)
+{
+    for (int32_t n = 0; n < 6; n++)
+    {
+        int32_t packed = 0;
+        if (volume_face_neighbor(vol, cx, cy, cz, lx, ly, lz, n, &packed) != MATERIAL_EMPTY)
+            return false;
+    }
+    volume_push_cut_boundary(vol, volume_pack_voxel_pos(cx, cy, cz, lx, ly, lz));
+    return true;
 }
 
 uint8_t volume_get_at(const VoxelVolume *vol, Vec3 pos)
 {
-    int32_t cx, cy, cz, lx, ly, lz;
-    volume_world_to_local(vol, pos, &cx, &cy, &cz, &lx, &ly, &lz);
-
-    if (cx < 0 || cx >= vol->chunks_x ||
-        cy < 0 || cy >= vol->chunks_y ||
-        cz < 0 || cz >= vol->chunks_z)
-    {
+    int32_t gx, gy, gz;
+    if (!volume_world_to_voxel(vol, pos, &gx, &gy, &gz))
         return MATERIAL_EMPTY;
-    }
 
-    int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-    return chunk_get(&vol->chunks[idx], lx, ly, lz);
+    const Chunk *chunk = &vol->chunks[volume_voxel_chunk_index(vol, gx, gy, gz)];
+    return chunk->voxels[chunk_voxel_index(gx & CHUNK_SIZE_MASK, gy & CHUNK_SIZE_MASK, gz & CHUNK_SIZE_MASK)].material;
 }
 
 void volume_set_at(VoxelVolume *vol, Vec3 pos, uint8_t material)
 {
-    int32_t cx, cy, cz, lx, ly, lz;
-    volume_world_to_local(vol, pos, &cx, &cy, &cz, &lx, &ly, &lz);
-
-    if (cx < 0 || cx >= vol->chunks_x ||
-        cy < 0 || cy >= vol->chunks_y ||
-        cz < 0 || cz >= vol->chunks_z)
-    {
+    int32_t gx, gy, gz;
+    if (!volume_world_to_voxel(vol, pos, &gx, &gy, &gz))
         return;
-    }
 
-    int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-    Chunk *chunk = &vol->chunks[idx];
+    int32_t chunk_idx = volume_voxel_chunk_index(vol, gx, gy, gz);
+    Chunk *chunk = &vol->chunks[chunk_idx];
+    int32_t lx = gx & CHUNK_SIZE_MASK;
+    int32_t ly = gy & CHUNK_SIZE_MASK;
+    int32_t lz = gz & CHUNK_SIZE_MASK;
 
     uint8_t old_mat = chunk_get(chunk, lx, ly, lz);
-    if (old_mat != material)
+    if (old_mat == material)
+        return;
+
+    chunk_set(chunk, lx, ly, lz, material);
+    volume_count_voxel_change(vol, chunk, old_mat, material);
+    volume_push_dirty_ring(vol, chunk_idx);
+    volume_mark_shadow_dirty(vol, chunk_idx);
+
+    if (material == MATERIAL_EMPTY)
     {
-        chunk_set(chunk, lx, ly, lz, material);
-        chunk->dirty_frame = vol->current_frame;
-
-        /* Ensure renderer sees this change even if chunk_set already marked DIRTY */
-        volume_push_dirty_ring(vol, idx);
-
-        if (old_mat == MATERIAL_EMPTY && material != MATERIAL_EMPTY)
-        {
-            vol->total_solid_voxels++;
-        }
-        else if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY)
-        {
-            vol->total_solid_voxels--;
-        }
+        VoxelBox removed = {gx, gy, gz, gx, gy, gz};
+        volume_log_removal(vol, &removed);
     }
 }
 
 bool volume_is_solid_at(const VoxelVolume *vol, Vec3 pos)
 {
-    return volume_get_at(vol, pos) != MATERIAL_EMPTY;
-}
-
-int32_t volume_fill_sphere(VoxelVolume *vol, Vec3 center, float radius, uint8_t material)
-{
-    PROFILE_BEGIN(PROFILE_VOXEL_EDIT);
-
-    int32_t total_modified = 0;
-    float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
-
-    /* Find affected chunk range */
-    int32_t cx_min = (int32_t)floorf((center.x - radius - vol->bounds.min_x) / chunk_world_size);
-    int32_t cx_max = (int32_t)ceilf((center.x + radius - vol->bounds.min_x) / chunk_world_size);
-    int32_t cy_min = (int32_t)floorf((center.y - radius - vol->bounds.min_y) / chunk_world_size);
-    int32_t cy_max = (int32_t)ceilf((center.y + radius - vol->bounds.min_y) / chunk_world_size);
-    int32_t cz_min = (int32_t)floorf((center.z - radius - vol->bounds.min_z) / chunk_world_size);
-    int32_t cz_max = (int32_t)ceilf((center.z + radius - vol->bounds.min_z) / chunk_world_size);
-
-    /* Clamp to volume bounds */
-    if (cx_min < 0)
-        cx_min = 0;
-    if (cy_min < 0)
-        cy_min = 0;
-    if (cz_min < 0)
-        cz_min = 0;
-    if (cx_max > vol->chunks_x)
-        cx_max = vol->chunks_x;
-    if (cy_max > vol->chunks_y)
-        cy_max = vol->chunks_y;
-    if (cz_max > vol->chunks_z)
-        cz_max = vol->chunks_z;
-
-    for (int32_t cz = cz_min; cz < cz_max; cz++)
-    {
-        for (int32_t cy = cy_min; cy < cy_max; cy++)
-        {
-            for (int32_t cx = cx_min; cx < cx_max; cx++)
-            {
-                Chunk *chunk = volume_get_chunk(vol, cx, cy, cz);
-                if (!chunk)
-                    continue;
-
-                /* Transform center to chunk-local coordinates */
-                float local_cx = (center.x - vol->bounds.min_x - cx * chunk_world_size) / vol->voxel_size;
-                float local_cy = (center.y - vol->bounds.min_y - cy * chunk_world_size) / vol->voxel_size;
-                float local_cz = (center.z - vol->bounds.min_z - cz * chunk_world_size) / vol->voxel_size;
-                float local_radius = radius / vol->voxel_size;
-
-                int32_t old_solid = chunk->occupancy.solid_count;
-                ChunkState old_state = chunk->state;
-                int32_t modified = chunk_fill_sphere(chunk, local_cx, local_cy, local_cz, local_radius, material);
-
-                if (modified > 0)
-                {
-                    chunk->dirty_frame = vol->current_frame;
-                    int32_t new_solid = chunk->occupancy.solid_count;
-                    vol->total_solid_voxels += (new_solid - old_solid);
-                    total_modified += modified;
-
-                    int32_t chunk_idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-
-                    if (vol->edit_batch_active)
-                    {
-                        /* O(1) bitmap dedup for touched chunk tracking */
-                        if (!bitmap_test(vol->edit_touched_bitmap, chunk_idx))
-                        {
-                            bitmap_set(vol->edit_touched_bitmap, chunk_idx);
-                            if (vol->edit_touched_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
-                            {
-                                vol->edit_touched_chunks[vol->edit_touched_count++] = chunk_idx;
-                            }
-                        }
-
-                        if (vol->edit_count < VOLUME_MAX_EDITS_PER_TICK)
-                        {
-                            int32_t remaining = VOLUME_MAX_EDITS_PER_TICK - vol->edit_count;
-                            vol->edit_count += (modified < remaining) ? modified : remaining;
-                        }
-                    }
-
-                    /* Push to dirty ring if chunk transitioned to dirty */
-                    if (old_state == CHUNK_STATE_ACTIVE && chunk->state == CHUNK_STATE_DIRTY)
-                    {
-                        volume_push_dirty_ring(vol, chunk_idx);
-                    }
-                }
-            }
-        }
-    }
-
-    PROFILE_END(PROFILE_VOXEL_EDIT);
-    return total_modified;
-}
-
-int32_t volume_fill_box(VoxelVolume *vol, Vec3 min_corner, Vec3 max_corner, uint8_t material)
-{
-    PROFILE_BEGIN(PROFILE_VOXEL_EDIT);
-
-    int32_t total_modified = 0;
-    float chunk_world_size = vol->voxel_size * CHUNK_SIZE;
-
-    /* Find affected chunk range */
-    int32_t cx_min = (int32_t)floorf((min_corner.x - vol->bounds.min_x) / chunk_world_size);
-    int32_t cx_max = (int32_t)ceilf((max_corner.x - vol->bounds.min_x) / chunk_world_size);
-    int32_t cy_min = (int32_t)floorf((min_corner.y - vol->bounds.min_y) / chunk_world_size);
-    int32_t cy_max = (int32_t)ceilf((max_corner.y - vol->bounds.min_y) / chunk_world_size);
-    int32_t cz_min = (int32_t)floorf((min_corner.z - vol->bounds.min_z) / chunk_world_size);
-    int32_t cz_max = (int32_t)ceilf((max_corner.z - vol->bounds.min_z) / chunk_world_size);
-
-    /* Clamp to volume bounds */
-    if (cx_min < 0)
-        cx_min = 0;
-    if (cy_min < 0)
-        cy_min = 0;
-    if (cz_min < 0)
-        cz_min = 0;
-    if (cx_max > vol->chunks_x)
-        cx_max = vol->chunks_x;
-    if (cy_max > vol->chunks_y)
-        cy_max = vol->chunks_y;
-    if (cz_max > vol->chunks_z)
-        cz_max = vol->chunks_z;
-
-    for (int32_t cz = cz_min; cz < cz_max; cz++)
-    {
-        for (int32_t cy = cy_min; cy < cy_max; cy++)
-        {
-            for (int32_t cx = cx_min; cx < cx_max; cx++)
-            {
-                Chunk *chunk = volume_get_chunk(vol, cx, cy, cz);
-                if (!chunk)
-                    continue;
-
-                /* Transform box to chunk-local voxel coordinates */
-                float chunk_base_x = vol->bounds.min_x + cx * chunk_world_size;
-                float chunk_base_y = vol->bounds.min_y + cy * chunk_world_size;
-                float chunk_base_z = vol->bounds.min_z + cz * chunk_world_size;
-
-                int32_t lx0 = (int32_t)floorf((min_corner.x - chunk_base_x) / vol->voxel_size);
-                int32_t ly0 = (int32_t)floorf((min_corner.y - chunk_base_y) / vol->voxel_size);
-                int32_t lz0 = (int32_t)floorf((min_corner.z - chunk_base_z) / vol->voxel_size);
-                int32_t lx1 = (int32_t)ceilf((max_corner.x - chunk_base_x) / vol->voxel_size) - 1;
-                int32_t ly1 = (int32_t)ceilf((max_corner.y - chunk_base_y) / vol->voxel_size) - 1;
-                int32_t lz1 = (int32_t)ceilf((max_corner.z - chunk_base_z) / vol->voxel_size) - 1;
-
-                int32_t old_solid = chunk->occupancy.solid_count;
-                ChunkState old_state = chunk->state;
-                int32_t modified = chunk_fill_box(chunk, lx0, ly0, lz0, lx1, ly1, lz1, material);
-
-                if (modified > 0)
-                {
-                    chunk->dirty_frame = vol->current_frame;
-                    int32_t new_solid = chunk->occupancy.solid_count;
-                    vol->total_solid_voxels += (new_solid - old_solid);
-                    total_modified += modified;
-
-                    int32_t chunk_idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-
-                    if (vol->edit_batch_active)
-                    {
-                        /* O(1) bitmap dedup for touched chunk tracking */
-                        if (!bitmap_test(vol->edit_touched_bitmap, chunk_idx))
-                        {
-                            bitmap_set(vol->edit_touched_bitmap, chunk_idx);
-                            if (vol->edit_touched_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
-                            {
-                                vol->edit_touched_chunks[vol->edit_touched_count++] = chunk_idx;
-                            }
-                        }
-
-                        if (vol->edit_count < VOLUME_MAX_EDITS_PER_TICK)
-                        {
-                            int32_t remaining = VOLUME_MAX_EDITS_PER_TICK - vol->edit_count;
-                            vol->edit_count += (modified < remaining) ? modified : remaining;
-                        }
-                    }
-
-                    /* Push to dirty ring if chunk transitioned to dirty */
-                    if (old_state == CHUNK_STATE_ACTIVE && chunk->state == CHUNK_STATE_DIRTY)
-                    {
-                        volume_push_dirty_ring(vol, chunk_idx);
-                    }
-                }
-            }
-        }
-    }
-
-    PROFILE_END(PROFILE_VOXEL_EDIT);
-    return total_modified;
-}
-
-void volume_mark_chunk_dirty(VoxelVolume *vol, int32_t chunk_index)
-{
-    if (chunk_index < 0 || chunk_index >= vol->total_chunks)
-        return;
-
-    Chunk *chunk = &vol->chunks[chunk_index];
-    if (chunk->state == CHUNK_STATE_ACTIVE)
-    {
-        chunk->state = CHUNK_STATE_DIRTY;
-        chunk->dirty_frame = vol->current_frame;
-        volume_push_dirty_ring(vol, chunk_index);
-    }
+    return material_is_solid(volume_get_at(vol, pos));
 }
 
 void volume_begin_frame(VoxelVolume *vol)
 {
-    vol->current_frame++;
     vol->dirty_count = 0;
 
-    /* Check if we need fallback scan due to ring overflow */
     if (vol->dirty_ring_overflow)
     {
-        /* O(1) per dirty chunk using bitmap instead of O(total_chunks) scan */
-        int32_t word_start = vol->dirty_bitmap_scan_pos >> 6;
+        /* The ring overflowed: drain the bitmap instead, resuming where the last
+         * frame stopped and wrapping once, so chunks queued behind the scan
+         * position are found too. */
         int32_t bitmap_words = (vol->total_chunks + 63) >> 6;
+        int32_t word = vol->dirty_bitmap_scan_pos >> 6;
+        bool wrapped = false;
 
         while (vol->dirty_count < VOLUME_MAX_DIRTY_PER_FRAME)
         {
-            int32_t chunk_idx = bitmap_find_first_set(vol->dirty_bitmap, bitmap_words, word_start);
-            if (chunk_idx < 0 || chunk_idx >= vol->total_chunks)
+            int32_t chunk_idx = bitmap_find_first_set(vol->dirty_bitmap, bitmap_words, word);
+            if (chunk_idx < 0)
             {
-                /* No more dirty chunks in bitmap - recovery complete */
+                if (!wrapped && word > 0)
+                {
+                    wrapped = true;
+                    word = 0;
+                    continue;
+                }
+                /* Queue empty; every stale ring entry was in the bitmap too */
                 vol->dirty_ring_overflow = false;
                 vol->dirty_bitmap_scan_pos = 0;
                 vol->dirty_ring_head = 0;
                 vol->dirty_ring_tail = 0;
-                break;
+                return;
             }
 
-            /* Verify chunk is still dirty (may have been uploaded already) */
-            if (vol->chunks[chunk_idx].state == CHUNK_STATE_DIRTY)
-            {
-                vol->dirty_queue[vol->dirty_count].chunk_index = chunk_idx;
-                vol->dirty_queue[vol->dirty_count].dirty_frame = vol->chunks[chunk_idx].dirty_frame;
-                vol->dirty_count++;
-            }
-
-            /* Clear this bit and continue from next position */
-            bitmap_clear(vol->dirty_bitmap, chunk_idx);
-            word_start = chunk_idx >> 6;
-        }
-
-        /* Save scan position for next frame if still in overflow recovery */
-        if (vol->dirty_ring_overflow && vol->dirty_count > 0)
-        {
-            vol->dirty_bitmap_scan_pos = vol->dirty_queue[vol->dirty_count - 1].chunk_index + 1;
+            volume_take_dirty(vol, chunk_idx);
+            word = chunk_idx >> 6;
+            vol->dirty_bitmap_scan_pos = chunk_idx + 1;
         }
         return;
     }
 
-    /* Normal path: collect dirty chunks from ring buffer (O(ring_entries)) */
     while (vol->dirty_ring_tail != vol->dirty_ring_head &&
            vol->dirty_count < VOLUME_MAX_DIRTY_PER_FRAME)
     {
         int32_t chunk_index = vol->dirty_ring[vol->dirty_ring_tail];
         vol->dirty_ring_tail = (vol->dirty_ring_tail + 1) % VOLUME_DIRTY_RING_SIZE;
-
-        /* Verify chunk is still dirty (may have been uploaded already) */
-        if (chunk_index >= 0 && chunk_index < vol->total_chunks &&
-            vol->chunks[chunk_index].state == CHUNK_STATE_DIRTY)
-        {
-            vol->dirty_queue[vol->dirty_count].chunk_index = chunk_index;
-            vol->dirty_queue[vol->dirty_count].dirty_frame = vol->chunks[chunk_index].dirty_frame;
-            vol->dirty_count++;
-
-            /* Clear bitmap bit when processing from ring (for consistency) */
-            bitmap_clear(vol->dirty_bitmap, chunk_index);
-        }
+        volume_take_dirty(vol, chunk_index);
     }
 }
 
 int32_t volume_get_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_count)
 {
+    /* The chunks are off the queue already: any left out here would stay stale */
+    assert(max_count >= vol->dirty_count);
     int32_t count = (vol->dirty_count < max_count) ? vol->dirty_count : max_count;
     for (int32_t i = 0; i < count; i++)
     {
-        out_indices[i] = vol->dirty_queue[i].chunk_index;
+        out_indices[i] = vol->dirty_queue[i];
     }
     return count;
 }
@@ -577,14 +385,8 @@ void volume_mark_chunks_uploaded(VoxelVolume *vol, const int32_t *chunk_indices,
     for (int32_t i = 0; i < count; i++)
     {
         int32_t idx = chunk_indices[i];
-        if (idx >= 0 && idx < vol->total_chunks)
-        {
-            if (vol->chunks[idx].state == CHUNK_STATE_DIRTY ||
-                vol->chunks[idx].state == CHUNK_STATE_UPLOADING)
-            {
-                vol->chunks[idx].state = CHUNK_STATE_ACTIVE;
-            }
-        }
+        if (idx >= 0 && idx < vol->total_chunks && vol->chunks[idx].state == CHUNK_STATE_DIRTY)
+            vol->chunks[idx].state = CHUNK_STATE_ACTIVE;
     }
 }
 
@@ -608,150 +410,201 @@ void volume_rebuild_all_occupancy(VoxelVolume *vol)
     PROFILE_END(PROFILE_VOXEL_OCCUPANCY);
 }
 
-void volume_rebuild_dirty_occupancy(VoxelVolume *vol)
+void volume_recount_solid(VoxelVolume *vol)
 {
-    if (!vol)
-        return;
-
-    /* Use last_edit_chunks if available (O(touched) instead of O(total)) */
-    if (vol->last_edit_count > 0)
-    {
-        for (int32_t i = 0; i < vol->last_edit_count; i++)
-        {
-            int32_t chunk_idx = vol->last_edit_chunks[i];
-            if (chunk_idx >= 0 && chunk_idx < vol->total_chunks)
-            {
-                Chunk *chunk = &vol->chunks[chunk_idx];
-                if (chunk->state == CHUNK_STATE_DIRTY)
-                {
-                    chunk_rebuild_occupancy(chunk);
-                }
-            }
-        }
-        return;
-    }
-
-    /* Fallback: scan dirty_queue from last begin_frame */
-    if (vol->dirty_count > 0)
-    {
-        for (int32_t i = 0; i < vol->dirty_count; i++)
-        {
-            int32_t chunk_idx = vol->dirty_queue[i].chunk_index;
-            if (chunk_idx >= 0 && chunk_idx < vol->total_chunks)
-            {
-                Chunk *chunk = &vol->chunks[chunk_idx];
-                if (chunk->state == CHUNK_STATE_DIRTY)
-                {
-                    chunk_rebuild_occupancy(chunk);
-                }
-            }
-        }
-        return;
-    }
-
-    /* Last resort fallback: full scan (only if no tracking info available) */
+    vol->total_solid_voxels = 0;
+    vol->active_chunks = 0;
     for (int32_t i = 0; i < vol->total_chunks; i++)
     {
-        Chunk *chunk = &vol->chunks[i];
-        if (chunk->state != CHUNK_STATE_DIRTY)
-            continue;
-
-        chunk_rebuild_occupancy(chunk);
+        vol->total_solid_voxels += vol->chunks[i].occupancy.solid_count;
+        vol->active_chunks += vol->chunks[i].occupancy.has_any;
     }
 }
 
-/* volume_raycast moved to volume_raycast.c */
+int32_t volume_column_top(const VoxelVolume *vol, int32_t gx, int32_t gz, uint8_t *out_material)
+{
+    return volume_column_highest(vol, gx, gz, vol->chunks_y * CHUNK_SIZE - 1, out_material);
+}
 
-/* Edit accumulator API - batches edits and rebuilds occupancy once at end */
+int32_t volume_column_highest(const VoxelVolume *vol, int32_t gx, int32_t gz, int32_t max_gy, uint8_t *out_material)
+{
+    const int32_t lx = gx & CHUNK_SIZE_MASK;
+    const int32_t lz = gz & CHUNK_SIZE_MASK;
+    const Chunk *column = &vol->chunks[(gx >> CHUNK_SIZE_BITS) + (gz >> CHUNK_SIZE_BITS) * vol->chunks_x * vol->chunks_y];
+    if (max_gy < 0)
+        return -1;
+    if (max_gy >= vol->chunks_y * CHUNK_SIZE)
+        max_gy = vol->chunks_y * CHUNK_SIZE - 1;
+    const int32_t top_cy = max_gy >> CHUNK_SIZE_BITS;
+    for (int32_t cy = top_cy; cy >= 0; cy--)
+    {
+        const Chunk *chunk = column + cy * vol->chunks_x;
+        if (!chunk->occupancy.has_any)
+            continue;
+        const int32_t top_ly = cy == top_cy ? (max_gy & CHUNK_SIZE_MASK) : CHUNK_SIZE - 1;
+        /* Level-0 regions top down: a set bit may be stale (region emptied by an open
+         * edit batch), a clear one never is */
+        for (int32_t region_y = top_ly & ~7; region_y >= 0; region_y -= 8)
+        {
+            if (!(chunk->occupancy.level0 & chunk_region_bit(lx, region_y, lz)))
+                continue;
+            for (int32_t ly = region_y + 7 < top_ly ? region_y + 7 : top_ly; ly >= region_y; ly--)
+            {
+                uint8_t mat = chunk->voxels[chunk_voxel_index(lx, ly, lz)].material;
+                if (mat != MATERIAL_EMPTY)
+                {
+                    if (out_material)
+                        *out_material = mat;
+                    return (cy << CHUNK_SIZE_BITS) + ly;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+/* Edit accumulator API - batches edits and brings occupancy up to date once at the end */
 
 void volume_edit_begin(VoxelVolume *vol)
 {
     if (!vol || vol->edit_batch_active)
         return;
 
+    /* Times the whole batch, the edits included */
+    PROFILE_BEGIN(PROFILE_VOXEL_EDIT);
     vol->edit_batch_active = true;
     vol->edit_budget_bypass = false;
+    vol->edit_may_detach = false;
     vol->edit_count = 0;
     vol->edit_touched_count = 0;
+    vol->edit_touched_overflow = false;
     vol->cut_boundary.count = 0;
     vol->cut_boundary.overflow = false;
+    voxel_box_reset(&vol->edit_removed);
 
     /* Clear bitmap for O(1) dedup during this edit batch */
     bitmap_clear_all(vol->edit_touched_bitmap, VOLUME_CHUNK_BITMAP_SIZE);
 }
 
-void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material)
+/* One voxel of the open batch, inside the volume. A new solid voxel sets its occupancy
+ * bits at once; an emptied one only marks its region stale, so a region losing many
+ * voxels is rescanned once, by volume_edit_end, instead of after each of them. */
+static void volume_edit_voxel(VoxelVolume *vol, int32_t gx, int32_t gy, int32_t gz, uint8_t material)
 {
-    if (!vol || !vol->edit_batch_active)
-        return;
-
     /* Enforce per-tick edit budget (bypassed for correctness-critical operations) */
     if (vol->edit_count >= VOLUME_MAX_EDITS_PER_TICK && !vol->edit_budget_bypass)
         return;
 
-    int32_t cx, cy, cz, lx, ly, lz;
-    volume_world_to_local(vol, pos, &cx, &cy, &cz, &lx, &ly, &lz);
-
-    if (cx < 0 || cx >= vol->chunks_x ||
-        cy < 0 || cy >= vol->chunks_y ||
-        cz < 0 || cz >= vol->chunks_z)
-    {
-        return;
-    }
-
-    int32_t chunk_idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
+    int32_t cx = gx >> CHUNK_SIZE_BITS, lx = gx & CHUNK_SIZE_MASK;
+    int32_t cy = gy >> CHUNK_SIZE_BITS, ly = gy & CHUNK_SIZE_MASK;
+    int32_t cz = gz >> CHUNK_SIZE_BITS, lz = gz & CHUNK_SIZE_MASK;
+    int32_t chunk_idx = volume_chunk_index(vol, cx, cy, cz);
     Chunk *chunk = &vol->chunks[chunk_idx];
+    VoxelCell *cell = &chunk->voxels[chunk_voxel_index(lx, ly, lz)];
 
-    uint8_t old_mat = chunk_get(chunk, lx, ly, lz);
+    uint8_t old_mat = cell->material;
     if (old_mat == material)
         return;
 
-    /* Perform the edit */
-    chunk_set(chunk, lx, ly, lz, material);
+    cell->material = material;
     vol->edit_count++;
 
-    /* Record cut boundary for connectivity analysis (only for destruction, not island removal) */
-    if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY && !vol->edit_budget_bypass)
+    if (old_mat == MATERIAL_EMPTY)
     {
-        volume_record_cut_boundary(vol, cx, cy, cz, lx, ly, lz);
+        chunk->occupancy.solid_count++;
+        chunk->occupancy.level0 |= chunk_region_bit(lx, ly, lz);
+        chunk->occupancy.level1 |= chunk_level1_bit(lx, ly, lz);
     }
+    else if (material == MATERIAL_EMPTY)
+    {
+        chunk->occupancy.solid_count--;
+        chunk->stale_regions |= chunk_region_bit(lx, ly, lz);
+        voxel_box_add(&vol->edit_removed, gx, gy, gz);
+    }
+    chunk->occupancy.has_any = chunk->occupancy.solid_count > 0 ? 1 : 0;
+    volume_count_voxel_change(vol, chunk, old_mat, material);
 
-    /* Track solid voxel delta */
-    if (old_mat == MATERIAL_EMPTY && material != MATERIAL_EMPTY)
+    /* Seed connectivity analysis (not for island removal, which is never analysed) */
+    if (!vol->edit_budget_bypass)
     {
-        vol->total_solid_voxels++;
-    }
-    else if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY)
-    {
-        vol->total_solid_voxels--;
-    }
-
-    /* O(1) bitmap dedup for touched chunk tracking */
-    if (!bitmap_test(vol->edit_touched_bitmap, chunk_idx))
-    {
-        bitmap_set(vol->edit_touched_bitmap, chunk_idx);
-        if (vol->edit_touched_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
+        if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY)
         {
-            vol->edit_touched_chunks[vol->edit_touched_count++] = chunk_idx;
+            volume_record_cut_boundary(vol, cx, cy, cz, lx, ly, lz);
+            vol->edit_may_detach = true;
+        }
+        else if (old_mat == MATERIAL_EMPTY && volume_record_placed_voxel(vol, cx, cy, cz, lx, ly, lz))
+        {
+            vol->edit_may_detach = true;
         }
     }
+
+    volume_track_touched_chunk(vol, chunk_idx);
 }
 
-static void volume_mark_shadow_dirty(VoxelVolume *vol, int32_t chunk_idx)
+void volume_edit_set(VoxelVolume *vol, Vec3 pos, uint8_t material)
 {
-    if (bitmap_test(vol->shadow_dirty_bitmap, chunk_idx))
+    int32_t gx, gy, gz;
+    if (!vol || !vol->edit_batch_active || !volume_world_to_voxel(vol, pos, &gx, &gy, &gz))
         return;
+    volume_edit_voxel(vol, gx, gy, gz, material);
+}
 
-    bitmap_set(vol->shadow_dirty_bitmap, chunk_idx);
 
-    if (vol->shadow_dirty_count < VOLUME_SHADOW_DIRTY_MAX)
+static void volume_finish_edited_chunk(VoxelVolume *vol, int32_t chunk_idx)
+{
+    Chunk *chunk = &vol->chunks[chunk_idx];
+    if (chunk->stale_regions != 0)
     {
-        vol->shadow_dirty_chunks[vol->shadow_dirty_count++] = chunk_idx;
+        chunk_refresh_regions(chunk, chunk->stale_regions);
+        chunk->stale_regions = 0;
     }
+
+    volume_mark_shadow_dirty(vol, chunk_idx);
+
+    chunk->state = CHUNK_STATE_DIRTY;
+    volume_push_dirty_ring(vol, chunk_idx);
+}
+
+/* Append src's positions to dst; dst overflows when it fills or src had overflowed */
+static void cut_boundary_append(CutBoundaryBuffer *dst, const CutBoundaryBuffer *src)
+{
+    if (dst->overflow)
+        return;
+    if (src->overflow || dst->count + src->count > VOLUME_MAX_CUT_BOUNDARY)
+    {
+        dst->overflow = true;
+        return;
+    }
+    memcpy(dst->packed_positions + dst->count, src->packed_positions,
+           (size_t)src->count * sizeof(int32_t));
+    dst->count += src->count;
+}
+
+static void cut_boundary_copy(CutBoundaryBuffer *dst, const CutBoundaryBuffer *src)
+{
+    dst->count = 0;
+    dst->overflow = false;
+    cut_boundary_append(dst, src);
+}
+
+/* Add a chunk to the pending analysis set */
+static void volume_add_pending_chunk(VoxelVolume *vol, int32_t chunk_idx)
+{
+    if (bitmap_test(vol->pending_analysis_bitmap, chunk_idx))
+        return;
+    bitmap_set(vol->pending_analysis_bitmap, chunk_idx);
+    if (vol->pending_analysis_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
+        vol->pending_analysis_chunks[vol->pending_analysis_count++] = chunk_idx;
     else
-    {
-        vol->shadow_needs_full_rebuild = true;
-    }
+        vol->pending_analysis_overflow = true;
+}
+
+/* Add a whole chunk set (a bitmap) to the pending analysis set */
+static void volume_add_pending_bitmap(VoxelVolume *vol, const uint64_t *bitmap)
+{
+    for (int32_t w = 0; w < VOLUME_CHUNK_BITMAP_SIZE; w++)
+        vol->pending_analysis_bitmap[w] |= bitmap[w];
+    vol->pending_analysis_overflow = true;
 }
 
 int32_t volume_edit_end(VoxelVolume *vol)
@@ -761,93 +614,165 @@ int32_t volume_edit_end(VoxelVolume *vol)
 
     vol->edit_batch_active = false;
 
-    /* Preserve touched chunks and cut boundary for connectivity analysis */
-    vol->last_edit_count = vol->edit_touched_count;
-    for (int32_t i = 0; i < vol->edit_touched_count; i++)
+    /* Queue the batch for connectivity analysis if it may have left something
+     * floating. Island removal is skipped: a removed island was a whole component, so
+     * nothing else can come loose. So are batches that only placed voxels against
+     * solid ones (snow): queued, they made the analysis scan their chunks across the
+     * map whenever a long dig overflowed the cut boundary. */
+    if (!vol->edit_budget_bypass && vol->edit_may_detach)
     {
-        vol->last_edit_chunks[i] = vol->edit_touched_chunks[i];
-    }
-    vol->last_cut_boundary = vol->cut_boundary;
-
-    /* Accumulate cut boundaries into pending buffer */
-    if (!vol->pending_cut_boundary.overflow)
-    {
-        for (int32_t i = 0; i < vol->cut_boundary.count; i++)
-        {
-            if (vol->pending_cut_boundary.count < VOLUME_MAX_CUT_BOUNDARY)
-                vol->pending_cut_boundary.packed_positions[vol->pending_cut_boundary.count++] =
-                    vol->cut_boundary.packed_positions[i];
-            else
-            {
-                vol->pending_cut_boundary.overflow = true;
-                break;
-            }
-        }
-        if (vol->cut_boundary.overflow)
-            vol->pending_cut_boundary.overflow = true;
+        cut_boundary_append(&vol->pending_cut_boundary, &vol->cut_boundary);
+        for (int32_t i = 0; i < vol->edit_touched_count; i++)
+            volume_add_pending_chunk(vol, vol->edit_touched_chunks[i]);
+        if (vol->edit_touched_overflow)
+            volume_add_pending_bitmap(vol, vol->edit_touched_bitmap);
     }
 
-    /* Accumulate touched chunks into pending analysis buffer (deduped via bitmap).
-     * This persists across edit batches until consumed by connectivity analysis. */
-    for (int32_t i = 0; i < vol->edit_touched_count; i++)
+    /* Bring occupancy up to date and queue the uploads for all touched chunks. Past
+     * VOLUME_EDIT_BATCH_MAX_CHUNKS the list is incomplete, so walk the bitmap
+     * instead: otherwise the extra chunks never reach the GPU. */
+    if (vol->edit_touched_overflow)
     {
-        int32_t ci = vol->edit_touched_chunks[i];
-        if (!bitmap_test(vol->pending_analysis_bitmap, ci))
+        for (int32_t chunk_idx = 0; chunk_idx < vol->total_chunks; chunk_idx++)
         {
-            bitmap_set(vol->pending_analysis_bitmap, ci);
-            if (vol->pending_analysis_count < VOLUME_EDIT_BATCH_MAX_CHUNKS)
-                vol->pending_analysis_chunks[vol->pending_analysis_count++] = ci;
+            if (bitmap_test(vol->edit_touched_bitmap, chunk_idx))
+                volume_finish_edited_chunk(vol, chunk_idx);
         }
     }
-
-    /* Rebuild occupancy and mark dirty for all touched chunks */
-    for (int32_t i = 0; i < vol->edit_touched_count; i++)
+    else
     {
-        int32_t chunk_idx = vol->edit_touched_chunks[i];
-        Chunk *chunk = &vol->chunks[chunk_idx];
-
-        chunk_rebuild_occupancy(chunk);
-
-        /* Mark for shadow volume update */
-        volume_mark_shadow_dirty(vol, chunk_idx);
-
-        /* Ensure GPU upload scheduling for edit batches.
-           chunk_set() marks ACTIVE->DIRTY but does not set dirty_frame or enqueue. */
-        if (chunk->state == CHUNK_STATE_ACTIVE)
-        {
-            chunk->state = CHUNK_STATE_DIRTY;
-        }
-        if (chunk->state == CHUNK_STATE_DIRTY)
-        {
-            chunk->dirty_frame = vol->current_frame;
-            volume_push_dirty_ring(vol, chunk_idx);
-        }
+        for (int32_t i = 0; i < vol->edit_touched_count; i++)
+            volume_finish_edited_chunk(vol, vol->edit_touched_chunks[i]);
     }
+
+    if (vol->edit_removed.min_x <= vol->edit_removed.max_x)
+        volume_log_removal(vol, &vol->edit_removed);
 
     int32_t total_edits = vol->edit_count;
     vol->edit_count = 0;
     vol->edit_touched_count = 0;
+    vol->edit_touched_overflow = false;
 
+    PROFILE_END(PROFILE_VOXEL_EDIT);
     return total_edits;
+}
+
+int32_t volume_remove_labelled(VoxelVolume *vol, const VoxelBox *box, const uint16_t *labels, uint16_t label)
+{
+    if (!vol || !box || !labels || vol->edit_batch_active)
+        return 0;
+
+    VoxelBox clip = *box;
+    if (clip.min_x < 0) clip.min_x = 0;
+    if (clip.min_y < 0) clip.min_y = 0;
+    if (clip.min_z < 0) clip.min_z = 0;
+    if (clip.max_x >= vol->chunks_x * CHUNK_SIZE) clip.max_x = vol->chunks_x * CHUNK_SIZE - 1;
+    if (clip.max_y >= vol->chunks_y * CHUNK_SIZE) clip.max_y = vol->chunks_y * CHUNK_SIZE - 1;
+    if (clip.max_z >= vol->chunks_z * CHUNK_SIZE) clip.max_z = vol->chunks_z * CHUNK_SIZE - 1;
+    if (clip.min_x > clip.max_x || clip.min_y > clip.max_y || clip.min_z > clip.max_z)
+        return 0;
+
+    /* A batch without budget or analysis seeds; the work is done chunk by chunk, with
+     * the counters and the stale regions settled once per chunk */
+    volume_edit_begin(vol);
+    vol->edit_budget_bypass = true;
+    int32_t removed_total = 0;
+    for (int32_t cz = clip.min_z >> CHUNK_SIZE_BITS; cz <= clip.max_z >> CHUNK_SIZE_BITS; cz++)
+    {
+        int32_t lz0 = clip.min_z - cz * CHUNK_SIZE < 0 ? 0 : clip.min_z - cz * CHUNK_SIZE;
+        int32_t lz1 = clip.max_z - cz * CHUNK_SIZE > CHUNK_SIZE_MASK ? CHUNK_SIZE_MASK : clip.max_z - cz * CHUNK_SIZE;
+        for (int32_t cy = clip.min_y >> CHUNK_SIZE_BITS; cy <= clip.max_y >> CHUNK_SIZE_BITS; cy++)
+        {
+            int32_t ly0 = clip.min_y - cy * CHUNK_SIZE < 0 ? 0 : clip.min_y - cy * CHUNK_SIZE;
+            int32_t ly1 = clip.max_y - cy * CHUNK_SIZE > CHUNK_SIZE_MASK ? CHUNK_SIZE_MASK : clip.max_y - cy * CHUNK_SIZE;
+            for (int32_t cx = clip.min_x >> CHUNK_SIZE_BITS; cx <= clip.max_x >> CHUNK_SIZE_BITS; cx++)
+            {
+                int32_t lx0 = clip.min_x - cx * CHUNK_SIZE < 0 ? 0 : clip.min_x - cx * CHUNK_SIZE;
+                int32_t lx1 = clip.max_x - cx * CHUNK_SIZE > CHUNK_SIZE_MASK ? CHUNK_SIZE_MASK : clip.max_x - cx * CHUNK_SIZE;
+
+                int32_t chunk_idx = volume_chunk_index(vol, cx, cy, cz);
+                Chunk *chunk = &vol->chunks[chunk_idx];
+                if (!chunk->occupancy.has_any)
+                    continue;
+                const uint16_t *chunk_labels = labels + (size_t)chunk_idx * CHUNK_VOXEL_COUNT;
+
+                int32_t removed = 0;
+                uint64_t regions = 0;
+                for (int32_t lz = lz0; lz <= lz1; lz++)
+                {
+                    for (int32_t ly = ly0; ly <= ly1; ly++)
+                    {
+                        int32_t row = chunk_voxel_index(0, ly, lz);
+                        for (int32_t lx = lx0; lx <= lx1; lx++)
+                        {
+                            VoxelCell *cell = &chunk->voxels[row + lx];
+                            if (chunk_labels[row + lx] != label || cell->material == MATERIAL_EMPTY)
+                                continue;
+                            cell->material = MATERIAL_EMPTY;
+                            regions |= chunk_region_bit(lx, ly, lz);
+                            removed++;
+                        }
+                    }
+                }
+                if (removed == 0)
+                    continue;
+
+                chunk->occupancy.solid_count = (uint16_t)(chunk->occupancy.solid_count - removed);
+                chunk->occupancy.has_any = chunk->occupancy.solid_count > 0 ? 1 : 0;
+                chunk->stale_regions |= regions;
+                vol->total_solid_voxels -= removed;
+                if (!chunk->occupancy.has_any)
+                    vol->active_chunks--;
+                vol->edit_count += removed;
+                volume_track_touched_chunk(vol, chunk_idx);
+                removed_total += removed;
+            }
+        }
+    }
+
+    /* The removed voxels lie in the box: it is their (conservative) removal record */
+    if (removed_total > 0)
+        vol->edit_removed = clip;
+    volume_edit_end(vol);
+    return removed_total;
 }
 
 void volume_consume_pending_analysis(VoxelVolume *vol)
 {
-    if (!vol || (vol->pending_analysis_count == 0 && vol->pending_cut_boundary.count == 0))
+    if (!vol)
         return;
 
     vol->last_edit_count = vol->pending_analysis_count;
-    for (int32_t i = 0; i < vol->pending_analysis_count; i++)
-        vol->last_edit_chunks[i] = vol->pending_analysis_chunks[i];
+    memcpy(vol->last_edit_chunks, vol->pending_analysis_chunks,
+           (size_t)vol->pending_analysis_count * sizeof(int32_t));
+    vol->last_edit_overflow = vol->pending_analysis_overflow;
+    if (vol->pending_analysis_overflow)
+        memcpy(vol->last_edit_bitmap, vol->pending_analysis_bitmap, sizeof(vol->last_edit_bitmap));
+    cut_boundary_copy(&vol->last_cut_boundary, &vol->pending_cut_boundary);
 
-    vol->last_cut_boundary = vol->pending_cut_boundary;
-
+    if (vol->pending_analysis_overflow)
+    {
+        bitmap_clear_all(vol->pending_analysis_bitmap, VOLUME_CHUNK_BITMAP_SIZE);
+    }
+    else
+    {
+        for (int32_t i = 0; i < vol->pending_analysis_count; i++)
+            bitmap_clear(vol->pending_analysis_bitmap, vol->pending_analysis_chunks[i]);
+    }
     vol->pending_analysis_count = 0;
-    bitmap_clear_all(vol->pending_analysis_bitmap, VOLUME_CHUNK_BITMAP_SIZE);
+    vol->pending_analysis_overflow = false;
     vol->pending_cut_boundary.count = 0;
     vol->pending_cut_boundary.overflow = false;
 }
 
-/* volume_ray_hits_any_occupancy moved to volume_raycast.c */
+void volume_requeue_last_analysis(VoxelVolume *vol)
+{
+    if (!vol)
+        return;
 
-/* Shadow volume functions moved to volume_shadow.c */
+    for (int32_t i = 0; i < vol->last_edit_count; i++)
+        volume_add_pending_chunk(vol, vol->last_edit_chunks[i]);
+    if (vol->last_edit_overflow)
+        volume_add_pending_bitmap(vol, vol->last_edit_bitmap);
+    cut_boundary_append(&vol->pending_cut_boundary, &vol->last_cut_boundary);
+}

@@ -1,40 +1,14 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/*
+ * raymarch_gbuffer.comp - primary rays through the terrain volume (hierarchical DDA over
+ * chunk / region occupancy) into the G-buffer. Voxel objects and particles are rasterized
+ * on top of it afterwards (voxel_object.*, particle.*).
+ */
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-/* Push constants - same layout as fragment shader for compatibility */
-layout(push_constant) uniform Constants {
-    mat4 inv_view;
-    mat4 inv_projection;
-    vec3 bounds_min;
-    float voxel_size;
-    vec3 bounds_max;
-    float chunk_size;
-    vec3 camera_pos;
-    int history_valid;
-    ivec3 grid_size;
-    int total_chunks;
-    ivec3 chunks_dim;
-    int frame_count;
-    int object_shadow_quality;
-    int debug_mode;
-    int is_orthographic;
-    int max_steps;
-    float near_plane;
-    float far_plane;
-    int object_count;
-    int shadow_quality;
-    int shadow_contact;
-    int ao_quality;
-    int lod_quality;
-    int taa_quality;
-} pc;
+#include "include/voxel_push_constants.glsl"
 
 /* Global parameters required by data_terrain.glsl */
 ivec3 pc_grid_size;
@@ -42,75 +16,70 @@ ivec3 pc_chunks_dim;
 int pc_total_chunks;
 
 /* Terrain data bindings (set 0) */
-layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
+layout(std430, set = 0, binding = 0) readonly buffer VoxelBuffer {
     uint voxel_data[];
 };
 
-layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
+layout(std430, set = 0, binding = 1) readonly buffer ChunkHeaders {
     uvec4 chunk_headers[];
 };
 
-layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
+layout(std140, set = 0, binding = 2) uniform MaterialPalette {
     vec4 materials[512];
 };
 
 #include "include/materials.glsl"
-#include "include/camera.glsl"
+#include "include/gbuffer_sample.glsl"
 #include "include/data_terrain.glsl"
+#include "include/hdda_core.glsl"
 
-layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
+layout(std140, set = 0, binding = 3) uniform TemporalUBO {
     mat4 prev_view_proj;
-    mat4 view_proj;
+    vec4 prev_camera_pos;
+    vec2 jitter_uv;
+    vec2 inv_render_size;
 };
 
-/* Voxel object data bindings (set 1) */
-struct VoxelObjectGPU {
-    mat4 world_to_local;
-    mat4 local_to_world;
-    vec4 bounds_min;    /* xyz: min, w: voxel_size */
-    vec4 bounds_max;    /* xyz: max, w: grid_size */
-    vec4 position;      /* xyz: world pos, w: active flag */
-    uint atlas_slice;
-    uint material_base;
-    uint flags;
-    uint occupancy_mask;
-};
+/* Terrain shadow volume, the opaque voxels (shadow_volume.glsl): below a water surface it finds the
+ * first opaque voxel without visiting the water voxel by voxel */
+layout(set = 0, binding = 4) uniform usampler3D shadow_volume_tex;
 
-layout(SET_BINDING(1, 0)) uniform usampler3D vobj_atlas;
+#include "include/shadow_volume.glsl"
 
-layout(std430, SET_BINDING(1, 1)) readonly buffer ObjectMetadata {
-    VoxelObjectGPU objects[];
-};
-
-#define BVH_SET 1
-#define BVH_BINDING 2
-#include "include/bvh.glsl"
-
-#include "include/data_voxobj.glsl"
-#include "include/bvh_traverse.glsl"
-
-/* G-buffer outputs (set 2) - see gbuffer_sample.glsl for downstream sampling */
-layout(rgba8, SET_BINDING(2, 0)) writeonly uniform image2D out_albedo;
-layout(rgb10_a2, SET_BINDING(2, 1)) writeonly uniform image2D out_normal;
-layout(rgba8, SET_BINDING(2, 2)) writeonly uniform image2D out_material;
-layout(r32f, SET_BINDING(2, 3)) writeonly uniform image2D out_depth;
-layout(rgba32f, SET_BINDING(2, 4)) writeonly uniform image2D out_world_pos;
-layout(rg16f, SET_BINDING(2, 5)) writeonly uniform image2D out_motion_vector;
-
-const int MIN_STEPS = 256;
-const int MAX_STEPS = 2048;
-const int VOBJ_BASE_STEPS = 48;
+/* G-buffer outputs (set 1) - see gbuffer_sample.glsl for the layout and downstream sampling */
+layout(rgba8, set = 1, binding = 0) writeonly uniform image2D out_albedo;
+layout(rgb10_a2, set = 1, binding = 1) writeonly uniform image2D out_normal;
+layout(rg32ui, set = 1, binding = 2) writeonly uniform uimage2D out_material;
+layout(r32f, set = 1, binding = 3) writeonly uniform image2D out_depth;
+layout(rg16f, set = 1, binding = 4) writeonly uniform image2D out_motion_vector;
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
 }
 
-HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
+/* The opaque voxel at map_pos, entered across the faces of last_mask */
+HitInfo solid_hit(vec3 ro, vec3 rd, ivec3 map_pos, uint mat, bvec3 last_mask, float water_entry_t) {
+    vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
+    HitInfo info;
+    info.hit = true;
+    info.color = get_material_color(mat);
+    info.emissive = get_material_emissive(mat);
+    info.roughness = get_material_roughness(mat);
+    info.metallic = get_material_metallic(mat);
+    info.t = hdda_intersect_aabb(ro, rd, voxel_min, voxel_min + pc.voxel_size).x;
+    info.pos = ro + rd * info.t;
+    info.water_depth = water_entry_t >= 0.0 ? info.t - water_entry_t : 0.0;
+    info.normal = hdda_compute_normal(last_mask, rd);
+    return info;
+}
+
+/* water_material: the material of the transparent voxel the ray entered water at (0: none) */
+HitInfo raymarch_terrain(vec3 ro, vec3 rd, out uint water_material) {
+    water_material = 0u;
     HitInfo info;
     info.hit = false;
     info.t = 1e10;
     info.water_depth = 0.0;
-    info.step_mask = bvec3(false, true, false);
 
     float water_entry_t = -1.0;
 
@@ -155,13 +124,9 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         last_mask = lessThanEqual(dist_to_face, vec3(min_dist + 0.0001));
     }
 
-    /* Dynamic step count based on ray distance through volume.
-       Use full voxel count - HDDA skips empty chunks efficiently. */
-    float ray_distance = box_hit.y - t_start;
-    int voxels_along_ray = int(ceil(ray_distance / pc.voxel_size));
-    int step_count = (pc.max_steps > 0) ? pc.max_steps : clamp(voxels_along_ray, MIN_STEPS, MAX_STEPS);
-
-    for (int i = 0; i < step_count; i++) {
+    /* Empty chunks and regions are jumped in one iteration each */
+    int i = 0;
+    for (; i < pc.max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
             map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
@@ -179,17 +144,8 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         }
 
         if (chunk_empty) {
-            /* Skip through empty chunk using DDA steps until we exit */
             ivec3 chunk_min = current_chunk * CHUNK_SIZE;
-            ivec3 chunk_max = chunk_min + CHUNK_SIZE;
-            while (map_pos.x >= chunk_min.x && map_pos.x < chunk_max.x &&
-                   map_pos.y >= chunk_min.y && map_pos.y < chunk_max.y &&
-                   map_pos.z >= chunk_min.z && map_pos.z < chunk_max.z) {
-                bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-                last_mask = mask;
-                side_dist += vec3(mask) * delta_dist;
-                map_pos += ivec3(mask) * step_dir;
-            }
+            hdda_skip_block(map_pos, side_dist, step_dir, delta_dist, chunk_min, chunk_min + (CHUNK_SIZE - 1), last_mask);
             continue;
         }
 
@@ -202,59 +158,22 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         }
 
         if (region_empty) {
-            /* Skip through empty region using DDA steps until we exit */
             ivec3 region_min = current_chunk * CHUNK_SIZE + current_region * REGION_SIZE;
-            ivec3 region_max = region_min + REGION_SIZE;
-            while (map_pos.x >= region_min.x && map_pos.x < region_max.x &&
-                   map_pos.y >= region_min.y && map_pos.y < region_max.y &&
-                   map_pos.z >= region_min.z && map_pos.z < region_max.z) {
-                bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
-                last_mask = mask;
-                side_dist += vec3(mask) * delta_dist;
-                map_pos += ivec3(mask) * step_dir;
-            }
+            hdda_skip_block(map_pos, side_dist, step_dir, delta_dist, region_min, region_min + (REGION_SIZE - 1), last_mask);
             continue;
         }
 
         /* Level 0: Per-voxel check */
         uint mat = sample_material(map_pos);
         if (mat != 0u) {
-            vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
-            vec3 voxel_max = voxel_min + pc.voxel_size;
-            vec2 voxel_hit = hdda_intersect_aabb(ro, rd, voxel_min, voxel_max);
-
-            if (is_material_transparent(mat)) {
-                /* Transparent voxel (water/ice): record entry point, keep marching */
-                if (water_entry_t < 0.0) {
-                    water_entry_t = voxel_hit.x;
-                }
-            } else {
-                /* Solid hit */
-                info.hit = true;
-                info.material_id = mat;
-                info.color = get_material_color(mat);
-                info.emissive = get_material_emissive(mat);
-                info.roughness = get_material_roughness(mat);
-                info.metallic = get_material_metallic(mat);
-                info.step_mask = last_mask;
-                info.t = voxel_hit.x;
-                info.pos = ro + rd * info.t;
-
-                if (water_entry_t >= 0.0) {
-                    info.water_depth = info.t - water_entry_t;
-                }
-
-                info.normal = vec3(0.0);
-                if (last_mask.x) {
-                    info.normal.x = -sign(rd.x);
-                } else if (last_mask.y) {
-                    info.normal.y = -sign(rd.y);
-                } else {
-                    info.normal.z = -sign(rd.z);
-                }
-
-                return info;
+            if (!is_material_transparent(mat)) {
+                return solid_hit(ro, rd, map_pos, mat, last_mask, -1.0);
             }
+            /* Transparent voxel: the water starts here, and its material colours it */
+            vec3 voxel_min = pc.bounds_min + vec3(map_pos) * pc.voxel_size;
+            water_entry_t = hdda_intersect_aabb(ro, rd, voxel_min, voxel_min + pc.voxel_size).x;
+            water_material = mat;
+            break;
         }
 
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
@@ -263,32 +182,58 @@ HitInfo raymarch_terrain(vec3 ro, vec3 rd) {
         map_pos += ivec3(mask) * step_dir;
     }
 
-    /* If we traversed water but found no solid behind it, render the water surface */
-    if (!info.hit && water_entry_t >= 0.0) {
-        info.hit = true;
-        info.t = water_entry_t;
-        info.pos = ro + rd * water_entry_t;
-        info.normal = vec3(0.0, 1.0, 0.0);
-        info.material_id = 0u;
-        info.color = vec3(0.15, 0.3, 0.55);
-        info.emissive = 0.0;
-        info.roughness = 0.05;
-        info.metallic = 0.0;
-        info.water_depth = box_hit.y - water_entry_t;
+    if (water_entry_t < 0.0) {
+        return info;
     }
 
-    return info;
-}
+    /* Past the water surface only an opaque voxel ends the ray, and the shadow volume holds
+     * exactly those: its empty blocks are jumped, water or air. The search starts in the voxel
+     * after the one the water begins in. */
+    bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+    last_mask = mask;
+    side_dist += vec3(mask) * delta_dist;
+    map_pos += ivec3(mask) * step_dir;
+    for (i++; i < pc.max_steps; i++) {
+        if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
+            map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
+            map_pos.z < 0 || map_pos.z >= pc.grid_size.z) {
+            break;
+        }
 
-void generate_ray(ivec2 pixel, ivec2 screen_size, out vec3 ray_origin, out vec3 ray_dir) {
-    vec2 jitter = (pc.taa_quality > 0) ? get_taa_jitter(pc.frame_count) : vec2(0.0);
-    camera_generate_ray_jittered(
-        pixel, screen_size,
-        pc.inv_view, pc.inv_projection, pc.camera_pos,
-        pc.is_orthographic != 0,
-        jitter,
-        ray_origin, ray_dir
-    );
+        uint occ0;
+        int level = shadow_volume_empty_level(map_pos, occ0);
+        if (level >= 0) {
+            ivec3 block_min = (map_pos >> (level + 1)) << (level + 1);
+            hdda_skip_block(map_pos, side_dist, step_dir, delta_dist, block_min, block_min + ((2 << level) - 1), last_mask);
+            continue;
+        }
+
+        if (shadow_volume_opaque(occ0, map_pos)) {
+            /* The material decides: a large edit reaches the shadow volume in one frame, the
+             * chunk data over a few */
+            uint mat = sample_material(map_pos);
+            if (mat != 0u && !is_material_transparent(mat)) {
+                return solid_hit(ro, rd, map_pos, mat, last_mask, water_entry_t);
+            }
+        }
+
+        mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
+        last_mask = mask;
+        side_dist += vec3(mask) * delta_dist;
+        map_pos += ivec3(mask) * step_dir;
+    }
+
+    /* Water with nothing opaque behind it: the water surface, in the water's own colour */
+    info.hit = true;
+    info.t = water_entry_t;
+    info.pos = ro + rd * water_entry_t;
+    info.normal = vec3(0.0, 1.0, 0.0);
+    info.color = get_material_color(water_material);
+    info.emissive = get_material_emissive(water_material);
+    info.roughness = get_material_roughness(water_material);
+    info.metallic = get_material_metallic(water_material);
+    info.water_depth = box_hit.y - water_entry_t;
+    return info;
 }
 
 void main() {
@@ -305,96 +250,30 @@ void main() {
     }
 
     vec3 ray_origin, ray_dir;
-    generate_ray(pixel, screen_size, ray_origin, ray_dir);
+    camera_generate_ray(pixel, screen_size, pc.inv_view, pc.inv_projection, pc.camera_pos,
+                        ray_origin, ray_dir);
 
-    /* March terrain */
-    HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir);
-
-    /* March voxel objects using BVH acceleration
-     * BVH reduces O(n) to O(log n) with early-out */
-    if (pc.object_count > 0) {
-        float terrain_t = best_hit.t;
-
-        /* Collect candidate objects from BVH along ray */
-        int candidates[BVH_MAX_CANDIDATES];
-        int candidate_count = bvh_collect_ray_candidates(ray_origin, ray_dir, terrain_t, candidates);
-
-        /* Sort candidates by distance (nearest first) for early depth rejection */
-        float candidate_dists[BVH_MAX_CANDIDATES];
-        for (int c = 0; c < candidate_count; c++) {
-            int idx = candidates[c];
-            /* BVH returns original object indices - check active flag, not visible count */
-            if (idx >= 0 && vobj_is_active(idx)) {
-                vec3 op = vobj_get_world_position(idx);
-                candidate_dists[c] = dot(op - ray_origin, ray_dir);
-            } else {
-                candidate_dists[c] = 1e10;
-            }
-        }
-        for (int c = 1; c < candidate_count; c++) {
-            int key_idx = candidates[c];
-            float key_dist = candidate_dists[c];
-            int j = c - 1;
-            while (j >= 0 && candidate_dists[j] > key_dist) {
-                candidates[j + 1] = candidates[j];
-                candidate_dists[j + 1] = candidate_dists[j];
-                j--;
-            }
-            candidates[j + 1] = key_idx;
-            candidate_dists[j + 1] = key_dist;
-        }
-
-        for (int c = 0; c < candidate_count; c++) {
-            int i = candidates[c];
-
-            /* Skip invalid or inactive objects (BVH returns original indices) */
-            if (i < 0 || !vobj_is_active(i)) continue;
-
-            /* Calculate distance to object for LOD */
-            vec3 obj_pos = vobj_get_world_position(i);
-            float dist = length(obj_pos - pc.camera_pos);
-
-            /* Depth rejection: skip objects entirely behind current best hit */
-            float obj_radius = vobj_get_bounding_radius(i);
-            float closest_possible_t = dist - obj_radius;
-            if (closest_possible_t > best_hit.t) {
-                continue;
-            }
-
-            /* Calculate screen coverage for LOD */
-            float half_extent = vobj_get_max_half_extent(i);
-            float screen_coverage = (half_extent * half_extent) / (dist * dist + 0.001);
-
-            int max_steps = vobj_calc_combined_lod_steps(dist, screen_coverage, pc.lod_quality, VOBJ_BASE_STEPS);
-
-            HitInfo obj_hit = vobj_march_object(i, ray_origin, ray_dir, max_steps, best_hit.t);
-
-            if (obj_hit.hit && obj_hit.t < best_hit.t) {
-                best_hit = obj_hit;
-            }
-        }
-    }
+    uint water_material;
+    HitInfo best_hit = raymarch_terrain(ray_origin, ray_dir, water_material);
 
     /* Write to G-buffer */
     if (best_hit.hit) {
         imageStore(out_albedo, pixel, vec4(best_hit.color, 1.0));
         imageStore(out_normal, pixel, vec4(best_hit.normal * 0.5 + 0.5, 1.0));
-        imageStore(out_material, pixel, vec4(best_hit.roughness, best_hit.metallic, best_hit.emissive, 0.0));
+        imageStore(out_material, pixel, uvec4(gbuffer_pack_material(best_hit.roughness, best_hit.metallic, best_hit.emissive,
+                                                                    water_material, best_hit.water_depth), 0u, 0u));
         imageStore(out_depth, pixel, vec4(best_hit.t, 0.0, 0.0, 0.0));
-        imageStore(out_world_pos, pixel, vec4(best_hit.pos, best_hit.water_depth));
 
         /* Motion vectors for temporal effects */
-        vec2 curr_uv = (vec2(pixel) + 0.5) / vec2(screen_size);
-        vec4 prev_clip = prev_view_proj * vec4(best_hit.pos, 1.0);
-        vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
-        imageStore(out_motion_vector, pixel, vec4(prev_uv - curr_uv, 0.0, 0.0));
+        vec2 curr_uv = (vec2(pixel) + 0.5) * inv_render_size - jitter_uv;
+        vec2 motion = camera_motion_vector(curr_uv, prev_view_proj * vec4(best_hit.pos, 1.0));
+        imageStore(out_motion_vector, pixel, vec4(motion, 0.0, 0.0));
     } else {
         /* Sky/miss - write transparent alpha so lighting shader knows */
         imageStore(out_albedo, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         imageStore(out_normal, pixel, vec4(0.5, 0.5, 1.0, 0.0));
-        imageStore(out_material, pixel, vec4(1.0, 0.0, 0.0, 0.0));
+        imageStore(out_material, pixel, uvec4(gbuffer_pack_material(1.0, 0.0, 0.0, 0u, 0.0), 0u, 0u));
         imageStore(out_depth, pixel, vec4(1e10, 0.0, 0.0, 0.0));
-        imageStore(out_world_pos, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         imageStore(out_motion_vector, pixel, vec4(0.0, 0.0, 0.0, 0.0));
     }
 }

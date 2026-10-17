@@ -1,21 +1,14 @@
 /*
- * mat_metal.c - Gray metal (high tier required to break)
+ * mat_metal.c - Gray metal (unbreakable)
  */
 #include "content/materials.h"
 
 const MaterialDescriptor g_mat_metal = {
-    .name = "metal",
     .r = 168, .g = 155, .b = 140,
-    .flags = MAT_FLAG_SOLID | MAT_FLAG_CONDUCTIVE,
+    .flags = MAT_FLAG_SOLID,
     .density = 7.8f,
-    .hardness = 0.95f,
     .friction = 0.4f,
-    .restitution = 0.3f,
     .emissive = 0.0f,
     .roughness = 0.15f,
-    .blast_resistance = 0.9f,
-    .burn_rate = 0.0f,
-    .drop_id = MAT_DROP_SELF,
-    .tool_tier = TOOL_TIER_DIAMOND,
     .metallic = 1.0f,
 };

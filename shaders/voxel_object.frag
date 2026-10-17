@@ -1,130 +1,92 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/* voxel_object.frag - raymarches one voxel object inside its proxy cube and writes the
+ * G-buffer (with depth, so objects intersect the terrain and each other correctly). */
 
 layout(location = 0) in vec3 in_world_pos;
-layout(location = 1) in vec3 in_ray_origin;
-layout(location = 2) in flat int in_object_index;
-layout(location = 3) in flat float in_screen_coverage;
-layout(location = 4) in flat float in_distance;
+layout(location = 1) in flat int in_object_index;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_material;
+layout(location = 2) out uvec2 out_material;
 layout(location = 3) out float out_linear_depth;
-layout(location = 4) out vec4 out_world_pos;
-layout(location = 5) out vec2 out_motion_vector;
+layout(location = 4) out vec2 out_motion_vector;
 
+/* The rasterized depth is at most the hit's: front faces of the proxy cube lie before the
+ * voxels, and back faces (camera inside) are drawn on the near plane (voxel_object.vert) */
 layout(depth_greater) out float gl_FragDepth;
 
-struct VoxelObjectGPU {
-    mat4 world_to_local;
-    mat4 local_to_world;
-    vec4 bounds_min;
-    vec4 bounds_max;
-    vec4 position;
-    uint atlas_slice;
-    uint material_base;
-    uint flags;
-    uint occupancy_mask;
-};
+#include "include/voxobj_types.glsl"
 
-layout(SET_BINDING(0, 0)) uniform usampler3D vobj_atlas;
+layout(set = 0, binding = 0) uniform usampler3D vobj_atlas;
 
-layout(std430, SET_BINDING(0, 1)) readonly buffer ObjectMetadata {
+layout(std430, set = 0, binding = 1) readonly buffer ObjectMetadata {
     VoxelObjectGPU objects[];
 };
 
-layout(std140, SET_BINDING(0, 2)) uniform MaterialPalette {
+layout(std140, set = 0, binding = 2) uniform MaterialPalette {
     vec4 materials[512];
 };
 
-layout(std140, SET_BINDING(0, 3)) uniform TemporalUBO {
+layout(std140, set = 0, binding = 3) uniform TemporalUBO {
     mat4 prev_view_proj;
-    mat4 view_proj;
+    vec4 prev_camera_pos;
+    vec2 jitter_uv;
+    vec2 inv_render_size;
 };
 
 #include "include/materials.glsl"
 #include "include/camera.glsl"
 #include "include/data_voxobj.glsl"
+#include "include/debug_views.glsl"
 
+/* Mirror of VoxelObjectPushConstants (engine/render/raster_gpu_types.h) */
 layout(push_constant) uniform Constants {
     mat4 view_proj;
     vec3 camera_pos;
-    float pad1;
-    int object_count;
-    int atlas_dim;
     float near_plane;
     float far_plane;
     int debug_mode;
-    int lod_quality;
-    int is_orthographic;
-    float camera_forward[3];
+    float near_clip_radius;
+    int camera_inside;
 } pc;
-
-const int VOBJ_BASE_STEPS = 48;
 
 void main() {
     if (in_object_index < 0) {
         discard;
     }
 
-    vec3 world_ray_dir;
-    vec3 ray_origin;
-    if (pc.is_orthographic != 0) {
-        ray_origin = in_world_pos;
-        world_ray_dir = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
-    } else {
-        ray_origin = in_ray_origin;
-        world_ray_dir = normalize(in_world_pos - in_ray_origin);
-    }
+    vec3 ray_origin = pc.camera_pos;
+    vec3 ray_dir = normalize(in_world_pos - pc.camera_pos);
 
-    /* Calculate LOD-adjusted step count based on distance AND screen coverage */
-    int max_steps = vobj_calc_combined_lod_steps(
-        in_distance,
-        in_screen_coverage,
-        pc.lod_quality,
-        VOBJ_BASE_STEPS
-    );
-
-    HitInfo hit = vobj_march_object(in_object_index, ray_origin, world_ray_dir, max_steps, pc.far_plane);
-
+    HitInfo hit = vobj_march_object(in_object_index, ray_origin, ray_dir, pc.far_plane);
     if (!hit.hit) {
         discard;
     }
 
     vec3 color = hit.color;
 
-    /* Debug mode 8: Collider visualization - orange tint for voxel objects */
-    if (pc.debug_mode == 8) {
+    /* Collider visualization: orange tint for voxel objects */
+    if (pc.debug_mode == DEBUG_VIEW_OBJECTS) {
         color = mix(color, vec3(1.0, 0.6, 0.2), 0.7);
     }
 
     out_albedo = vec4(color, 1.0);
     out_normal = vec4(hit.normal * 0.5 + 0.5, 1.0);
-    out_material = vec4(hit.roughness, hit.metallic, hit.emissive, 0.0);
-    out_world_pos = vec4(hit.pos, 1.0);
+    /* Objects are not traced through water: no water material or depth */
+    out_material = uvec2(packUnorm4x8(vec4(hit.roughness, hit.metallic, hit.emissive, 0.0)), 0u);
 
-    float linear_depth;
-    if (pc.is_orthographic != 0) {
-        vec3 cam_fwd = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
-        linear_depth = dot(hit.pos - pc.camera_pos, cam_fwd) - pc.near_plane;
-    } else {
-        linear_depth = hit.t;
-    }
+    /* Linear depth as in raymarch_gbuffer.comp: distance from the eye along the ray */
+    float linear_depth = hit.t;
     out_linear_depth = linear_depth;
 
-    /* Motion vectors for temporal effects */
-    vec4 curr_clip = pc.view_proj * vec4(hit.pos, 1.0);
-    vec4 prev_clip = prev_view_proj * vec4(hit.pos, 1.0);
-    vec2 curr_uv = (curr_clip.xy / curr_clip.w) * 0.5 + 0.5;
-    vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
-    out_motion_vector = prev_uv - curr_uv;
+    /* Motion vectors: where this point of the object was last frame, under its previous
+     * transform (local_to_world takes voxel units, world_to_local gives metres) */
+    vec3 local_voxels = (objects[in_object_index].world_to_local * vec4(hit.pos, 1.0)).xyz /
+                        objects[in_object_index].bounds_min.w;
+    vec3 prev_pos = (objects[in_object_index].prev_local_to_world * vec4(local_voxels, 1.0)).xyz;
+    out_motion_vector = camera_motion_vector(gl_FragCoord.xy * inv_render_size - jitter_uv, prev_view_proj * vec4(prev_pos, 1.0));
 
-    float ndc_depth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
-    gl_FragDepth = max(ndc_depth, gl_FragCoord.z);
+    float ndc_depth = camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane);
+    gl_FragDepth = max(clamp(ndc_depth, 0.0, 1.0), gl_FragCoord.z);
 }

@@ -1,46 +1,31 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/* voxel_object.vert - one proxy cube per voxel object (instance = object index); the
+ * fragment shader raymarches the object's voxel grid inside it. Each object is drawn by one
+ * of two draws (pc.camera_inside): with the camera outside its cube, the front faces at their
+ * depth; with the camera inside the cube, or so close that the near plane would clip its front
+ * faces, the back faces on the near plane, which keeps the fragment shader's conservative
+ * depth valid. */
 
-struct VoxelObjectGPU {
-    mat4 world_to_local;
-    mat4 local_to_world;
-    vec4 bounds_min;
-    vec4 bounds_max;
-    vec4 position;
-    uint atlas_slice;
-    uint material_base;
-    uint flags;
-    uint occupancy_mask;
-};
+#include "include/voxobj_types.glsl"
 
-layout(std430, SET_BINDING(0, 1)) readonly buffer ObjectMetadata {
+layout(std430, set = 0, binding = 1) readonly buffer ObjectMetadata {
     VoxelObjectGPU objects[];
 };
 
+/* Mirror of VoxelObjectPushConstants (engine/render/raster_gpu_types.h) */
 layout(push_constant) uniform Constants {
     mat4 view_proj;
     vec3 camera_pos;
-    float pad1;
-    int object_count;
-    int atlas_dim;
     float near_plane;
     float far_plane;
     int debug_mode;
-    int lod_quality;
-    int is_orthographic;
-    float camera_forward[3];
+    float near_clip_radius;
+    int camera_inside;
 } pc;
 
 layout(location = 0) out vec3 out_world_pos;
-layout(location = 1) out vec3 out_ray_origin;
-layout(location = 2) out flat int out_object_index;
-layout(location = 3) out flat float out_screen_coverage;
-layout(location = 4) out flat float out_distance;
+layout(location = 1) out flat int out_object_index;
 
 const vec3 CUBE_VERTICES[36] = vec3[36](
     vec3(-1, -1, -1), vec3(-1, -1,  1), vec3(-1,  1,  1),
@@ -58,40 +43,37 @@ const vec3 CUBE_VERTICES[36] = vec3[36](
 );
 
 void main() {
-    int vertex_id = gl_VertexIndex % 36;
     int obj_idx = gl_InstanceIndex;
 
-    VoxelObjectGPU obj = objects[obj_idx];
+    /* Collapsed (outside the clip volume): hidden, or drawn by the other draw */
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    out_world_pos = vec3(0.0);
+    out_object_index = -1;
 
-    if (obj.position.w < 0.5) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        out_world_pos = vec3(0.0);
-        out_ray_origin = vec3(0.0);
-        out_object_index = -1;
-        out_screen_coverage = 0.0;
-        out_distance = 1e10;
+    /* Members one by one: a copy of the whole struct would take its brick table along */
+    if (objects[obj_idx].position.w < 0.5) {
         return;
     }
 
-    float half_grid = obj.bounds_max.w * 0.5;
-    float expand = 1.1;
-    vec3 local_pos = CUBE_VERTICES[vertex_id] * half_grid * expand;
+    /* Grid-sized cube in voxel units (local_to_world scales by voxel_size), 10% margin */
+    float half_cube = objects[obj_idx].bounds_max.w * 0.5 * 1.1;
 
-    vec4 world_pos = obj.local_to_world * vec4(local_pos, 1.0);
+    /* The camera in the object's frame (world_to_local does not scale) against the cube, grown
+     * by the distance within which the near plane cuts the view */
+    vec3 camera_local = (objects[obj_idx].world_to_local * vec4(pc.camera_pos, 1.0)).xyz;
+    float reach = half_cube * objects[obj_idx].bounds_min.w + pc.near_clip_radius;
+    bool inside = all(lessThan(abs(camera_local), vec3(reach)));
+    if (inside != (pc.camera_inside != 0)) {
+        return;
+    }
+
+    vec3 local_pos = CUBE_VERTICES[gl_VertexIndex] * half_cube;
+    vec4 world_pos = objects[obj_idx].local_to_world * vec4(local_pos, 1.0);
 
     gl_Position = pc.view_proj * world_pos;
+    if (inside) {
+        gl_Position.z = 0.0;
+    }
     out_world_pos = world_pos.xyz;
-    out_ray_origin = pc.camera_pos;
     out_object_index = obj_idx;
-    
-    /* Calculate distance to object center */
-    float dist = length(obj.position.xyz - pc.camera_pos);
-    out_distance = dist;
-    
-    /* Estimate screen coverage: (object_size / distance)^2 approximates solid angle */
-    /* This is cheaper than projecting bounds to clip space */
-    float half_extent = max(obj.bounds_max.x, max(obj.bounds_max.y, obj.bounds_max.z));
-    float angular_size = half_extent / max(dist, 0.1);
-    /* Convert to approximate screen fraction (assuming ~90 degree FOV) */
-    out_screen_coverage = clamp(angular_size * angular_size * 4.0, 0.0, 1.0);
 }

@@ -1,130 +1,125 @@
 #include "particles.h"
-#include "engine/voxel/volume.h"
-#include "engine/voxel/voxel_object.h"
+#include <assert.h>
 #include <stdlib.h>
-#include <string.h>
-#include <math.h>
 
-ParticleSystem* particle_system_create(Bounds3D bounds) {
-    ParticleSystem* sys = (ParticleSystem*)calloc(1, sizeof(ParticleSystem));
-    if (!sys) return NULL;
+STATIC_ASSERT(PARTICLE_MAX_COUNT <= SPATIAL_HASH_MAX_OBJECTS, "particle indices must fit the collision grid");
 
-    sys->count = 0;
-    sys->next_slot = 0;
-    sys->bounds = bounds;
+ParticleSystem *particle_system_create(Bounds3D bounds)
+{
+    ParticleSystem *sys = (ParticleSystem *)calloc(1, sizeof(ParticleSystem));
+    if (!sys)
+        return NULL;
+
     sys->gravity = vec3_create(0.0f, -18.0f, 0.0f);
     sys->damping = 0.985f;
     sys->restitution = 0.45f;
     sys->floor_friction = 0.88f;
-    sys->enable_particle_collision = true;
 
     /* Cell size = 4x typical particle radius to reduce multi-cell spans */
-    float cell_size = 0.25f;
-    spatial_hash_init(&sys->collision_grid, cell_size, bounds);
+    spatial_hash_init(&sys->collision_grid, 0.25f, bounds);
 
     return sys;
 }
 
-void particle_system_destroy(ParticleSystem* sys) {
+void particle_system_destroy(ParticleSystem *sys)
+{
     free(sys);
 }
 
-void particle_system_clear(ParticleSystem* sys) {
-    sys->count = 0;
-    sys->next_slot = 0;
-    sys->active_count = 0;
+static void particle_swap(ParticleSystem *sys, int32_t a, int32_t b)
+{
+    if (a == b)
+        return;
+    Particle t = sys->particles[a];
+    sys->particles[a] = sys->particles[b];
+    sys->particles[b] = t;
 }
 
-Particle* particle_system_add_slot(ParticleSystem* sys) {
-    uint32_t slot = sys->next_slot;
-    sys->next_slot = (sys->next_slot + 1) % PARTICLE_MAX_COUNT;
-    if (sys->count < PARTICLE_MAX_COUNT) {
+void particle_system_add(ParticleSystem *sys, Vec3 position, Vec3 velocity, Vec3 color, float radius)
+{
+    /* The new particle joins the moving range at awake_count; the settled particle
+     * there moves to the end of the settled range, or at capacity replaces the one at
+     * the end (settled ranges fill from the front, so that one settled early) */
+    int32_t slot;
+    if (sys->count < PARTICLE_MAX_COUNT)
+    {
+        sys->particles[sys->count] = sys->particles[sys->awake_count];
+        slot = sys->awake_count++;
         sys->count++;
     }
-    return &sys->particles[slot];
-}
+    else if (sys->awake_count < sys->count)
+    {
+        sys->particles[sys->count - 1] = sys->particles[sys->awake_count];
+        slot = sys->awake_count++;
+    }
+    else
+    {
+        slot = sys->replace_cursor;
+        sys->replace_cursor = (slot + 1) % PARTICLE_MAX_COUNT;
+    }
 
-int32_t particle_system_add(ParticleSystem* sys, RngState *rng, Vec3 position, Vec3 velocity, Vec3 color, float radius) {
-    Particle* p = particle_system_add_slot(sys);
-    /* active_count tracking:
-     * - If slot was inactive, we're adding a new particle: increment
-     * - If slot was active (at capacity, overwriting oldest): no change */
-    if (!p->active) sys->active_count++;
+    Particle *p = &sys->particles[slot];
     p->position = position;
     p->prev_position = position;
     p->velocity = velocity;
-    p->rotation = vec3_zero();
-    p->prev_rotation = vec3_zero();
-    p->angular_velocity = vec3_create(
-        rng_signed_half(rng) * 20.0f,
-        rng_signed_half(rng) * 20.0f,
-        rng_signed_half(rng) * 20.0f
-    );
-    p->color = color;
+    p->color = vec3_srgb_to_linear(color);
     p->radius = radius;
     p->lifetime = 0.0f;
+    p->moved = 0.0f;
+    p->expire_time = 0.0f;
     p->active = true;
     p->settled = false;
-    return (int32_t)(p - sys->particles);
 }
 
-static bool particle_near_surface(const Particle *p,
-                                  const VoxelVolume *terrain,
-                                  const VoxelObjectWorld *objects)
+static bool particle_near_surface(const Particle *p, const VoxelVolume *terrain, const VoxelObjectWorld *objects)
 {
     Vec3 below = vec3_add(p->position, vec3_create(0.0f, -p->radius - 0.05f, 0.0f));
     if (terrain && volume_is_solid_at(terrain, below))
         return true;
-    if (objects)
-    {
-        VoxelObjectPointTest test = voxel_object_world_test_point(objects, below);
-        if (test.hit)
-            return true;
-    }
-    return false;
+    return objects && voxel_object_world_test_point(objects, below).hit;
 }
 
-static Vec3 estimate_terrain_normal(const VoxelVolume *vol, Vec3 pos, float vs) {
+static Vec3 estimate_terrain_normal(const VoxelVolume *vol, Vec3 pos, float vs)
+{
     Vec3 n = vec3_zero();
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(vs, 0.0f, 0.0f))))  n.x += 1.0f;
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(-vs, 0.0f, 0.0f)))) n.x -= 1.0f;
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, vs, 0.0f))))  n.y += 1.0f;
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, -vs, 0.0f)))) n.y -= 1.0f;
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, vs))))  n.z += 1.0f;
-    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, -vs)))) n.z -= 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(vs, 0.0f, 0.0f))))
+        n.x += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(-vs, 0.0f, 0.0f))))
+        n.x -= 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, vs, 0.0f))))
+        n.y += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, -vs, 0.0f))))
+        n.y -= 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, vs))))
+        n.z += 1.0f;
+    if (!volume_is_solid_at(vol, vec3_add(pos, vec3_create(0.0f, 0.0f, -vs))))
+        n.z -= 1.0f;
     float len = vec3_length(n);
     return len > 0.001f ? vec3_scale(n, 1.0f / len) : vec3_create(0.0f, 1.0f, 0.0f);
 }
 
-static void resolve_particle_terrain(Particle *p,
-                                     const VoxelVolume *vol,
-                                     const VoxelObjectWorld *objects,
-                                     float restitution, float friction) {
+static void resolve_particle_terrain(Particle *p, const VoxelVolume *vol, const VoxelObjectWorld *objects,
+                                     float restitution, float friction)
+{
     bool hit_terrain = vol && volume_is_solid_at(vol, p->position);
-    bool hit_object = false;
     Vec3 normal = vec3_create(0.0f, 1.0f, 0.0f);
 
-    if (!hit_terrain && objects)
+    if (!hit_terrain)
     {
-        VoxelObjectPointTest test = voxel_object_world_test_point(objects, p->position);
-        if (test.hit)
-        {
-            hit_object = true;
-            normal = test.surface_normal;
-        }
+        VoxelObjectPointTest test = objects ? voxel_object_world_test_point(objects, p->position)
+                                            : (VoxelObjectPointTest){0};
+        if (!test.hit)
+            return;
+        normal = test.surface_normal;
     }
 
-    if (!hit_terrain && !hit_object)
-        return;
-
-    /* If prev_position is also solid, push upward to escape embedded geometry */
-    if (hit_terrain && vol && volume_is_solid_at(vol, p->prev_position))
+    /* Started inside terrain too: push upward to escape, or retire the particle */
+    if (hit_terrain && volume_is_solid_at(vol, p->prev_position))
     {
-        float vs = vol->voxel_size;
         Vec3 escape = p->prev_position;
         for (int32_t push = 0; push < 5; push++)
         {
-            escape.y += vs;
+            escape.y += vol->voxel_size;
             if (!volume_is_solid_at(vol, escape))
             {
                 p->position = escape;
@@ -137,421 +132,224 @@ static void resolve_particle_terrain(Particle *p,
     }
 
     p->position = p->prev_position;
-
-    if (hit_terrain && vol)
+    if (hit_terrain)
         normal = estimate_terrain_normal(vol, p->position, vol->voxel_size);
 
     float vn = vec3_dot(p->velocity, normal);
     if (vn < 0.0f)
-    {
-        p->velocity = vec3_sub(p->velocity,
-                               vec3_scale(normal, (1.0f + restitution) * vn));
-    }
+        p->velocity = vec3_sub(p->velocity, vec3_scale(normal, (1.0f + restitution) * vn));
 
-    /* Kill micro-bounces: if reflected normal velocity is tiny, zero it */
+    /* Kill micro-bounces: a tiny rebound is dropped */
     float vn_after = vec3_dot(p->velocity, normal);
     if (vn_after > 0.0f && vn_after < PARTICLE_SETTLE_VELOCITY)
     {
         p->velocity = vec3_sub(p->velocity, vec3_scale(normal, vn_after));
+        vn_after = 0.0f;
     }
 
-    /* Surface friction on tangential component */
-    vn_after = vec3_dot(p->velocity, normal);
+    /* Surface friction on the tangential component */
     Vec3 normal_component = vec3_scale(normal, vn_after);
     Vec3 tangent_vel = vec3_sub(p->velocity, normal_component);
     p->velocity = vec3_add(normal_component, vec3_scale(tangent_vel, friction));
 }
 
-static void resolve_particle_collision(Particle* a, Particle* b, float restitution) {
+static void resolve_particle_collision(Particle *a, Particle *b, float restitution)
+{
     Vec3 delta = vec3_sub(b->position, a->position);
     float dist = vec3_length(delta);
     float min_dist = a->radius + b->radius;
-
-    if (dist >= min_dist || dist < 0.0001f) return;
+    if (dist >= min_dist || dist < 0.0001f)
+        return;
 
     Vec3 normal = vec3_scale(delta, 1.0f / dist);
     float overlap = min_dist - dist;
-
     a->position = vec3_sub(a->position, vec3_scale(normal, overlap * 0.5f));
     b->position = vec3_add(b->position, vec3_scale(normal, overlap * 0.5f));
 
-    Vec3 rel_vel = vec3_sub(a->velocity, b->velocity);
-    float vel_along_normal = vec3_dot(rel_vel, normal);
+    float vel_along_normal = vec3_dot(vec3_sub(a->velocity, b->velocity), normal);
+    if (vel_along_normal > 0.0f)
+        return;
 
-    if (vel_along_normal > 0.0f) return;
-
-    float j = -(1.0f + restitution) * vel_along_normal * 0.5f;
-    Vec3 impulse = vec3_scale(normal, j);
-
+    Vec3 impulse = vec3_scale(normal, -(1.0f + restitution) * vel_along_normal * 0.5f);
     a->velocity = vec3_add(a->velocity, impulse);
     b->velocity = vec3_sub(b->velocity, impulse);
 }
 
-void particle_system_update(ParticleSystem* sys, float dt,
+static void settle_particle(Particle *p)
+{
+    p->settled = true;
+    p->velocity = vec3_zero();
+}
+
+static void step_particle(const ParticleSystem *sys, Particle *p, float dt, float max_velocity,
+                          const VoxelVolume *terrain, const VoxelObjectWorld *objects)
+{
+    /* Fell out of the world: nothing below can stop it */
+    if (p->position.y < sys->collision_grid.bounds.min_y)
+    {
+        p->active = false;
+        return;
+    }
+
+    /* Settle on the velocity left from the last step, before gravity re-energizes it. Past
+     * the young age, also on the distance actually moved: debris pinned in a slot or wedged
+     * against a step has every step undone by the terrain while its velocity stays up. */
+    bool near_surface = particle_near_surface(p, terrain, objects);
+    bool at_rest = vec3_length(p->velocity) < PARTICLE_SETTLE_VELOCITY ||
+                   (p->lifetime > PARTICLE_YOUNG_AGE_THRESHOLD && p->moved < PARTICLE_SETTLE_VELOCITY * dt);
+    if (near_surface && at_rest)
+    {
+        settle_particle(p);
+        return;
+    }
+
+    p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
+    p->velocity = vec3_scale(vec3_clamp_length(p->velocity, max_velocity), sys->damping);
+    if (near_surface)
+    {
+        p->velocity.x *= sys->floor_friction;
+        p->velocity.z *= sys->floor_friction;
+    }
+
+    p->position = vec3_add(p->position, vec3_scale(p->velocity, dt));
+    resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
+
+    if (vec3_length(p->velocity) < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects))
+        settle_particle(p);
+}
+
+/* Moves settled and retired particles out of the moving range. Stepping only flags
+ * them; reordering after the steps keeps the step loops simple. */
+static void compact_moving(ParticleSystem *sys)
+{
+    assert(sys->awake_count >= 0 && sys->awake_count <= sys->count && sys->count <= PARTICLE_MAX_COUNT);
+    for (int32_t i = sys->awake_count - 1; i >= 0; i--)
+    {
+        Particle *p = &sys->particles[i];
+        if (p->active && !p->settled)
+            continue;
+
+        /* To the front of the settled range */
+        particle_swap(sys, i, sys->awake_count - 1);
+        sys->awake_count--;
+        p = &sys->particles[sys->awake_count];
+        if (p->active)
+        {
+            /* At rest from here: no more interpolation, and a lifetime from now */
+            p->prev_position = p->position;
+            p->expire_time = (float)(sys->time + PARTICLE_SETTLED_LIFETIME);
+        }
+        else
+        {
+            particle_swap(sys, sys->awake_count, sys->count - 1);
+            sys->count--;
+        }
+    }
+}
+
+/* A budget of settled particles, round-robin: retire expired ones, wake those whose
+ * support disappeared */
+static void check_settled(ParticleSystem *sys, const VoxelVolume *terrain, const VoxelObjectWorld *objects)
+{
+    assert(sys->awake_count >= 0 && sys->awake_count <= sys->count && sys->count <= PARTICLE_MAX_COUNT);
+    int32_t checks = sys->count - sys->awake_count;
+    if (checks > PARTICLE_MAX_SETTLED_CHECKS_PER_TICK)
+        checks = PARTICLE_MAX_SETTLED_CHECKS_PER_TICK;
+
+    int32_t i = sys->settle_cursor;
+    for (; checks > 0; checks--)
+    {
+        if (i < sys->awake_count || i >= sys->count)
+            i = sys->awake_count;
+        if (i >= sys->count)
+            break;
+
+        Particle *p = &sys->particles[i];
+        if (sys->time >= (double)p->expire_time)
+        {
+            /* The last particle takes its place and is checked next */
+            particle_swap(sys, i, sys->count - 1);
+            sys->count--;
+        }
+        else if (!particle_near_surface(p, terrain, objects))
+        {
+            /* Back to the moving range; the first settled particle takes its place and
+             * is checked next */
+            p->settled = false;
+            p->velocity = vec3_scale(sys->gravity, 0.01f);
+            particle_swap(sys, i, sys->awake_count);
+            sys->awake_count++;
+        }
+        else
+        {
+            i++;
+        }
+    }
+    sys->settle_cursor = i;
+}
+
+void particle_system_update(ParticleSystem *sys, float dt,
                             const VoxelVolume *terrain,
-                            const VoxelObjectWorld *objects) {
-    /* No compaction needed - circular buffer overwrites oldest particles when at capacity */
+                            const VoxelObjectWorld *objects)
+{
+    sys->time += dt;
 
-    /* Safe max velocity to prevent tunneling (based on typical particle radius) */
-    float max_velocity = 0.03f / dt;
-    if (max_velocity < 10.0f) max_velocity = 10.0f;
-    if (max_velocity > 30.0f) max_velocity = 30.0f;
+    /* Speed cap against tunnelling through thin surfaces, from the typical radius */
+    float max_velocity = clampf(0.03f / dt, 10.0f, 30.0f);
 
-    /* Save previous positions for interpolation before updating physics */
-    for (int32_t i = 0; i < sys->count; i++) {
-        Particle* p = &sys->particles[i];
-        if (!p->active) continue;
+    /* Young particles (fast, just spawned) update every tick */
+    for (int32_t i = 0; i < sys->awake_count; i++)
+    {
+        Particle *p = &sys->particles[i];
+        p->moved = vec3_length(vec3_sub(p->position, p->prev_position));
         p->prev_position = p->position;
-        p->prev_rotation = p->rotation;
-    }
-
-    /* Update lifetime for age tracking (used for young particle priority).
-     * No auto-expiration - particles are removed via circular buffer when at capacity. */
-    for (int32_t i = 0; i < sys->count; i++) {
-        Particle* p = &sys->particles[i];
-        if (!p->active) continue;
         p->lifetime += dt;
+        if (p->lifetime <= PARTICLE_YOUNG_AGE_THRESHOLD)
+            step_particle(sys, p, dt, max_velocity, terrain, objects);
     }
 
-    /* Age-prioritized budgeted physics update:
-     * Pass 1: Always update young particles (fast-moving, need frequent updates)
-     * Pass 2: Use remaining budget for older particles (round-robin) */
-    int32_t budget = PARTICLE_MAX_UPDATES_PER_TICK;
-    int32_t processed = 0;
-
-    /* Pass 1: Young particles always get priority (unbounded - they're time-limited) */
-    for (int32_t i = 0; i < sys->count; i++) {
-        Particle* p = &sys->particles[i];
-        if (!p->active || p->settled) continue;
-        if (p->lifetime > PARTICLE_YOUNG_AGE_THRESHOLD) continue;
-
-        /* Pre-gravity settlement: check velocity from last frame before gravity re-energizes it */
-        float pre_speed = vec3_length(p->velocity);
-        if (pre_speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
-            p->settled = true;
-            p->velocity = vec3_zero();
-            continue;
-        }
-
-        p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
-
-        float speed_sq = vec3_length_sq(p->velocity);
-        if (speed_sq > max_velocity * max_velocity) {
-            float speed = sqrtf(speed_sq);
-            p->velocity = vec3_scale(p->velocity, max_velocity / speed);
-        }
-
-        p->velocity = vec3_scale(p->velocity, sys->damping);
-
-        bool near_surface = particle_near_surface(p, terrain, objects);
-        if (near_surface) {
-            p->velocity.x *= sys->floor_friction;
-            p->velocity.z *= sys->floor_friction;
-            p->angular_velocity = vec3_scale(p->angular_velocity, 0.9f);
-        }
-
-        p->position = vec3_add(p->position, vec3_scale(p->velocity, dt));
-        p->rotation = vec3_add(p->rotation, vec3_scale(p->angular_velocity, dt));
-        p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
-
-        resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
-
-        float speed = vec3_length(p->velocity);
-        if (speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
-            p->settled = true;
-            p->velocity = vec3_zero();
-        }
-    }
-
-    /* Pass 2: Older particles with remaining budget (round-robin) */
+    /* Older ones share a per-tick budget, round-robin */
     int32_t cursor = sys->update_cursor;
-    int32_t checked = 0;
-    while (processed < budget && checked < sys->count) {
-        if (cursor >= sys->count) cursor = 0;
-
-        Particle* p = &sys->particles[cursor];
-        cursor++;
-        checked++;
-
-        /* Skip inactive, settled, or young (already processed) */
-        if (!p->active || p->settled || p->lifetime <= PARTICLE_YOUNG_AGE_THRESHOLD) continue;
-
-        /* Pre-gravity settlement: check velocity from last frame before gravity re-energizes it */
-        float pre_speed = vec3_length(p->velocity);
-        if (pre_speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
-            p->settled = true;
-            p->velocity = vec3_zero();
+    int32_t processed = 0;
+    for (int32_t checked = 0; checked < sys->awake_count && processed < PARTICLE_MAX_UPDATES_PER_TICK; checked++)
+    {
+        if (cursor >= sys->awake_count)
+            cursor = 0;
+        Particle *p = &sys->particles[cursor++];
+        if (!p->active || p->settled || p->lifetime <= PARTICLE_YOUNG_AGE_THRESHOLD)
             continue;
-        }
 
-        p->velocity = vec3_add(p->velocity, vec3_scale(sys->gravity, dt));
-
-        float speed_sq = vec3_length_sq(p->velocity);
-        if (speed_sq > max_velocity * max_velocity) {
-            float speed = sqrtf(speed_sq);
-            p->velocity = vec3_scale(p->velocity, max_velocity / speed);
-        }
-
-        p->velocity = vec3_scale(p->velocity, sys->damping);
-
-        bool near_surface = particle_near_surface(p, terrain, objects);
-        if (near_surface) {
-            p->velocity.x *= sys->floor_friction;
-            p->velocity.z *= sys->floor_friction;
-            p->angular_velocity = vec3_scale(p->angular_velocity, 0.9f);
-        }
-
-        p->position = vec3_add(p->position, vec3_scale(p->velocity, dt));
-        p->rotation = vec3_add(p->rotation, vec3_scale(p->angular_velocity, dt));
-        p->angular_velocity = vec3_scale(p->angular_velocity, 0.995f);
-
-        resolve_particle_terrain(p, terrain, objects, sys->restitution, sys->floor_friction);
-
-        float speed = vec3_length(p->velocity);
-        if (speed < PARTICLE_SETTLE_VELOCITY && particle_near_surface(p, terrain, objects)) {
-            p->settled = true;
-            p->velocity = vec3_zero();
-        }
-
+        step_particle(sys, p, dt, max_velocity, terrain, objects);
         processed++;
     }
     sys->update_cursor = cursor;
 
-    /* Spatial hash collision: O(n) average, bounded by pair budget */
-    if (sys->enable_particle_collision) {
-        spatial_hash_clear(&sys->collision_grid);
+    compact_moving(sys);
 
-        /* Insert active non-settled particles into grid */
-        for (int32_t i = 0; i < sys->count; i++) {
-            if (!sys->particles[i].active || sys->particles[i].settled) continue;
-            spatial_hash_insert(&sys->collision_grid, i,
-                               sys->particles[i].position, sys->particles[i].radius);
-        }
-
-        /* Check collisions using spatial hash (capped to prevent frame spikes) */
-        int32_t pair_budget = PARTICLE_MAX_COLLISION_PAIRS;
-        for (int32_t i = 0; i < sys->count && pair_budget > 0; i++) {
-            if (!sys->particles[i].active || sys->particles[i].settled) continue;
-
-            int32_t nearby[SPATIAL_HASH_MAX_PER_CELL];
-            int32_t nearby_count = spatial_hash_query(&sys->collision_grid,
-                sys->particles[i].position, sys->particles[i].radius * 2.0f,
-                nearby, SPATIAL_HASH_MAX_PER_CELL);
-
-            for (int32_t n = 0; n < nearby_count && pair_budget > 0; n++) {
-                int32_t j = nearby[n];
-                if (j <= i) continue;
-                if (!sys->particles[j].active || sys->particles[j].settled) continue;
-
-                resolve_particle_collision(&sys->particles[i], &sys->particles[j], sys->restitution);
-                pair_budget--;
-            }
-        }
-    }
-
-    /* Budgeted wake-up pass: check settled particles for surface loss.
-     * Settlement detection is now handled inline in passes 1/2 above.
-     * This pass only wakes settled particles whose surface disappeared. */
+    /* Particle-particle collision through the spatial hash, capped against frame spikes */
+    spatial_hash_clear(&sys->collision_grid);
+    for (int32_t i = 0; i < sys->awake_count; i++)
     {
-        int32_t wake_budget = 4096;
-        int32_t wake_cursor = sys->settle_cursor;
-        int32_t wake_checked = 0;
-        while (wake_checked < sys->count && wake_budget > 0) {
-            if (wake_cursor >= sys->count) wake_cursor = 0;
-            Particle *p = &sys->particles[wake_cursor++];
-            wake_checked++;
-
-            if (!p->active || !p->settled) continue;
-
-            if (!particle_near_surface(p, terrain, objects)) {
-                p->settled = false;
-                p->velocity = vec3_scale(sys->gravity, 0.01f);
-            }
-            wake_budget--;
-        }
-        sys->settle_cursor = wake_cursor;
-    }
-}
-
-int32_t particle_system_spawn_explosion(ParticleSystem* sys, RngState *rng, Vec3 center, float radius,
-                                         Vec3 color, int32_t count, float force) {
-    int32_t spawned = 0;
-
-    for (int32_t i = 0; i < count; i++) {
-        float theta = rng_float(rng) * 2.0f * K_PI;
-        float phi = rng_float(rng) * K_PI;
-        float r = rng_float(rng) * radius * 0.8f;
-
-        float sin_phi = sinf(phi);
-        Vec3 offset = vec3_create(
-            r * sin_phi * cosf(theta),
-            r * cosf(phi),
-            r * sin_phi * sinf(theta)
-        );
-
-        Vec3 dir = vec3_length(offset) > 0.001f ? vec3_normalize(offset) : vec3_create(0.0f, 1.0f, 0.0f);
-
-        float speed_variation = 0.5f + rng_float(rng) * 1.0f;
-        Vec3 vel = vec3_scale(dir, force * speed_variation);
-
-        vel.y += force * 0.3f * rng_float(rng);
-
-        float color_variation = 0.9f + rng_float(rng) * 0.2f;
-        Vec3 particle_color = vec3_scale(color, color_variation);
-        particle_color.x = clampf(particle_color.x, 0.0f, 1.0f);
-        particle_color.y = clampf(particle_color.y, 0.0f, 1.0f);
-        particle_color.z = clampf(particle_color.z, 0.0f, 1.0f);
-
-        /* Use circular buffer - overwrites oldest when at capacity */
-        Particle* p = particle_system_add_slot(sys);
-        if (!p->active) sys->active_count++;
-        p->position = vec3_add(center, offset);
-        p->prev_position = p->position;
-        p->velocity = vel;
-        p->rotation = vec3_zero();
-        p->prev_rotation = vec3_zero();
-        p->angular_velocity = vec3_create(
-            rng_signed_half(rng) * 20.0f,
-            rng_signed_half(rng) * 20.0f,
-            rng_signed_half(rng) * 20.0f
-        );
-        p->color = particle_color;
-        p->radius = 0.04f + rng_float(rng) * 0.03f;
-        p->lifetime = 0.0f;
-        p->active = true;
-        p->settled = false;
-
-        spawned++;
+        const Particle *p = &sys->particles[i];
+        spatial_hash_insert(&sys->collision_grid, i, p->position, p->radius);
     }
 
-    return spawned;
-}
-
-int32_t particle_system_spawn_at_impact(ParticleSystem* sys, RngState *rng, Vec3 impact_point, Vec3 ball_center,
-                                         float ball_radius, Vec3 color, int32_t count, float force) {
-    int32_t spawned = 0;
-
-    Vec3 impact_dir = vec3_sub(impact_point, ball_center);
-    float impact_len = vec3_length(impact_dir);
-    if (impact_len > 0.001f) {
-        impact_dir = vec3_scale(impact_dir, 1.0f / impact_len);
-    } else {
-        impact_dir = vec3_create(0.0f, 1.0f, 0.0f);
-    }
-
-    for (int32_t i = 0; i < count; i++) {
-        float spread_theta = rng_signed_half(rng) * K_PI * 0.8f;
-        float spread_phi = rng_float(rng) * 2.0f * K_PI;
-        float r = rng_float(rng) * ball_radius * 0.3f;
-
-        Vec3 up = fabsf(impact_dir.y) < 0.9f ? vec3_create(0.0f, 1.0f, 0.0f) : vec3_create(1.0f, 0.0f, 0.0f);
-        Vec3 right = vec3_normalize(vec3_cross(up, impact_dir));
-        Vec3 tangent = vec3_cross(impact_dir, right);
-
-        Vec3 dir;
-        dir.x = impact_dir.x * cosf(spread_theta) + right.x * sinf(spread_theta) * cosf(spread_phi) + tangent.x * sinf(spread_theta) * sinf(spread_phi);
-        dir.y = impact_dir.y * cosf(spread_theta) + right.y * sinf(spread_theta) * cosf(spread_phi) + tangent.y * sinf(spread_theta) * sinf(spread_phi);
-        dir.z = impact_dir.z * cosf(spread_theta) + right.z * sinf(spread_theta) * cosf(spread_phi) + tangent.z * sinf(spread_theta) * sinf(spread_phi);
-        dir = vec3_normalize(dir);
-
-        Vec3 offset = vec3_scale(dir, r);
-        offset = vec3_add(offset, vec3_scale(impact_dir, ball_radius * 0.1f));
-
-        float speed_variation = 0.5f + rng_float(rng) * 1.0f;
-        Vec3 vel = vec3_scale(dir, force * speed_variation);
-
-        float color_variation = 0.85f + rng_float(rng) * 0.3f;
-        Vec3 particle_color = vec3_scale(color, color_variation);
-        particle_color.x = clampf(particle_color.x, 0.0f, 1.0f);
-        particle_color.y = clampf(particle_color.y, 0.0f, 1.0f);
-        particle_color.z = clampf(particle_color.z, 0.0f, 1.0f);
-
-        /* Use circular buffer - overwrites oldest when at capacity */
-        Particle* p = particle_system_add_slot(sys);
-        if (!p->active) sys->active_count++;
-        p->position = vec3_add(impact_point, offset);
-        p->prev_position = p->position;
-        p->velocity = vel;
-        p->rotation = vec3_zero();
-        p->prev_rotation = vec3_zero();
-        p->angular_velocity = vec3_create(
-            rng_signed_half(rng) * 20.0f,
-            rng_signed_half(rng) * 20.0f,
-            rng_signed_half(rng) * 20.0f
-        );
-        p->color = particle_color;
-        p->radius = 0.03f + rng_float(rng) * 0.04f;
-        p->lifetime = 0.0f;
-        p->active = true;
-        p->settled = false;
-        spawned++;
-    }
-
-    return spawned;
-}
-
-int32_t particle_system_get_settled(ParticleSystem* sys, Particle* out_settled, int32_t max_count) {
-    int32_t found = 0;
-    for (int32_t i = 0; i < sys->count && found < max_count; i++) {
-        if (sys->particles[i].active && sys->particles[i].settled) {
-            out_settled[found++] = sys->particles[i];
-        }
-    }
-    return found;
-}
-
-void particle_system_remove_settled(ParticleSystem* sys) {
-    int32_t write = 0;
-    for (int32_t read = 0; read < sys->count; read++) {
-        if (sys->particles[read].active && !sys->particles[read].settled) {
-            if (write != read) {
-                sys->particles[write] = sys->particles[read];
-            }
-            write++;
-        }
-    }
-    sys->count = write;
-    sys->active_count = write;  /* All remaining are active non-settled */
-}
-
-bool particle_system_pickup_nearest(ParticleSystem* sys, Vec3 position, float max_dist, Vec3* out_color) {
-    int32_t nearest_idx = -1;
-    float nearest_dist = max_dist;
-    
-    for (int32_t i = 0; i < sys->count; i++) {
-        if (!sys->particles[i].active || !sys->particles[i].settled) continue;
-        
-        Vec3 to_particle = vec3_sub(sys->particles[i].position, position);
-        to_particle.y = 0.0f;
-        float dist = vec3_length(to_particle);
-        
-        if (dist < nearest_dist) {
-            nearest_dist = dist;
-            nearest_idx = i;
+    int32_t pair_budget = PARTICLE_MAX_COLLISION_PAIRS;
+    for (int32_t i = 0; i < sys->awake_count && pair_budget > 0; i++)
+    {
+        Particle *a = &sys->particles[i];
+        int32_t nearby[SPATIAL_HASH_MAX_PER_CELL];
+        int32_t nearby_count = spatial_hash_query(&sys->collision_grid, a->position, a->radius * 2.0f,
+                                                  nearby, SPATIAL_HASH_MAX_PER_CELL);
+        for (int32_t n = 0; n < nearby_count && pair_budget > 0; n++)
+        {
+            int32_t j = nearby[n];
+            if (j <= i)
+                continue;
+            resolve_particle_collision(a, &sys->particles[j], sys->restitution);
+            pair_budget--;
         }
     }
 
-    if (nearest_idx < 0) {
-        nearest_dist = max_dist;
-        for (int32_t i = 0; i < sys->count; i++) {
-            if (!sys->particles[i].active) continue;
-            
-            Vec3 to_particle = vec3_sub(sys->particles[i].position, position);
-            to_particle.y = 0.0f;
-            float dist = vec3_length(to_particle);
-            
-            if (dist < nearest_dist) {
-                nearest_dist = dist;
-                nearest_idx = i;
-            }
-        }
-    }
-    
-    if (nearest_idx < 0) return false;
-
-    *out_color = sys->particles[nearest_idx].color;
-    sys->particles[nearest_idx].active = false;
-    sys->active_count--;
-
-    return true;
+    check_settled(sys, terrain, objects);
 }

@@ -9,7 +9,7 @@
  * 1. CREATE FILE: Add content/materials/mat_<name>.c with:
  *    const MaterialDescriptor g_mat_<name> = { ... };
  *
- * 2. ADD TO BUILD: Update CMakeLists.txt CONTENT_MATERIAL_SOURCES or rely on glob.
+ * 2. BUILD: The CMake glob over content/materials/ picks the file up.
  *
  * 3. DECLARE: In materials.h, add:
  *    #define MAT_<NAME> N   // next available ID
@@ -18,13 +18,12 @@
  *
  * 5. REGISTER: Add pointer to g_materials[] using designated initializer.
  *
- * 6. UPDATE: Increment g_material_count and static_assert.
+ * 6. UPDATE: If the new ID is the highest, base g_material_count on it.
  *
- * === LINK-TIME VALIDATION ===
+ * === VALIDATION ===
  *
  * - Missing material file → linker error (unresolved symbol)
- * - Missing registration → undefined material (NULL pointer)
- * - ID mismatch → static_assert fails
+ * - Missing registration → NULL table entry (test_content checks every ID)
  */
 
 #include "materials.h"
@@ -63,16 +62,18 @@ extern const MaterialDescriptor g_mat_flower_yellow;
 extern const MaterialDescriptor g_mat_mushroom;
 extern const MaterialDescriptor g_mat_sand;
 extern const MaterialDescriptor g_mat_snow;
-extern const MaterialDescriptor g_mat_ice;
 extern const MaterialDescriptor g_mat_moss;
-extern const MaterialDescriptor g_mat_clay;
 extern const MaterialDescriptor g_mat_gravel;
-extern const MaterialDescriptor g_mat_cobblestone;
-extern const MaterialDescriptor g_mat_weak_rock;
-extern const MaterialDescriptor g_mat_glowing_rock;
 extern const MaterialDescriptor g_mat_glowing_mushroom;
 extern const MaterialDescriptor g_mat_water;
-extern const MaterialDescriptor g_mat_lava;
+extern const MaterialDescriptor g_mat_dry_grass;
+extern const MaterialDescriptor g_mat_jungle_grass;
+extern const MaterialDescriptor g_mat_mud;
+extern const MaterialDescriptor g_mat_podzol;
+extern const MaterialDescriptor g_mat_sandstone;
+extern const MaterialDescriptor g_mat_ice;
+extern const MaterialDescriptor g_mat_cactus;
+extern const MaterialDescriptor g_mat_swamp_water;
 
 /*
  * Global material registration table.
@@ -112,19 +113,21 @@ const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT] = {
     [MAT_MUSHROOM] = &g_mat_mushroom,
     [MAT_SAND] = &g_mat_sand,
     [MAT_SNOW] = &g_mat_snow,
-    [MAT_ICE] = &g_mat_ice,
     [MAT_MOSS] = &g_mat_moss,
-    [MAT_CLAY] = &g_mat_clay,
     [MAT_GRAVEL] = &g_mat_gravel,
-    [MAT_COBBLESTONE] = &g_mat_cobblestone,
-    [MAT_WEAK_ROCK] = &g_mat_weak_rock,
-    [MAT_GLOWING_ROCK] = &g_mat_glowing_rock,
     [MAT_GLOWING_MUSHROOM] = &g_mat_glowing_mushroom,
     [MAT_WATER] = &g_mat_water,
-    [MAT_LAVA] = &g_mat_lava,
+    [MAT_DRY_GRASS] = &g_mat_dry_grass,
+    [MAT_JUNGLE_GRASS] = &g_mat_jungle_grass,
+    [MAT_MUD] = &g_mat_mud,
+    [MAT_PODZOL] = &g_mat_podzol,
+    [MAT_SANDSTONE] = &g_mat_sandstone,
+    [MAT_ICE] = &g_mat_ice,
+    [MAT_CACTUS] = &g_mat_cactus,
+    [MAT_SWAMP_WATER] = &g_mat_swamp_water,
 };
 
-const int32_t g_material_count = 43;
+/* MAT_SWAMP_WATER is the highest registered ID */
+const int32_t g_material_count = MAT_SWAMP_WATER + 1;
 
-STATIC_ASSERT(MAT_LAVA + 1 == 43, "Material count must match g_material_count");
-STATIC_ASSERT(MAT_LAVA < MATERIAL_MAX_COUNT, "Material ID exceeds table size");
+STATIC_ASSERT(MAT_CACTUS < MATERIAL_MAX_COUNT, "Material ID exceeds table size");

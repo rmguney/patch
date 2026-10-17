@@ -5,6 +5,7 @@
 #include "engine/voxel/chunk.h"
 #include "content/materials.h"
 #include "test_common.h"
+#include "test_fixtures.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -22,8 +23,8 @@ TEST(profile_categories_defined)
     ASSERT(PROFILE_SIM_TICK < PROFILE_COUNT);
     ASSERT(PROFILE_FRAME_TOTAL >= 0);
     ASSERT(PROFILE_FRAME_TOTAL < PROFILE_COUNT);
-    ASSERT(PROFILE_CHUNK_UPLOAD >= 0);
-    ASSERT(PROFILE_CHUNK_UPLOAD < PROFILE_COUNT);
+    ASSERT(PROFILE_VOXEL_UPLOAD >= 0);
+    ASSERT(PROFILE_VOXEL_UPLOAD < PROFILE_COUNT);
 
     return 1;
 }
@@ -69,19 +70,56 @@ TEST(profile_accumulates_correctly)
 
     for (int i = 0; i < 10; i++)
     {
-        PROFILE_BEGIN(PROFILE_RAYCAST);
+        PROFILE_BEGIN(PROFILE_SIM_PHYSICS);
         volatile int dummy = 0;
         for (int j = 0; j < 100; j++)
         {
             dummy += j;
         }
         (void)dummy;
-        PROFILE_END(PROFILE_RAYCAST);
+        PROFILE_END(PROFILE_SIM_PHYSICS);
     }
 
-    float avg_ms = profile_get_avg_ms(PROFILE_RAYCAST);
-    ASSERT(avg_ms >= 0.0f);
+    ASSERT(profile_get_sample_count(PROFILE_SIM_PHYSICS) == 10);
+    ASSERT(profile_get_avg_ms(PROFILE_SIM_PHYSICS) >= 0.0f);
 
+    return 1;
+}
+
+TEST(per_frame_categories_record_one_sample_per_frame)
+{
+    /* Raycasts, edit batches and object updates come from several call sites of very
+     * different cost: their scopes add up to one sample per frame */
+    profile_reset_all();
+    int64_t freq = platform_get_frequency();
+
+    for (int frame = 0; frame < 3; frame++)
+    {
+        int64_t inside = 0;
+        for (int scope = 0; scope < 4; scope++)
+        {
+            int64_t t0 = platform_get_ticks();
+            PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
+            volatile int dummy = 0;
+            for (int j = 0; j < 20000; j++)
+                dummy += j;
+            (void)dummy;
+            PROFILE_END(PROFILE_VOXEL_RAYCAST);
+            inside += platform_get_ticks() - t0;
+        }
+        ASSERT(profile_get_sample_count(PROFILE_VOXEL_RAYCAST) == frame);
+        profile_frame_end();
+        ASSERT(profile_get_sample_count(PROFILE_VOXEL_RAYCAST) == frame + 1);
+
+        /* The sample is the frame's four scopes together */
+        float measured_ms = (float)inside / (float)freq * 1000.0f;
+        ASSERT(profile_get_last_ms(PROFILE_VOXEL_RAYCAST) <= measured_ms);
+        ASSERT(profile_get_last_ms(PROFILE_VOXEL_RAYCAST) > 0.0f);
+    }
+
+    /* A frame without such scopes adds no sample */
+    profile_frame_end();
+    ASSERT(profile_get_sample_count(PROFILE_VOXEL_RAYCAST) == 3);
     return 1;
 }
 
@@ -89,22 +127,38 @@ TEST(profile_reset_works)
 {
     profile_reset_all();
 
-    PROFILE_BEGIN(PROFILE_PROP_SPAWN);
+    PROFILE_BEGIN(PROFILE_UI_UPDATE);
     volatile int dummy = 0;
     for (int i = 0; i < 100; i++)
     {
         dummy += i;
     }
     (void)dummy;
-    PROFILE_END(PROFILE_PROP_SPAWN);
+    PROFILE_END(PROFILE_UI_UPDATE);
 
-    float before_reset = profile_get_avg_ms(PROFILE_PROP_SPAWN);
-    ASSERT(before_reset > 0.0f || g_profile_slots[PROFILE_PROP_SPAWN].sample_count > 0);
+    float before_reset = profile_get_avg_ms(PROFILE_UI_UPDATE);
+    ASSERT(before_reset > 0.0f || g_profile_slots[PROFILE_UI_UPDATE].sample_count > 0);
 
-    profile_reset(PROFILE_PROP_SPAWN);
-    float after_reset = profile_get_avg_ms(PROFILE_PROP_SPAWN);
+    profile_reset(PROFILE_UI_UPDATE);
+    float after_reset = profile_get_avg_ms(PROFILE_UI_UPDATE);
     ASSERT(after_reset == 0.0f);
 
+    return 1;
+}
+
+TEST(profile_min_keeps_zero_tick_sample)
+{
+    /* A scope shorter than the timer resolution records 0 ticks. That is the true
+     * minimum; min_ticks == 0 used to mean "unset", so the next longer sample
+     * replaced it. The ticks are fed directly: a real timer may never read 0. */
+    ProfileSlot *slot = &g_profile_slots[PROFILE_UI_UPDATE];
+    profile_reset(PROFILE_UI_UPDATE);
+    profile_record_ticks(PROFILE_UI_UPDATE, 0);
+    profile_record_ticks(PROFILE_UI_UPDATE, 5);
+
+    ASSERT(slot->sample_count == 2);
+    ASSERT(slot->max_ticks == 5);
+    ASSERT(slot->min_ticks == 0);
     return 1;
 }
 
@@ -153,7 +207,7 @@ TEST(platform_timing_sane)
  * ============================================================================ */
 
 #define BUDGET_VOLUME_CREATE_MS 500.0f
-#define BUDGET_CHUNK_FILL_MS 100.0f
+#define BUDGET_EDIT_BATCH_MS 100.0f
 #define BUDGET_RAYCAST_MS 50.0f
 #define BUDGET_OCCUPANCY_MS 200.0f
 
@@ -161,39 +215,40 @@ TEST(budget_volume_create)
 {
     profile_reset_all();
 
-    PROFILE_BEGIN(PROFILE_VOLUME_INIT);
     VoxelVolume *vol = volume_create_dims(4, 2, 4, vec3_zero(), 0.1f);
-    PROFILE_END(PROFILE_VOLUME_INIT);
-
     ASSERT(vol != NULL);
 
+    /* volume_create_dims records its own PROFILE_VOLUME_INIT sample; wrapping it in
+     * the same category would restart that scope's timer */
+    ASSERT(profile_get_sample_count(PROFILE_VOLUME_INIT) == 1);
     float ms = profile_get_avg_ms(PROFILE_VOLUME_INIT);
     printf("(%.2fms) ", ms);
 
-    ASSERT(ms < BUDGET_VOLUME_CREATE_MS);
+    ASSERT_PERF(ms < BUDGET_VOLUME_CREATE_MS);
 
     volume_destroy(vol);
     return 1;
 }
 
-TEST(budget_chunk_fill)
+TEST(budget_edit_batch)
 {
     VoxelVolume *vol = volume_create_dims(2, 2, 2, vec3_zero(), 0.1f);
     ASSERT(vol != NULL);
 
     profile_reset_all();
 
-    PROFILE_BEGIN(PROFILE_DRAW_VOLUME);
     volume_edit_begin(vol);
     Vec3 center = vec3_create(0.5f, 0.5f, 0.5f);
-    volume_fill_sphere(vol, center, 0.4f, MAT_STONE);
+    fixture_fill_sphere(vol, center, 0.4f, MAT_STONE);
     volume_edit_end(vol);
-    PROFILE_END(PROFILE_DRAW_VOLUME);
 
-    float ms = profile_get_avg_ms(PROFILE_DRAW_VOLUME);
+    /* Edit batches time themselves (PROFILE_VOXEL_EDIT), one sample per frame */
+    profile_frame_end();
+    ASSERT(profile_get_sample_count(PROFILE_VOXEL_EDIT) == 1);
+    float ms = profile_get_avg_ms(PROFILE_VOXEL_EDIT);
     printf("(%.2fms) ", ms);
 
-    ASSERT(ms < BUDGET_CHUNK_FILL_MS);
+    ASSERT_PERF(ms < BUDGET_EDIT_BATCH_MS);
 
     volume_destroy(vol);
     return 1;
@@ -203,7 +258,7 @@ TEST(budget_raycast)
 {
     VoxelVolume *vol = volume_create_dims(4, 4, 4, vec3_zero(), 0.1f);
     volume_edit_begin(vol);
-    volume_fill_box(vol, vec3_create(0.0f, 0.0f, 0.0f), vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
+    fixture_fill_box(vol, vec3_create(0.0f, 0.0f, 0.0f), vec3_create(1.0f, 1.0f, 1.0f), MAT_STONE);
     volume_edit_end(vol);
 
     profile_reset_all();
@@ -213,17 +268,19 @@ TEST(budget_raycast)
     Vec3 hit_pos, hit_normal;
     uint8_t hit_mat;
 
-    PROFILE_BEGIN(PROFILE_RAYCAST);
     for (int i = 0; i < 100; i++)
     {
         volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
-    PROFILE_END(PROFILE_RAYCAST);
 
-    float ms = profile_get_avg_ms(PROFILE_RAYCAST);
+    /* volume_raycast times itself (PROFILE_VOXEL_RAYCAST), adding up to one sample per
+     * frame. Wrapping the loop in the same category would restart its timer. */
+    profile_frame_end();
+    ASSERT(profile_get_sample_count(PROFILE_VOXEL_RAYCAST) == 1);
+    float ms = profile_get_last_ms(PROFILE_VOXEL_RAYCAST);
     printf("(%.2fms for 100) ", ms);
 
-    ASSERT(ms < BUDGET_RAYCAST_MS);
+    ASSERT_PERF(ms < BUDGET_RAYCAST_MS);
 
     volume_destroy(vol);
     return 1;
@@ -235,7 +292,7 @@ TEST(budget_occupancy_rebuild)
 
     profile_reset_all();
 
-    PROFILE_BEGIN(PROFILE_OCCUPANCY_REBUILD);
+    PROFILE_BEGIN(PROFILE_VOXEL_OCCUPANCY);
     volume_edit_begin(vol);
     for (int i = 0; i < 1000; i++)
     {
@@ -246,12 +303,12 @@ TEST(budget_occupancy_rebuild)
         volume_edit_set(vol, pos, MAT_STONE);
     }
     volume_edit_end(vol);
-    PROFILE_END(PROFILE_OCCUPANCY_REBUILD);
+    PROFILE_END(PROFILE_VOXEL_OCCUPANCY);
 
-    float ms = profile_get_avg_ms(PROFILE_OCCUPANCY_REBUILD);
+    float ms = profile_get_avg_ms(PROFILE_VOXEL_OCCUPANCY);
     printf("(%.2fms for 1000 edits) ", ms);
 
-    ASSERT(ms < BUDGET_OCCUPANCY_MS);
+    ASSERT_PERF(ms < BUDGET_OCCUPANCY_MS);
 
     volume_destroy(vol);
     return 1;
@@ -270,23 +327,20 @@ static void run_benchmark_suite(void)
 
     profile_reset_all();
 
+    /* Volume creation, fills and raycasts record their own categories */
     VoxelVolume *vol = volume_create_dims(4, 4, 4, vec3_zero(), 0.1f);
 
-    PROFILE_BEGIN(PROFILE_VOLUME_INIT);
     volume_edit_begin(vol);
-    volume_fill_sphere(vol, vec3_create(0.5f, 0.5f, 0.5f), 0.4f, MAT_STONE);
+    fixture_fill_sphere(vol, vec3_create(0.5f, 0.5f, 0.5f), 0.4f, MAT_STONE);
     volume_edit_end(vol);
-    PROFILE_END(PROFILE_VOLUME_INIT);
 
     for (int frame = 0; frame < 100; frame++)
     {
-        PROFILE_BEGIN(PROFILE_RAYCAST);
         Vec3 origin = vec3_create(-1.0f, 0.5f, 0.5f);
         Vec3 dir = vec3_create(1.0f, 0.0f, 0.0f);
         Vec3 hit_pos, hit_normal;
         uint8_t hit_mat;
         volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
-        PROFILE_END(PROFILE_RAYCAST);
 
         PROFILE_BEGIN(PROFILE_SIM_TICK);
         volatile int dummy = 0;
@@ -364,14 +418,16 @@ int main(int argc, char *argv[])
     RUN_TEST(profile_names_valid);
     RUN_TEST(profile_begin_end_works);
     RUN_TEST(profile_accumulates_correctly);
+    RUN_TEST(per_frame_categories_record_one_sample_per_frame);
     RUN_TEST(profile_reset_works);
+    RUN_TEST(profile_min_keeps_zero_tick_sample);
     RUN_TEST(profile_reset_all_works);
     RUN_TEST(platform_timing_sane);
 
     printf("\n=== Budget Enforcement Tests ===\n");
     printf("(Generous budgets to catch catastrophic regressions)\n");
     RUN_TEST(budget_volume_create);
-    RUN_TEST(budget_chunk_fill);
+    RUN_TEST(budget_edit_batch);
     RUN_TEST(budget_raycast);
     RUN_TEST(budget_occupancy_rebuild);
 

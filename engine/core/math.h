@@ -3,7 +3,6 @@
 
 #include "types.h"
 #include <math.h>
-#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -13,28 +12,6 @@ extern "C"
 #define K_PI 3.14159265358979323846f
 #define K_DEG_TO_RAD 0.01745329251994329577f
 #define K_EPSILON 0.0001f
-
-/* Frustum plane indices */
-#define FRUSTUM_LEFT 0
-#define FRUSTUM_RIGHT 1
-#define FRUSTUM_BOTTOM 2
-#define FRUSTUM_TOP 3
-#define FRUSTUM_NEAR 4
-#define FRUSTUM_FAR 5
-
-    /* Frustum culling result */
-    typedef enum
-    {
-        FRUSTUM_OUTSIDE = 0,
-        FRUSTUM_INTERSECT = 1,
-        FRUSTUM_INSIDE = 2
-    } FrustumResult;
-
-    /* Frustum defined by 6 planes (ax + by + cz + d = 0, normal points inward) */
-    typedef struct
-    {
-        Vec4 planes[6];
-    } Frustum;
 
     static inline Vec3 vec3_create(float x, float y, float z)
     {
@@ -103,9 +80,6 @@ extern "C"
         {
             return vec3_scale(v, 1.0f / len);
         }
-#ifndef NDEBUG
-        fprintf(stderr, "WARNING: vec3_normalize called with near-zero vector\n");
-#endif
         return v;
     }
 
@@ -128,31 +102,26 @@ extern "C"
         return a > b ? a : b;
     }
 
+    /* sRGB-encoded colour component (0-1, as colour pickers and the material table author
+     * it) to linear light, the space the shaders light in */
+    static inline float srgb_to_linear(float c)
+    {
+        if (c <= 0.04045f)
+            return c / 12.92f;
+        return powf((c + 0.055f) / 1.055f, 2.4f);
+    }
+
+    static inline Vec3 vec3_srgb_to_linear(Vec3 c)
+    {
+        return vec3_create(srgb_to_linear(c.x), srgb_to_linear(c.y), srgb_to_linear(c.z));
+    }
+
     static inline Mat4 mat4_identity(void)
     {
         Mat4 m = {0};
         m.m[0] = 1.0f;
         m.m[5] = 1.0f;
         m.m[10] = 1.0f;
-        m.m[15] = 1.0f;
-        return m;
-    }
-
-    static inline Mat4 mat4_translation(Vec3 t)
-    {
-        Mat4 m = mat4_identity();
-        m.m[12] = t.x;
-        m.m[13] = t.y;
-        m.m[14] = t.z;
-        return m;
-    }
-
-    static inline Mat4 mat4_scaling(Vec3 s)
-    {
-        Mat4 m = {0};
-        m.m[0] = s.x;
-        m.m[5] = s.y;
-        m.m[10] = s.z;
         m.m[15] = 1.0f;
         return m;
     }
@@ -173,19 +142,6 @@ extern "C"
             }
         }
         return result;
-    }
-
-    static inline Mat4 mat4_ortho(float left, float right, float bottom, float top, float near_val, float far_val)
-    {
-        Mat4 m = {0};
-        m.m[0] = 2.0f / (right - left);
-        m.m[5] = -2.0f / (top - bottom);
-        m.m[10] = -1.0f / (far_val - near_val);
-        m.m[12] = -(right + left) / (right - left);
-        m.m[13] = -(top + bottom) / (top - bottom);
-        m.m[14] = -near_val / (far_val - near_val);
-        m.m[15] = 1.0f;
-        return m;
     }
 
     static inline Mat4 mat4_perspective(float fov_y_radians, float aspect, float near_val, float far_val)
@@ -222,14 +178,6 @@ extern "C"
         return m;
     }
 
-    static inline Vec3 mat4_transform_point(Mat4 m, Vec3 p)
-    {
-        return vec3_create(
-            m.m[0] * p.x + m.m[4] * p.y + m.m[8] * p.z + m.m[12],
-            m.m[1] * p.x + m.m[5] * p.y + m.m[9] * p.z + m.m[13],
-            m.m[2] * p.x + m.m[6] * p.y + m.m[10] * p.z + m.m[14]);
-    }
-
     static inline Vec3 mat4_transform_direction(Mat4 m, Vec3 v)
     {
         return vec3_create(
@@ -238,8 +186,7 @@ extern "C"
             m.m[2] * v.x + m.m[6] * v.y + m.m[10] * v.z);
     }
 
-    /* Inverse for rigid transforms (rotation + translation only); used by camera/rendering.
-       Physics may need general mat4_inverse if using non-rigid transforms. */
+    /* Inverse for rigid transforms (rotation + translation only); see mat4_inverse otherwise */
     static inline Mat4 mat4_inverse_rigid(Mat4 m)
     {
         Mat4 inv = mat4_identity();
@@ -275,19 +222,6 @@ extern "C"
             m[6] * p.x + m[7] * p.y + m[8] * p.z);
     }
 
-    static inline void mat3_identity(float m[9])
-    {
-        m[0] = 1.0f;
-        m[1] = 0.0f;
-        m[2] = 0.0f;
-        m[3] = 0.0f;
-        m[4] = 1.0f;
-        m[5] = 0.0f;
-        m[6] = 0.0f;
-        m[7] = 0.0f;
-        m[8] = 1.0f;
-    }
-
     static inline void mat3_transpose(const float m[9], float out[9])
     {
         out[0] = m[0];
@@ -301,24 +235,7 @@ extern "C"
         out[8] = m[8];
     }
 
-    static inline void mat3_multiply(const float a[9], const float b[9], float out[9])
-    {
-        float tmp[9];
-        tmp[0] = a[0] * b[0] + a[1] * b[3] + a[2] * b[6];
-        tmp[1] = a[0] * b[1] + a[1] * b[4] + a[2] * b[7];
-        tmp[2] = a[0] * b[2] + a[1] * b[5] + a[2] * b[8];
-        tmp[3] = a[3] * b[0] + a[4] * b[3] + a[5] * b[6];
-        tmp[4] = a[3] * b[1] + a[4] * b[4] + a[5] * b[7];
-        tmp[5] = a[3] * b[2] + a[4] * b[5] + a[5] * b[8];
-        tmp[6] = a[6] * b[0] + a[7] * b[3] + a[8] * b[6];
-        tmp[7] = a[6] * b[1] + a[7] * b[4] + a[8] * b[7];
-        tmp[8] = a[6] * b[2] + a[7] * b[5] + a[8] * b[8];
-        for (int i = 0; i < 9; i++)
-            out[i] = tmp[i];
-    }
-
-    /* Quaternion utilities for orientation storage and rotation matrices.
-       Physics may extend with quat_from_axis_angle, quat_integrate, slerp. */
+    /* Quaternion utilities for orientation storage and rotation matrices */
     static inline Quat quat_identity(void)
     {
         Quat q;
@@ -336,16 +253,6 @@ extern "C"
         q.y = y;
         q.z = z;
         q.w = w;
-        return q;
-    }
-
-    static inline Quat quat_multiply(Quat a, Quat b)
-    {
-        Quat q;
-        q.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-        q.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
-        q.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
-        q.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
         return q;
     }
 
@@ -373,6 +280,15 @@ extern "C"
         return q;
     }
 
+    /* Normalized linear blend from a to b along the shorter arc: for the small turns between
+     * two simulation steps it follows slerp closely, at a fraction of the cost */
+    static inline Quat quat_nlerp(Quat a, Quat b, float t)
+    {
+        const float sign = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w < 0.0f ? -1.0f : 1.0f;
+        return quat_normalize(quat_create(a.x + (b.x * sign - a.x) * t, a.y + (b.y * sign - a.y) * t,
+                                          a.z + (b.z * sign - a.z) * t, a.w + (b.w * sign - a.w) * t));
+    }
+
     static inline void quat_to_mat3(Quat q, float m[9])
     {
         float xx = q.x * q.x;
@@ -394,28 +310,6 @@ extern "C"
         m[6] = 2.0f * (xz - wy);
         m[7] = 2.0f * (yz + wx);
         m[8] = 1.0f - 2.0f * (xx + yy);
-    }
-
-    static inline void quat_to_mat4(Quat q, Mat4 *m)
-    {
-        float rot[9];
-        quat_to_mat3(q, rot);
-        m->m[0] = rot[0];
-        m->m[1] = rot[3];
-        m->m[2] = rot[6];
-        m->m[3] = 0.0f;
-        m->m[4] = rot[1];
-        m->m[5] = rot[4];
-        m->m[6] = rot[7];
-        m->m[7] = 0.0f;
-        m->m[8] = rot[2];
-        m->m[9] = rot[5];
-        m->m[10] = rot[8];
-        m->m[11] = 0.0f;
-        m->m[12] = 0.0f;
-        m->m[13] = 0.0f;
-        m->m[14] = 0.0f;
-        m->m[15] = 1.0f;
     }
 
     static inline float lerpf(float a, float b, float t)
@@ -444,21 +338,6 @@ extern "C"
         return vec3_create(a.x * b.x, a.y * b.y, a.z * b.z);
     }
 
-    static inline Vec3 vec3_div(Vec3 v, float s)
-    {
-        return vec3_scale(v, 1.0f / s);
-    }
-
-    static inline float vec3_min_component(Vec3 v)
-    {
-        return minf(minf(v.x, v.y), v.z);
-    }
-
-    static inline float vec3_max_component(Vec3 v)
-    {
-        return maxf(maxf(v.x, v.y), v.z);
-    }
-
     static inline Vec3 quat_rotate_vec3(Quat q, Vec3 v)
     {
         Vec3 u = vec3_create(q.x, q.y, q.z);
@@ -466,14 +345,6 @@ extern "C"
         Vec3 uv = vec3_cross(u, v);
         Vec3 uuv = vec3_cross(u, uv);
         return vec3_add(v, vec3_scale(vec3_add(vec3_scale(uv, s), uuv), 2.0f));
-    }
-
-    static inline Quat quat_from_axis_angle(Vec3 axis, float angle)
-    {
-        float half_angle = angle * 0.5f;
-        float s = sinf(half_angle);
-        float c = cosf(half_angle);
-        return quat_create(axis.x * s, axis.y * s, axis.z * s, c);
     }
 
     static inline Quat quat_integrate(Quat q, Vec3 omega, float dt)
@@ -495,6 +366,14 @@ extern "C"
     static inline Quat quat_conjugate(Quat q)
     {
         return quat_create(-q.x, -q.y, -q.z, q.w);
+    }
+
+    /* World-space inverse inertia applied to v: R * diag(inv_inertia_local) * R^T * v,
+     * where R (local -> world) is the rotation quat_rotate_vec3(q, .) applies. */
+    static inline Vec3 quat_apply_inv_inertia(Quat q, Vec3 inv_inertia_local, Vec3 v)
+    {
+        Vec3 local = quat_rotate_vec3(quat_conjugate(q), v);
+        return quat_rotate_vec3(q, vec3_mul(local, inv_inertia_local));
     }
 
     /* General 4x4 matrix inverse using cofactor expansion */
@@ -546,177 +425,6 @@ extern "C"
         o[15] = (a[8] * s3 - a[9] * s1 + a[10] * s0) * invdet;
 
         return inv;
-    }
-
-    /*
-     * Extract frustum planes from view-projection matrix.
-     * Planes are stored with normals pointing inward (toward visible space).
-     * Uses Gribb/Hartmann method for clip-space plane extraction.
-     */
-    static inline Frustum frustum_from_view_proj(Mat4 vp)
-    {
-        Frustum f;
-        float *m = vp.m;
-
-        /* Left:   row3 + row0 */
-        f.planes[FRUSTUM_LEFT].x = m[3] + m[0];
-        f.planes[FRUSTUM_LEFT].y = m[7] + m[4];
-        f.planes[FRUSTUM_LEFT].z = m[11] + m[8];
-        f.planes[FRUSTUM_LEFT].w = m[15] + m[12];
-
-        /* Right:  row3 - row0 */
-        f.planes[FRUSTUM_RIGHT].x = m[3] - m[0];
-        f.planes[FRUSTUM_RIGHT].y = m[7] - m[4];
-        f.planes[FRUSTUM_RIGHT].z = m[11] - m[8];
-        f.planes[FRUSTUM_RIGHT].w = m[15] - m[12];
-
-        /* Bottom: row3 + row1 */
-        f.planes[FRUSTUM_BOTTOM].x = m[3] + m[1];
-        f.planes[FRUSTUM_BOTTOM].y = m[7] + m[5];
-        f.planes[FRUSTUM_BOTTOM].z = m[11] + m[9];
-        f.planes[FRUSTUM_BOTTOM].w = m[15] + m[13];
-
-        /* Top:    row3 - row1 */
-        f.planes[FRUSTUM_TOP].x = m[3] - m[1];
-        f.planes[FRUSTUM_TOP].y = m[7] - m[5];
-        f.planes[FRUSTUM_TOP].z = m[11] - m[9];
-        f.planes[FRUSTUM_TOP].w = m[15] - m[13];
-
-        /* Near:   row3 + row2 */
-        f.planes[FRUSTUM_NEAR].x = m[3] + m[2];
-        f.planes[FRUSTUM_NEAR].y = m[7] + m[6];
-        f.planes[FRUSTUM_NEAR].z = m[11] + m[10];
-        f.planes[FRUSTUM_NEAR].w = m[15] + m[14];
-
-        /* Far:    row3 - row2 */
-        f.planes[FRUSTUM_FAR].x = m[3] - m[2];
-        f.planes[FRUSTUM_FAR].y = m[7] - m[6];
-        f.planes[FRUSTUM_FAR].z = m[11] - m[10];
-        f.planes[FRUSTUM_FAR].w = m[15] - m[14];
-
-        /* Normalize planes for correct distance calculations */
-        for (int i = 0; i < 6; i++)
-        {
-            float len = sqrtf(f.planes[i].x * f.planes[i].x +
-                              f.planes[i].y * f.planes[i].y +
-                              f.planes[i].z * f.planes[i].z);
-            if (len > K_EPSILON)
-            {
-                float inv_len = 1.0f / len;
-                f.planes[i].x *= inv_len;
-                f.planes[i].y *= inv_len;
-                f.planes[i].z *= inv_len;
-                f.planes[i].w *= inv_len;
-            }
-        }
-
-        return f;
-    }
-
-    /*
-     * Test AABB against frustum.
-     * Returns FRUSTUM_OUTSIDE if completely outside, FRUSTUM_INSIDE if completely inside,
-     * FRUSTUM_INTERSECT if partially visible.
-     */
-    static inline FrustumResult frustum_test_aabb(const Frustum *f, Bounds3D bounds)
-    {
-        FrustumResult result = FRUSTUM_INSIDE;
-
-        for (int i = 0; i < 6; i++)
-        {
-            Vec4 p = f->planes[i];
-
-            /* Find p-vertex (vertex furthest along plane normal) */
-            float px = (p.x >= 0.0f) ? bounds.max_x : bounds.min_x;
-            float py = (p.y >= 0.0f) ? bounds.max_y : bounds.min_y;
-            float pz = (p.z >= 0.0f) ? bounds.max_z : bounds.min_z;
-
-            /* If p-vertex is outside, entire AABB is outside */
-            float dist_p = p.x * px + p.y * py + p.z * pz + p.w;
-            if (dist_p < 0.0f)
-            {
-                return FRUSTUM_OUTSIDE;
-            }
-
-            /* Find n-vertex (vertex closest along plane normal) */
-            float nx = (p.x >= 0.0f) ? bounds.min_x : bounds.max_x;
-            float ny = (p.y >= 0.0f) ? bounds.min_y : bounds.max_y;
-            float nz = (p.z >= 0.0f) ? bounds.min_z : bounds.max_z;
-
-            /* If n-vertex is outside, AABB intersects this plane */
-            float dist_n = p.x * nx + p.y * ny + p.z * nz + p.w;
-            if (dist_n < 0.0f)
-            {
-                result = FRUSTUM_INTERSECT;
-            }
-        }
-
-        return result;
-    }
-
-    /*
-     * Test sphere against frustum.
-     * Returns FRUSTUM_OUTSIDE if completely outside, FRUSTUM_INSIDE if completely inside,
-     * FRUSTUM_INTERSECT if partially visible.
-     */
-    static inline FrustumResult frustum_test_sphere(const Frustum *f, Vec3 center, float radius)
-    {
-        FrustumResult result = FRUSTUM_INSIDE;
-
-        for (int i = 0; i < 6; i++)
-        {
-            Vec4 p = f->planes[i];
-
-            /* Signed distance from sphere center to plane */
-            float dist = p.x * center.x + p.y * center.y + p.z * center.z + p.w;
-
-            /* If center is more than radius behind plane, sphere is outside */
-            if (dist < -radius)
-            {
-                return FRUSTUM_OUTSIDE;
-            }
-
-            /* If center is within radius of plane, sphere intersects */
-            if (dist < radius)
-            {
-                result = FRUSTUM_INTERSECT;
-            }
-        }
-
-        return result;
-    }
-
-    /*
-     * Test if AABB is entirely behind a plane (camera near plane for "behind camera" test).
-     * Plane defined as point + normal (normal points toward visible space).
-     */
-    static inline bool bounds_behind_plane(Bounds3D bounds, Vec3 plane_point, Vec3 plane_normal)
-    {
-        /* Find the vertex furthest along the plane normal */
-        float px = (plane_normal.x >= 0.0f) ? bounds.max_x : bounds.min_x;
-        float py = (plane_normal.y >= 0.0f) ? bounds.max_y : bounds.min_y;
-        float pz = (plane_normal.z >= 0.0f) ? bounds.max_z : bounds.min_z;
-
-        /* If even the furthest vertex is behind the plane, entire bounds is behind */
-        Vec3 to_p = vec3_create(px - plane_point.x, py - plane_point.y, pz - plane_point.z);
-        return vec3_dot(to_p, plane_normal) < 0.0f;
-    }
-
-    /*
-     * Get chunk bounds in world space from chunk coordinates.
-     */
-    static inline Bounds3D chunk_world_bounds(int32_t cx, int32_t cy, int32_t cz,
-                                              Vec3 volume_min, float voxel_size)
-    {
-        float chunk_size = 32.0f * voxel_size;
-        Bounds3D b;
-        b.min_x = volume_min.x + cx * chunk_size;
-        b.min_y = volume_min.y + cy * chunk_size;
-        b.min_z = volume_min.z + cz * chunk_size;
-        b.max_x = b.min_x + chunk_size;
-        b.max_y = b.min_y + chunk_size;
-        b.max_z = b.min_z + chunk_size;
-        return b;
     }
 
 #ifdef __cplusplus

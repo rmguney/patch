@@ -1,46 +1,51 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/* particle.frag - ray / box intersection for one particle cube; writes the G-buffer */
 
 #include "include/camera.glsl"
 #include "include/hdda_core.glsl"
 
 layout(location = 0) in vec3 in_world_pos;
-layout(location = 1) in vec3 in_ray_origin;
-layout(location = 2) in flat int in_particle_index;
+layout(location = 1) in flat int in_particle_index;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_material;
+layout(location = 2) out uvec2 out_material;
 layout(location = 3) out float out_linear_depth;
-layout(location = 4) out vec4 out_world_pos;
-layout(location = 5) out vec2 out_motion_vector;
+layout(location = 4) out vec2 out_motion_vector;
 
+/* The rasterized depth is at most the hit's: front faces of the proxy cube lie before the
+ * particle, and back faces (camera inside) are drawn on the near plane (particle.vert) */
+layout(depth_greater) out float gl_FragDepth;
+
+/* Mirror of ParticleGPU (engine/render/raster_gpu_types.h) */
 struct ParticleGPU {
-    vec4 position_radius;  // xyz = position, w = radius
-    vec4 color_flags;      // rgb = color, a = flags
+    vec4 position_radius;  /* xyz = position, w = radius (half extent of the cube) */
+    vec4 color_flags;      /* rgb = color, a = 1 lit / 2 emissive */
+    vec4 prev_position;    /* xyz = position drawn last frame, w unused */
 };
 
-layout(std430, SET_BINDING(0, 0)) readonly buffer ParticleBuffer {
+layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer {
     ParticleGPU particles[];
 };
 
+layout(std140, set = 0, binding = 1) uniform TemporalUBO {
+    mat4 prev_view_proj;
+    vec4 prev_camera_pos;
+    vec2 jitter_uv;
+    vec2 inv_render_size;
+};
+
+/* Mirror of ParticlePushConstants (engine/render/raster_gpu_types.h) */
 layout(push_constant) uniform Constants {
     mat4 view_proj;
     vec3 camera_pos;
-    float pad1;
-    int particle_count;
     float near_plane;
     float far_plane;
-    int is_orthographic;
-    float camera_forward[3];
+    int camera_inside;
 } pc;
 
-// Get box face normal from hit point
+/* Axis-aligned face normal of the box at a point on its surface */
 vec3 box_normal(vec3 hit_point, vec3 box_min, vec3 box_max) {
     vec3 center = (box_min + box_max) * 0.5;
     vec3 half_size = (box_max - box_min) * 0.5;
@@ -54,10 +59,6 @@ vec3 box_normal(vec3 hit_point, vec3 box_min, vec3 box_max) {
 }
 
 void main() {
-    if (in_particle_index < 0) {
-        discard;
-    }
-
     ParticleGPU p = particles[in_particle_index];
 
     vec3 center = p.position_radius.xyz;
@@ -67,15 +68,8 @@ void main() {
     vec3 box_min = center - vec3(half_size);
     vec3 box_max = center + vec3(half_size);
 
-    vec3 ray_origin;
-    vec3 ray_dir;
-    if (pc.is_orthographic != 0) {
-        ray_origin = in_world_pos;
-        ray_dir = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
-    } else {
-        ray_origin = in_ray_origin;
-        ray_dir = normalize(in_world_pos - in_ray_origin);
-    }
+    vec3 ray_origin = pc.camera_pos;
+    vec3 ray_dir = normalize(in_world_pos - pc.camera_pos);
 
     vec2 t_hit = hdda_intersect_aabb(ray_origin, ray_dir, box_min, box_max);
 
@@ -94,21 +88,20 @@ void main() {
         normal = -normal; /* Flip normal when viewing from inside */
     }
 
-    float linear_depth;
-    if (pc.is_orthographic != 0) {
-        vec3 cam_fwd = normalize(vec3(pc.camera_forward[0], pc.camera_forward[1], pc.camera_forward[2]));
-        linear_depth = dot(hit_point - pc.camera_pos, cam_fwd) - pc.near_plane;
-    } else {
-        linear_depth = t;
-    }
+    /* Linear depth as in raymarch_gbuffer.comp: distance from the eye along the ray */
+    float linear_depth = t;
 
     out_albedo = vec4(color, 1.0);
     out_normal = vec4(normal * 0.5 + 0.5, 1.0);
     float emissive = (p.color_flags.a >= 1.5) ? 0.8 : 0.0;
-    out_material = vec4(0.8, 0.0, emissive, 0.0);
+    /* Particles are not traced through water: no water material or depth (gbuffer_sample.glsl) */
+    out_material = uvec2(packUnorm4x8(vec4(0.8, 0.0, emissive, 0.0)), 0u);
     out_linear_depth = linear_depth;
-    out_world_pos = vec4(hit_point, 1.0);
-    out_motion_vector = vec2(0.0);
 
-    gl_FragDepth = clamp(camera_linear_depth_to_ndc_ortho(linear_depth, pc.near_plane, pc.far_plane, pc.is_orthographic != 0), 0.0, 1.0);
+    /* Motion vectors: a particle moves without turning, so every point of it moves with its centre */
+    vec3 prev_point = hit_point + (p.prev_position.xyz - center);
+    out_motion_vector = camera_motion_vector(gl_FragCoord.xy * inv_render_size - jitter_uv, prev_view_proj * vec4(prev_point, 1.0));
+
+    float ndc_depth = camera_linear_depth_to_ndc(linear_depth, pc.near_plane, pc.far_plane);
+    gl_FragDepth = max(clamp(ndc_depth, 0.0, 1.0), gl_FragCoord.z);
 }

@@ -1,132 +1,142 @@
 #include "shrub_gen.h"
-#include "terrain_gen.h"
 #include "game/biome.h"
 #include "content/materials.h"
-#include "engine/core/noise.h"
 #include "engine/core/rng.h"
 #include <math.h>
 
-#define SHRUB_SPACING 4.0f
+#define SHRUB_SPACING 2.0f
 #define SHRUB_SEED_OFFSET 7777
+#define REED_STALKS 5
+#define REED_SPREAD 2 /* Voxels from the clump centre */
 
-typedef struct
+/* Writes only into empty voxels inside the volume, so shrubs grow around what stands there */
+static void grow_voxel(VoxelVolume *vol, int32_t gx, int32_t gy, int32_t gz, uint8_t material)
 {
-    uint8_t leaf_material;
-    float ideal_temp;
-    float ideal_humidity;
-    float temp_tolerance;
-    float humidity_tolerance;
-    float base_weight;
-    int32_t min_height;
-    int32_t max_height;
-} ShrubConfig;
+    if (gx < 0 || gy < 0 || gz < 0 || gx >= vol->chunks_x * CHUNK_SIZE ||
+        gy >= vol->chunks_y * CHUNK_SIZE || gz >= vol->chunks_z * CHUNK_SIZE)
+        return;
+    if (terrain_voxel_get(vol, gx, gy, gz) == MAT_AIR)
+        terrain_voxel_set(vol, gx, gy, gz, material);
+}
 
-static const ShrubConfig s_shrub_configs[] = {
-    /* Grass bush — temperate meadows */
-    {MAT_OAK_LEAF, 0.0f, 0.3f, 0.6f, 0.5f, 1.0f, 2, 3},
-    /* Flowering bush — humid forests */
-    {MAT_CHERRY_LEAF, 0.1f, 0.5f, 0.5f, 0.4f, 0.6f, 2, 4},
-    /* Desert scrub — hot/dry */
-    {MAT_AUTUMN_LEAF, 0.5f, 0.0f, 0.4f, 0.3f, 0.5f, 1, 2},
-    /* Snow bush — cold regions */
-    {MAT_PINE_LEAF, -0.3f, 0.3f, 0.4f, 0.4f, 0.4f, 1, 3},
-};
-
-#define SHRUB_CONFIG_COUNT (int32_t)(sizeof(s_shrub_configs) / sizeof(s_shrub_configs[0]))
-
-static void place_shrub(VoxelVolume *vol, float voxel_size,
-                         float cx, float cy, float cz,
-                         int32_t height, uint8_t leaf_mat)
+/* Rounded bush, narrowing towards the top */
+static void grow_dome(VoxelVolume *vol, int32_t gx, int32_t gy, int32_t gz, int32_t height, uint8_t material)
 {
-    float radius = voxel_size * (float)(height - 1) * 0.5f + voxel_size * 0.5f;
-
+    float radius = (float)(height - 1) * 0.5f + 0.5f;
     for (int32_t dy = 0; dy < height; dy++)
     {
-        float y = cy + (float)dy * voxel_size;
-        float t = (float)dy / (float)height;
-        float r = radius * (1.0f - t * 0.4f);
-
-        for (float dx = -r; dx <= r; dx += voxel_size)
+        float r = radius * (1.0f - (float)dy / (float)height * 0.4f);
+        int32_t reach = (int32_t)r;
+        for (int32_t dz = -reach; dz <= reach; dz++)
         {
-            for (float dz = -r; dz <= r; dz += voxel_size)
+            for (int32_t dx = -reach; dx <= reach; dx++)
             {
-                float dist2 = dx * dx + dz * dz;
-                if (dist2 <= r * r)
-                {
-                    Vec3 pos = vec3_create(cx + dx, y, cz + dz);
-                    volume_edit_set(vol, pos, leaf_mat);
-                }
+                if ((float)(dx * dx + dz * dz) <= r * r)
+                    grow_voxel(vol, gx + dx, gy + dy, gz + dz, material);
             }
         }
     }
 }
 
-void shrub_gen_place(VoxelVolume *vol, float voxel_size,
-                     float amplitude, float frequency, uint32_t seed)
+static void grow_column(VoxelVolume *vol, int32_t gx, int32_t gy, int32_t gz, int32_t height, uint8_t material)
 {
-    RngState rng;
-    rng_seed(&rng, seed + SHRUB_SEED_OFFSET);
+    for (int32_t dy = 0; dy < height; dy++)
+        for (int32_t dz = 0; dz < 2; dz++)
+            for (int32_t dx = 0; dx < 2; dx++)
+                grow_voxel(vol, gx + dx, gy + dy, gz + dz, material);
+}
 
-    float spacing = SHRUB_SPACING;
+static int32_t shrub_height(const BiomeShrub *shrub, RngState *rng)
+{
+    return shrub->min_height + (int32_t)rng_range_u32(rng, (uint32_t)(shrub->max_height - shrub->min_height + 1));
+}
 
-    volume_edit_begin(vol);
-
-    for (float x = vol->bounds.min_x + spacing; x < vol->bounds.max_x - spacing; x += spacing)
+/* Thin stalks around a centre, each rising from its own column's ground */
+static void grow_stalks(VoxelVolume *vol, const TerrainColumns *cols, int32_t gx, int32_t gz,
+                        const BiomeShrub *shrub, RngState *rng)
+{
+    for (int32_t s = 0; s < REED_STALKS; s++)
     {
-        for (float z = vol->bounds.min_z + spacing; z < vol->bounds.max_z - spacing; z += spacing)
+        int32_t x = gx + (int32_t)rng_range_u32(rng, 2 * REED_SPREAD + 1) - REED_SPREAD;
+        int32_t z = gz + (int32_t)rng_range_u32(rng, 2 * REED_SPREAD + 1) - REED_SPREAD;
+        int32_t height = shrub_height(shrub, rng);
+        if (x < 0 || z < 0 || x >= cols->nx || z >= cols->nz)
+            continue;
+        int32_t y = terrain_surface_voxel(vol, cols->height[terrain_column_index(cols, x, z)]);
+        for (int32_t dy = 0; dy < height; dy++)
+            grow_voxel(vol, x, y + dy, z, shrub->material);
+    }
+}
+
+static const BiomeShrub *pick_shrub(const BiomeDesc *biome, RngState *rng)
+{
+    float total = 0.0f;
+    for (int32_t i = 0; i < BIOME_MAX_SHRUBS; i++)
+        total += biome->shrubs[i].weight;
+
+    float roll = rng_float(rng) * total;
+    const BiomeShrub *picked = &biome->shrubs[0];
+    for (int32_t i = 0; i < BIOME_MAX_SHRUBS; i++)
+    {
+        if (biome->shrubs[i].weight <= 0.0f)
+            continue;
+        picked = &biome->shrubs[i];
+        roll -= biome->shrubs[i].weight;
+        if (roll < 0.0f)
+            break;
+    }
+    return picked;
+}
+
+int32_t shrub_gen_place(VoxelVolume *vol, const TerrainColumns *cols)
+{
+    if (cols->nx == 0 || cols->nz == 0)
+        return 0;
+
+    const float spacing = SHRUB_SPACING;
+    const int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+    const int32_t cells_x = (int32_t)ceilf((vol->bounds.max_x - vol->bounds.min_x - 2.0f * spacing) / spacing);
+    const int32_t cells_z = (int32_t)ceilf((vol->bounds.max_z - vol->bounds.min_z - 2.0f * spacing) / spacing);
+
+    int32_t placed = 0;
+    for (int32_t iz = 0; iz < cells_z; iz++)
+    {
+        for (int32_t ix = 0; ix < cells_x; ix++)
         {
-            float jx = x + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
-            float jz = z + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
+            RngState rng = terrain_cell_rng(cols->seed + SHRUB_SEED_OFFSET, ix, iz);
+            float jx = vol->bounds.min_x + spacing * (float)(ix + 1) + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
+            float jz = vol->bounds.min_z + spacing * (float)(iz + 1) + rng_range_f32(&rng, -spacing * 0.4f, spacing * 0.4f);
 
-            float surface_y = TERRAIN_BASE_HEIGHT + terrain_gen_height(jx, jz, amplitude, frequency, seed);
-
-            if (surface_y <= TERRAIN_SEA_LEVEL)
+            int32_t i = terrain_column_at(cols, vol, jx, jz);
+            if (cols->height[i] <= TERRAIN_SEA_LEVEL)
                 continue;
 
-            float temp = biome_temperature(jx, jz, seed);
-            float humidity = biome_humidity(jx, jz, seed);
+            const BiomeDesc *biome = &g_biomes[cols->biome[i]];
+            if (rng_float(&rng) >= biome->shrub_chance)
+                continue;
 
-            float total_weight = 0.0f;
-            float weights[SHRUB_CONFIG_COUNT];
-            for (int32_t i = 0; i < SHRUB_CONFIG_COUNT; i++)
+            /* Lakes above sea level, trees and pillars already own the spot */
+            int32_t gx = i % cols->nx;
+            int32_t gz = i / cols->nx;
+            int32_t gy = terrain_surface_voxel(vol, cols->height[i]);
+            if (gy < 0 || gy >= total_y || terrain_voxel_get(vol, gx, gy, gz) != MAT_AIR)
+                continue;
+
+            const BiomeShrub *shrub = pick_shrub(biome, &rng);
+            switch ((ShrubShape)shrub->shape)
             {
-                const ShrubConfig *cfg = &s_shrub_configs[i];
-                float w = biome_closeness(temp, cfg->ideal_temp, cfg->temp_tolerance) *
-                          biome_closeness(humidity, cfg->ideal_humidity, cfg->humidity_tolerance) *
-                          cfg->base_weight;
-                weights[i] = w;
-                total_weight += w;
+            case SHRUB_DOME:
+                grow_dome(vol, gx, gy, gz, shrub_height(shrub, &rng), shrub->material);
+                break;
+            case SHRUB_COLUMN:
+                grow_column(vol, gx, gy, gz, shrub_height(shrub, &rng), shrub->material);
+                break;
+            case SHRUB_STALKS:
+                grow_stalks(vol, cols, gx, gz, shrub, &rng);
+                break;
             }
-
-            if (total_weight < 0.1f)
-                continue;
-
-            float placement_chance = total_weight * 0.3f;
-            if (rng_float(&rng) > placement_chance)
-                continue;
-
-            float roll = rng_float(&rng) * total_weight;
-            float cumulative = 0.0f;
-            int32_t chosen = 0;
-            for (int32_t i = 0; i < SHRUB_CONFIG_COUNT; i++)
-            {
-                cumulative += weights[i];
-                if (roll <= cumulative)
-                {
-                    chosen = i;
-                    break;
-                }
-            }
-
-            const ShrubConfig *cfg = &s_shrub_configs[chosen];
-            int32_t height = cfg->min_height + (int32_t)(rng_float(&rng) * (float)(cfg->max_height - cfg->min_height + 1));
-            if (height > cfg->max_height)
-                height = cfg->max_height;
-
-            place_shrub(vol, voxel_size, jx, surface_y + voxel_size, jz,
-                       height, cfg->leaf_material);
+            placed++;
         }
     }
-
-    volume_edit_end(vol);
+    return placed;
 }

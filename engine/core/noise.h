@@ -13,9 +13,6 @@ extern "C"
     float noise_fbm_2d(float x, float z, uint32_t seed,
                         int32_t octaves, float lacunarity, float persistence);
 
-    float noise_billow_2d(float x, float z, uint32_t seed,
-                           int32_t octaves, float lacunarity, float persistence);
-
     float noise_ridged_2d(float x, float z, uint32_t seed,
                            int32_t octaves, float lacunarity, float persistence);
 

@@ -7,152 +7,177 @@
 #include <string.h>
 #include <math.h>
 
+static uint32_t g_voxel_revision_counter = 0;
+
+uint32_t voxel_object_next_revision(void)
+{
+    g_voxel_revision_counter++;
+    if (g_voxel_revision_counter == 0)
+        g_voxel_revision_counter = 1;
+    return g_voxel_revision_counter;
+}
+
+STATIC_ASSERT(VOBJ_BRICK_COUNT <= 64, "brick masks are 64-bit");
+
+void voxel_object_mark_changed(VoxelObject *obj, uint64_t bricks)
+{
+    obj->voxel_revision = voxel_object_next_revision();
+    for (int32_t b = 0; b < VOBJ_BRICK_COUNT; b++)
+    {
+        if (bricks & (1ull << b))
+            obj->brick_revision[b] = obj->voxel_revision;
+    }
+}
+
 int32_t voxel_object_world_alloc_slot(VoxelObjectWorld *world)
 {
     /* O(1) allocation via free-list */
+    int32_t slot;
     if (world->first_free_slot >= 0)
     {
-        int32_t slot = world->first_free_slot;
+        slot = world->first_free_slot;
         world->first_free_slot = world->objects[slot].next_free;
-        world->objects[slot].next_free = -1;
-        return slot;
     }
-    if (world->object_count >= VOBJ_MAX_OBJECTS)
-        return -1;
-    return world->object_count++;
-}
-
-static bool voxel_has_empty_neighbor(const VoxelObject *obj, int32_t x, int32_t y, int32_t z)
-{
-    static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
-    static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
-    static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
-
-    for (int32_t i = 0; i < 6; i++)
+    else
     {
-        int32_t nx = x + dx[i];
-        int32_t ny = y + dy[i];
-        int32_t nz = z + dz[i];
-
-        if (nx < 0 || nx >= VOBJ_GRID_SIZE ||
-            ny < 0 || ny >= VOBJ_GRID_SIZE ||
-            nz < 0 || nz >= VOBJ_GRID_SIZE)
-        {
-            return true;
-        }
-
-        if (obj->voxels[vobj_index(nx, ny, nz)].material == 0)
-        {
-            return true;
-        }
+        if (world->object_count >= VOBJ_MAX_OBJECTS)
+            return -1;
+        slot = world->object_count++;
     }
-    return false;
+
+    VoxelObject *obj = &world->objects[slot];
+    memset(obj, 0, sizeof(VoxelObject));
+    obj->next_free = -1;
+    obj->next_dirty = -1;
+    if (++world->next_alloc_id == 0)
+        world->next_alloc_id = 1;
+    obj->alloc_id = world->next_alloc_id;
+    /* Revisions are process-wide: no brick of the new occupant matches a stamp a cache took
+     * from the slot's previous one (or from another world) */
+    voxel_object_mark_changed(obj, VOBJ_ALL_BRICKS);
+    return slot;
 }
 
-static void compute_collider_boxes(VoxelObject *obj)
+#define VOBJ_HULL_LATTICE_DIRS 26
+#define VOBJ_HULL_SPREAD_DIRS 100
+#define VOBJ_HULL_DIRS (VOBJ_HULL_LATTICE_DIRS + VOBJ_HULL_SPREAD_DIRS)
+STATIC_ASSERT(VOBJ_HULL_DIRS <= VOBJ_MAX_SURFACE_VOXELS, "hull points must fit surface_voxels");
+
+/* Convex hull candidate points: the extreme voxel corner in each of a fixed set of
+ * directions (26 lattice directions plus 100 spread evenly over the sphere). Only the
+ * first and last voxel of each x-row can own an extreme corner, since the voxels in
+ * between lie inside the hull of those two. The result is bounded by VOBJ_HULL_DIRS,
+ * so it never truncates, and it is exact for boxes and other axis-aligned shapes. */
+static void compute_hull_points(VoxelObject *obj)
 {
-    obj->collider_box_count = 0;
+    Vec3 dirs[VOBJ_HULL_DIRS];
+    int32_t dir_count = 0;
+    for (int32_t dz = -1; dz <= 1; dz++)
+        for (int32_t dy = -1; dy <= 1; dy++)
+            for (int32_t dx = -1; dx <= 1; dx++)
+                if (dx != 0 || dy != 0 || dz != 0)
+                    dirs[dir_count++] = vec3_normalize(vec3_create((float)dx, (float)dy, (float)dz));
 
-    uint8_t assigned[VOBJ_TOTAL_VOXELS];
-    memset(assigned, 0, sizeof(assigned));
+    const float golden_angle = 2.39996323f;
+    for (int32_t i = 0; i < VOBJ_HULL_SPREAD_DIRS; i++)
+    {
+        float y = 1.0f - 2.0f * ((float)i + 0.5f) / (float)VOBJ_HULL_SPREAD_DIRS;
+        float r = sqrtf(fmaxf(0.0f, 1.0f - y * y));
+        float phi = golden_angle * (float)i;
+        dirs[dir_count++] = vec3_create(r * cosf(phi), y, r * sinf(phi));
+    }
 
-    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
-    float vs = obj->voxel_size;
+    /* Per direction: which row end can win (the max-x voxel if d.x > 0, else the
+     * min-x one; ties do not matter) and which corner of that voxel is extreme. */
+    bool use_row_max[VOBJ_HULL_DIRS];
+    int32_t corner_off[VOBJ_HULL_DIRS][3];
+    float best_dot[VOBJ_HULL_DIRS];
+    int32_t best_corner[VOBJ_HULL_DIRS][3];
+    for (int32_t d = 0; d < VOBJ_HULL_DIRS; d++)
+    {
+        use_row_max[d] = dirs[d].x > 0.0f;
+        corner_off[d][0] = dirs[d].x > 0.0f ? 1 : 0;
+        corner_off[d][1] = dirs[d].y > 0.0f ? 1 : 0;
+        corner_off[d][2] = dirs[d].z > 0.0f ? 1 : 0;
+        best_dot[d] = -1e30f;
+    }
 
     for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
     {
         for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
         {
+            int32_t row_min = -1, row_max = -1;
             for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
             {
-                int32_t idx = vobj_index(x, y, z);
-                if (obj->voxels[idx].material == 0 || assigned[idx])
-                    continue;
-
-                if (obj->collider_box_count >= VOBJ_MAX_COLLIDER_BOXES)
-                    return;
-
-                int32_t ex = x;
-                while (ex + 1 < VOBJ_GRID_SIZE)
+                if (obj->voxels[vobj_index(x, y, z)].material != 0)
                 {
-                    int32_t ni = vobj_index(ex + 1, y, z);
-                    if (obj->voxels[ni].material == 0 || assigned[ni])
-                        break;
-                    ex++;
+                    if (row_min < 0)
+                        row_min = x;
+                    row_max = x;
                 }
+            }
+            if (row_min < 0)
+                continue;
 
-                int32_t ey = y;
-                while (ey + 1 < VOBJ_GRID_SIZE)
+            for (int32_t d = 0; d < VOBJ_HULL_DIRS; d++)
+            {
+                int32_t cx = (use_row_max[d] ? row_max : row_min) + corner_off[d][0];
+                int32_t cy = y + corner_off[d][1];
+                int32_t cz = z + corner_off[d][2];
+                float dot = dirs[d].x * (float)cx + dirs[d].y * (float)cy + dirs[d].z * (float)cz;
+                if (dot > best_dot[d])
                 {
-                    bool row_ok = true;
-                    for (int32_t ix = x; ix <= ex; ix++)
-                    {
-                        int32_t ni = vobj_index(ix, ey + 1, z);
-                        if (obj->voxels[ni].material == 0 || assigned[ni])
-                        {
-                            row_ok = false;
-                            break;
-                        }
-                    }
-                    if (!row_ok)
-                        break;
-                    ey++;
+                    best_dot[d] = dot;
+                    best_corner[d][0] = cx;
+                    best_corner[d][1] = cy;
+                    best_corner[d][2] = cz;
                 }
-
-                int32_t ez = z;
-                while (ez + 1 < VOBJ_GRID_SIZE)
-                {
-                    bool plane_ok = true;
-                    for (int32_t iy = y; iy <= ey && plane_ok; iy++)
-                    {
-                        for (int32_t ix = x; ix <= ex; ix++)
-                        {
-                            int32_t ni = vobj_index(ix, iy, ez + 1);
-                            if (obj->voxels[ni].material == 0 || assigned[ni])
-                            {
-                                plane_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!plane_ok)
-                        break;
-                    ez++;
-                }
-
-                for (int32_t iz = z; iz <= ez; iz++)
-                    for (int32_t iy = y; iy <= ey; iy++)
-                        for (int32_t ix = x; ix <= ex; ix++)
-                            assigned[vobj_index(ix, iy, iz)] = 1;
-
-                ColliderBox *box = &obj->collider_boxes[obj->collider_box_count++];
-                box->local_min = vec3_create(
-                    ((float)x - half_grid) * vs,
-                    ((float)y - half_grid) * vs,
-                    ((float)z - half_grid) * vs);
-                box->local_max = vec3_create(
-                    ((float)(ex + 1) - half_grid) * vs,
-                    ((float)(ey + 1) - half_grid) * vs,
-                    ((float)(ez + 1) - half_grid) * vs);
             }
         }
+    }
+
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+    obj->surface_voxel_count = 0;
+    for (int32_t d = 0; d < VOBJ_HULL_DIRS; d++)
+    {
+        if (best_dot[d] <= -1e29f)
+            continue;
+
+        bool duplicate = false;
+        for (int32_t p = 0; p < d && !duplicate; p++)
+        {
+            duplicate = best_dot[p] > -1e29f &&
+                        best_corner[p][0] == best_corner[d][0] &&
+                        best_corner[p][1] == best_corner[d][1] &&
+                        best_corner[p][2] == best_corner[d][2];
+        }
+        if (duplicate)
+            continue;
+
+        obj->surface_voxels[obj->surface_voxel_count++] = vec3_create(
+            ((float)best_corner[d][0] - half_grid) * obj->voxel_size,
+            ((float)best_corner[d][1] - half_grid) * obj->voxel_size,
+            ((float)best_corner[d][2] - half_grid) * obj->voxel_size);
     }
 }
 
 void voxel_object_recalc_shape(VoxelObject *obj)
 {
+    /* shape_dirty is left alone: it marks the object as linked in the dirty list,
+     * which only voxel_object_world_process_recalcs unlinks */
     if (obj->voxel_count <= 0)
     {
         obj->active = false;
-        obj->shape_dirty = false;
         obj->surface_voxel_count = 0;
-        obj->collider_box_count = 0;
+        obj->voxel_revision = voxel_object_next_revision();
         return;
     }
 
-    /* Recenter voxels in the 32³ grid so OBB/collision shapes align with obj->position.
+    /* Recenter voxels in the 32³ grid, so they keep room to every side of obj->position.
      * After splits or destruction, voxels may be clustered in one corner of the grid.
-     * The OBB and terrain sample points assume voxels are centered around grid position 16. */
+     * The grid centre (position 16) is a voxel corner, so an odd extent ends up half a
+     * voxel towards -axis: shape_center records where the box really is. */
+    bool recentered = false;
     {
         int32_t bmin_x = VOBJ_GRID_SIZE, bmax_x = 0;
         int32_t bmin_y = VOBJ_GRID_SIZE, bmax_y = 0;
@@ -191,6 +216,9 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                 -(float)sz * obj->voxel_size);
             obj->position = vec3_add(obj->position,
                                      quat_rotate_vec3(obj->orientation, local_shift));
+            /* The previous pose moves with the voxels, so drawing does not glide across it */
+            obj->prev_position = vec3_add(obj->prev_position,
+                                          quat_rotate_vec3(obj->prev_orientation, local_shift));
 
             VObjVoxel tmp[VOBJ_TOTAL_VOXELS];
             memset(tmp, 0, sizeof(tmp));
@@ -205,18 +233,16 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                         tmp[vobj_index(nx, ny, nz)] = obj->voxels[src];
                     }
             memcpy(obj->voxels, tmp, sizeof(obj->voxels));
+            recentered = true;
         }
     }
 
     int32_t min_x = VOBJ_GRID_SIZE, max_x = 0;
     int32_t min_y = VOBJ_GRID_SIZE, max_y = 0;
     int32_t min_z = VOBJ_GRID_SIZE, max_z = 0;
-    uint8_t occupancy = 0;
 
-    obj->surface_voxel_count = 0;
     float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
 
-    /* Single pass: bounds, center of mass, occupancy, and surface voxels */
     for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
     {
         for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
@@ -237,45 +263,21 @@ void voxel_object_recalc_shape(VoxelObject *obj)
                         min_z = z;
                     if (z > max_z)
                         max_z = z;
-                    /* Occupancy: which region contains this voxel (2×2×2 regions) */
-                    int32_t region_size = VOBJ_GRID_SIZE / 2;
-                    int32_t region = (x / region_size) + ((y / region_size) * 2) + ((z / region_size) * 4);
-                    occupancy |= (uint8_t)(1 << region);
-
-                    /* Extract surface voxels for convex hull.
-                     * Push position to voxel boundary along exposed faces
-                     * so the convex hull matches actual voxel extents. */
-                    if (obj->surface_voxel_count < VOBJ_MAX_SURFACE_VOXELS &&
-                        voxel_has_empty_neighbor(obj, x, y, z))
-                    {
-                        bool neg_x = (x == 0 || obj->voxels[vobj_index(x - 1, y, z)].material == 0);
-                        bool pos_x = (x >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x + 1, y, z)].material == 0);
-                        bool neg_y = (y == 0 || obj->voxels[vobj_index(x, y - 1, z)].material == 0);
-                        bool pos_y = (y >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x, y + 1, z)].material == 0);
-                        bool neg_z = (z == 0 || obj->voxels[vobj_index(x, y, z - 1)].material == 0);
-                        bool pos_z = (z >= VOBJ_GRID_SIZE - 1 || obj->voxels[vobj_index(x, y, z + 1)].material == 0);
-
-                        float ox = (pos_x && !neg_x) ? 1.0f : (neg_x && !pos_x) ? 0.0f : 0.5f;
-                        float oy = (pos_y && !neg_y) ? 1.0f : (neg_y && !pos_y) ? 0.0f : 0.5f;
-                        float oz = (pos_z && !neg_z) ? 1.0f : (neg_z && !pos_z) ? 0.0f : 0.5f;
-
-                        Vec3 local_pos = vec3_create(
-                            ((float)x + ox - half_grid) * obj->voxel_size,
-                            ((float)y + oy - half_grid) * obj->voxel_size,
-                            ((float)z + oz - half_grid) * obj->voxel_size);
-                        obj->surface_voxels[obj->surface_voxel_count++] = local_pos;
-                    }
                 }
             }
         }
     }
 
-    obj->occupancy_mask = occupancy;
+    /* Convex hull candidate points (stored in surface_voxels) */
+    compute_hull_points(obj);
 
     float extent_x = (float)(max_x - min_x + 1) * obj->voxel_size * 0.5f;
     float extent_y = (float)(max_y - min_y + 1) * obj->voxel_size * 0.5f;
     float extent_z = (float)(max_z - min_z + 1) * obj->voxel_size * 0.5f;
     obj->shape_half_extents = vec3_create(extent_x, extent_y, extent_z);
+    obj->shape_center = vec3_create(((float)(min_x + max_x + 1) * 0.5f - half_grid) * obj->voxel_size,
+                                    ((float)(min_y + max_y + 1) * 0.5f - half_grid) * obj->voxel_size,
+                                    ((float)(min_z + max_z + 1) * 0.5f - half_grid) * obj->voxel_size);
 
 #ifndef NDEBUG
     /* DEBUG: verify shape extents are valid */
@@ -371,14 +373,25 @@ void voxel_object_recalc_shape(VoxelObject *obj)
     }
     obj->radius = sqrtf(max_dist_sq);
 
-    compute_collider_boxes(obj);
+    /* The bricks start at the box's min corner, or earlier where its last brick would reach
+     * past the grid: the voxels take the fewest bricks (ceil(extent / 8) per axis, however
+     * the box sits in the grid), all of them inside the grid */
+    const int32_t box_min[3] = {min_x, min_y, min_z};
+    const int32_t box_max[3] = {max_x, max_y, max_z};
+    bool offset_moved = false;
+    for (int32_t a = 0; a < 3; a++)
+    {
+        const int32_t bricks = (box_max[a] - box_min[a]) / VOBJ_BRICK_SIZE + 1;
+        const int32_t max_offset = VOBJ_GRID_SIZE - bricks * VOBJ_BRICK_SIZE;
+        const uint8_t offset = (uint8_t)(box_min[a] < max_offset ? box_min[a] : max_offset);
+        if (offset != obj->brick_offset[a])
+            offset_moved = true;
+        obj->brick_offset[a] = offset;
+    }
 
-    obj->shape_dirty = false;
-}
-
-void voxel_object_mark_dirty(VoxelObject *obj)
-{
-    obj->shape_dirty = true;
+    /* Shape data changed: hull cache, physics mass sync and GPU upload all key on the
+     * revision. Recentering moved the voxels of every brick; a new offset moved every brick. */
+    voxel_object_mark_changed(obj, recentered || offset_moved ? VOBJ_ALL_BRICKS : 0);
 }
 
 void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index)
@@ -393,7 +406,6 @@ void voxel_object_world_mark_dirty(VoxelObjectWorld *world, int32_t obj_index)
     obj->shape_dirty = true;
     obj->next_dirty = world->first_dirty;
     world->first_dirty = obj_index;
-    world->dirty_count++;
 }
 
 void voxel_object_world_free_slot(VoxelObjectWorld *world, int32_t slot)
@@ -403,6 +415,13 @@ void voxel_object_world_free_slot(VoxelObjectWorld *world, int32_t slot)
 
     VoxelObject *obj = &world->objects[slot];
     obj->active = false;
+
+    /* Already free, or still linked in the dirty list (process_recalcs unlinks it
+     * and frees it then). Pushing it again would hand the same slot out twice. */
+    if (obj->in_free_list || obj->shape_dirty)
+        return;
+
+    obj->in_free_list = true;
     obj->next_free = world->first_free_slot;
     world->first_free_slot = slot;
 }
@@ -416,17 +435,8 @@ VoxelObjectWorld *voxel_object_world_create(Bounds3D bounds, float voxel_size)
     world->bounds = bounds;
     world->voxel_size = voxel_size;
     world->object_count = 0;
-    world->terrain = NULL;
     world->first_free_slot = -1;
     world->first_dirty = -1;
-    world->dirty_count = 0;
-
-    world->raycast_grid = (SpatialHashGrid *)calloc(1, sizeof(SpatialHashGrid));
-    if (world->raycast_grid)
-    {
-        spatial_hash_init(world->raycast_grid, VOBJ_RAYCAST_CELL_SIZE, bounds);
-    }
-    world->raycast_grid_valid = false;
 
     world->bvh = bvh_create();
 
@@ -437,118 +447,12 @@ void voxel_object_world_destroy(VoxelObjectWorld *world)
 {
     if (world)
     {
-        if (world->raycast_grid)
-        {
-            free(world->raycast_grid);
-        }
         if (world->bvh)
         {
             bvh_destroy(world->bvh);
         }
         free(world);
     }
-}
-
-void voxel_object_world_set_terrain(VoxelObjectWorld *world, VoxelVolume *terrain)
-{
-    if (world)
-    {
-        world->terrain = terrain;
-    }
-}
-
-int32_t voxel_object_world_add_sphere(VoxelObjectWorld *world, Vec3 position,
-                                      float radius, uint8_t material)
-{
-    int32_t slot = voxel_object_world_alloc_slot(world);
-    if (slot < 0)
-        return -1;
-
-    VoxelObject *obj = &world->objects[slot];
-    memset(obj, 0, sizeof(VoxelObject));
-
-    obj->position = position;
-    obj->orientation = quat_identity();
-    obj->active = true;
-
-    obj->voxel_size = world->voxel_size;
-    obj->voxel_count = 0;
-
-    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
-    float r_voxels = radius / obj->voxel_size;
-
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
-    {
-        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
-        {
-            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
-            {
-                float dx = (float)x - half_grid + 0.5f;
-                float dy = (float)y - half_grid + 0.5f;
-                float dz = (float)z - half_grid + 0.5f;
-                float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-                int32_t idx = vobj_index(x, y, z);
-                if (dist <= r_voxels)
-                {
-                    obj->voxels[idx].material = material;
-                    obj->voxel_count++;
-                }
-            }
-        }
-    }
-
-    obj->voxel_revision = 1;
-
-    voxel_object_recalc_shape(obj);
-    return slot;
-}
-
-int32_t voxel_object_world_add_box(VoxelObjectWorld *world, Vec3 position,
-                                   Vec3 half_extents, uint8_t material)
-{
-    int32_t slot = voxel_object_world_alloc_slot(world);
-    if (slot < 0)
-        return -1;
-
-    VoxelObject *obj = &world->objects[slot];
-    memset(obj, 0, sizeof(VoxelObject));
-
-    obj->position = position;
-    obj->orientation = quat_identity();
-    obj->active = true;
-
-    obj->voxel_size = world->voxel_size;
-    obj->voxel_count = 0;
-
-    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
-
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
-    {
-        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
-        {
-            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
-            {
-                float dx = ((float)x - half_grid + 0.5f) * obj->voxel_size;
-                float dy = ((float)y - half_grid + 0.5f) * obj->voxel_size;
-                float dz = ((float)z - half_grid + 0.5f) * obj->voxel_size;
-
-                int32_t idx = vobj_index(x, y, z);
-                if (fabsf(dx) <= half_extents.x &&
-                    fabsf(dy) <= half_extents.y &&
-                    fabsf(dz) <= half_extents.z)
-                {
-                    obj->voxels[idx].material = material;
-                    obj->voxel_count++;
-                }
-            }
-        }
-    }
-
-    obj->voxel_revision = 1;
-
-    voxel_object_recalc_shape(obj);
-    return slot;
 }
 
 int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
@@ -567,7 +471,6 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
         return -1;
 
     VoxelObject *obj = &world->objects[slot];
-    memset(obj, 0, sizeof(VoxelObject));
 
     obj->voxel_size = voxel_size;
     obj->voxel_count = 0;
@@ -602,17 +505,23 @@ int32_t voxel_object_world_add_from_voxels(VoxelObjectWorld *world,
 
     if (obj->voxel_count == 0)
     {
-        obj->active = false;
+        voxel_object_world_free_slot(world, slot);
         return -1;
     }
 
-    obj->voxel_revision = 1;
+    obj->voxel_revision = voxel_object_next_revision();
 
-    float src_center_x = origin.x + (float)size_x * voxel_size * 0.5f;
-    float src_center_y = origin.y + (float)size_y * voxel_size * 0.5f;
-    float src_center_z = origin.z + (float)size_z * voxel_size * 0.5f;
-
-    obj->position = vec3_create(src_center_x, src_center_y, src_center_z);
+    /* Source voxel (x, y, z) sits at grid cell (x + offset_x, ...), whose min corner is
+     * (cell - VOBJ_GRID_SIZE / 2) * voxel_size from the grid centre: put the grid
+     * centre where that lands every voxel on its source position. (For odd sizes this
+     * is half a voxel off the source box centre.) */
+    float half_grid = (float)VOBJ_GRID_SIZE * 0.5f;
+    obj->position = vec3_create(origin.x + (half_grid - (float)offset_x) * voxel_size,
+                                origin.y + (half_grid - (float)offset_y) * voxel_size,
+                                origin.z + (half_grid - (float)offset_z) * voxel_size);
+    /* A new object is drawn where it appears, not slid in from the origin */
+    obj->prev_position = obj->position;
+    obj->prev_orientation = obj->orientation;
 
     voxel_object_recalc_shape(obj);
     return slot;
@@ -669,12 +578,9 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         if (t_sphere < 0.0f || t_sphere >= closest_t)
             continue;
 
-        float rot_mat[9], inv_rot_mat[9];
-        quat_to_mat3(obj->orientation, rot_mat);
-        mat3_transpose(rot_mat, inv_rot_mat);
-
-        Vec3 local_origin = mat3_transform_vec3(inv_rot_mat, vec3_sub(origin, pivot));
-        Vec3 local_dir = mat3_transform_vec3(inv_rot_mat, dir);
+        Quat to_local = quat_conjugate(obj->orientation);
+        Vec3 local_origin = quat_rotate_vec3(to_local, vec3_sub(origin, pivot));
+        Vec3 local_dir = quat_rotate_vec3(to_local, dir);
 
         float half_size = obj->voxel_size * (float)VOBJ_GRID_SIZE * 0.5f;
         local_origin = vec3_add(local_origin, vec3_create(half_size, half_size, half_size));
@@ -704,7 +610,6 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
         float t_delta_z = fabsf(obj->voxel_size * inv_dir.z);
 
         float t_current = t_start;
-        Vec3 hit_normal = vec3_zero();
 
         for (int32_t step = 0; step < VOBJ_DDA_MAX_STEPS; step++)
         {
@@ -721,11 +626,6 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
                         result.hit = true;
                         result.object_index = i;
                         result.impact_point = vec3_add(origin, vec3_scale(dir, t_current));
-                        result.impact_normal = mat3_transform_vec3(rot_mat, hit_normal);
-                        result.impact_normal_local = hit_normal;
-                        result.voxel_x = map_x;
-                        result.voxel_y = map_y;
-                        result.voxel_z = map_z;
                     }
                     break;
                 }
@@ -736,21 +636,18 @@ VoxelObjectHit voxel_object_world_raycast(VoxelObjectWorld *world, Vec3 origin, 
                 t_current = t_start + t_max_x;
                 t_max_x += t_delta_x;
                 map_x += step_x;
-                hit_normal = vec3_create((float)(-step_x), 0.0f, 0.0f);
             }
             else if (t_max_y < t_max_z)
             {
                 t_current = t_start + t_max_y;
                 t_max_y += t_delta_y;
                 map_y += step_y;
-                hit_normal = vec3_create(0.0f, (float)(-step_y), 0.0f);
             }
             else
             {
                 t_current = t_start + t_max_z;
                 t_max_z += t_delta_z;
                 map_z += step_z;
-                hit_normal = vec3_create(0.0f, 0.0f, (float)(-step_z));
             }
 
             if (t_current > closest_t)
@@ -846,28 +743,24 @@ VoxelObjectPointTest voxel_object_world_test_point(const VoxelObjectWorld *world
     return result;
 }
 
-void voxel_object_world_update_raycast_grid(VoxelObjectWorld *world)
+void voxel_object_world_update_bvh(VoxelObjectWorld *world)
 {
-    if (!world || !world->raycast_grid)
+    if (!world || !world->bvh)
         return;
 
-    spatial_hash_clear(world->raycast_grid);
-
-    for (int32_t i = 0; i < world->object_count; i++)
-    {
-        VoxelObject *obj = &world->objects[i];
-        if (obj->active && obj->voxel_count > 0)
-        {
-            spatial_hash_insert(world->raycast_grid, i, obj->position, obj->radius);
-        }
-    }
-
-    world->raycast_grid_valid = true;
+    if (bvh_needs_rebuild(world->bvh, world))
+        bvh_build(world->bvh, world, NULL);
+    else
+        bvh_refit(world->bvh, world, NULL);
 }
 
 void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index)
 {
     if (!world || obj_index < 0 || obj_index >= world->object_count)
+        return;
+
+    VoxelObject *obj = &world->objects[obj_index];
+    if (obj->split_queued)
         return;
 
     int32_t next_tail = (world->split_queue_tail + 1) % VOBJ_SPLIT_QUEUE_SIZE;
@@ -876,6 +769,7 @@ void voxel_object_world_queue_split(VoxelObjectWorld *world, int32_t obj_index)
 
     world->split_queue[world->split_queue_tail] = obj_index;
     world->split_queue_tail = next_tail;
+    obj->split_queued = true;
 }
 
 void voxel_object_world_tick_render_delays(VoxelObjectWorld *world)
@@ -889,6 +783,18 @@ void voxel_object_world_tick_render_delays(VoxelObjectWorld *world)
     }
 }
 
+void voxel_object_world_begin_tick(VoxelObjectWorld *world)
+{
+    if (!world)
+        return;
+    for (int32_t i = 0; i < world->object_count; i++)
+    {
+        VoxelObject *obj = &world->objects[i];
+        obj->prev_position = obj->position;
+        obj->prev_orientation = obj->orientation;
+    }
+}
+
 void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 {
     if (!world)
@@ -896,103 +802,109 @@ void voxel_object_world_process_recalcs(VoxelObjectWorld *world)
 
     PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
 
-    /* O(1) dirty lookup via dirty-list */
+    /* Pop entries off the dirty list. Clearing shape_dirty here, and only here, keeps
+     * it equal to "linked": mark_dirty never links an object twice and free_slot
+     * never hands out a slot that is still linked. */
     int32_t processed = 0;
-    int32_t prev_idx = -1;
-    int32_t curr_idx = world->first_dirty;
-
-    while (curr_idx >= 0 && processed < VOBJ_MAX_RECALCS_PER_TICK)
+    while (world->first_dirty >= 0 && processed < VOBJ_MAX_RECALCS_PER_TICK)
     {
-        VoxelObject *obj = &world->objects[curr_idx];
-        int32_t next_idx = obj->next_dirty;
+        int32_t idx = world->first_dirty;
+        VoxelObject *obj = &world->objects[idx];
+        world->first_dirty = obj->next_dirty;
+        obj->next_dirty = -1;
+        obj->shape_dirty = false;
 
-        if (obj->active && obj->shape_dirty)
+        if (obj->active)
         {
             voxel_object_recalc_shape(obj);
-            obj->next_dirty = -1;
-            world->dirty_count--;
-
-            /* Remove from list */
-            if (prev_idx < 0)
-                world->first_dirty = next_idx;
-            else
-                world->objects[prev_idx].next_dirty = next_idx;
-
-            /* recalc_shape may deactivate if voxel_count reached 0 */
-            if (!obj->active)
-                voxel_object_world_free_slot(world, curr_idx);
-
             processed++;
         }
-        else
-        {
-            /* Inactive or clean: remove from dirty list and recycle slot */
-            obj->shape_dirty = false;
-            obj->next_dirty = -1;
-            world->dirty_count--;
 
-            if (prev_idx < 0)
-                world->first_dirty = next_idx;
-            else
-                world->objects[prev_idx].next_dirty = next_idx;
-
-            if (!obj->active)
-                voxel_object_world_free_slot(world, curr_idx);
-        }
-
-        curr_idx = next_idx;
+        /* Freed while queued, or emptied (recalc_shape deactivates at 0 voxels) */
+        if (!obj->active)
+            voxel_object_world_free_slot(world, idx);
     }
 
     PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
 }
 
-static void flood_fill_voxels_local(const VoxelObject *obj, uint8_t *visited,
-                                    int32_t start_x, int32_t start_y, int32_t start_z)
+/* Island splitting works on rows: bit x of rows[y + z * VOBJ_GRID_SIZE] is voxel
+ * (x, y, z). A mask of the whole grid is 4 KB, so the scratch lives on the stack and
+ * objects of different worlds can be split on different threads at once. */
+#define VOBJ_ROW_COUNT (VOBJ_GRID_SIZE * VOBJ_GRID_SIZE)
+STATIC_ASSERT(VOBJ_GRID_SIZE == 32, "voxel rows are 32-bit masks");
+
+static void build_solid_rows(const VoxelObject *obj, uint32_t rows[VOBJ_ROW_COUNT])
 {
-    static __declspec(thread) int32_t stack[VOBJ_TOTAL_VOXELS];
-    int32_t stack_top = 0;
-
-    int32_t start_idx = vobj_index(start_x, start_y, start_z);
-    if (start_x < 0 || start_x >= VOBJ_GRID_SIZE ||
-        start_y < 0 || start_y >= VOBJ_GRID_SIZE ||
-        start_z < 0 || start_z >= VOBJ_GRID_SIZE ||
-        visited[start_idx] || obj->voxels[start_idx].material == 0)
-        return;
-
-    stack[stack_top++] = start_idx;
-    visited[start_idx] = 1;
-
-    static const int32_t dx[6] = {-1, 1, 0, 0, 0, 0};
-    static const int32_t dy[6] = {0, 0, -1, 1, 0, 0};
-    static const int32_t dz[6] = {0, 0, 0, 0, -1, 1};
-
-    while (stack_top > 0)
+    for (int32_t r = 0; r < VOBJ_ROW_COUNT; r++)
     {
-        int32_t idx = stack[--stack_top];
-        int32_t x, y, z;
-        vobj_coords(idx, &x, &y, &z);
+        const VObjVoxel *row = &obj->voxels[r * VOBJ_GRID_SIZE];
+        uint32_t bits = 0;
+        for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            bits |= (uint32_t)(row[x].material != 0) << x;
+        rows[r] = bits;
+    }
+}
 
-        for (int32_t i = 0; i < 6; i++)
+/* The seed bits grown along x through the runs of solid they lie in */
+static uint32_t fill_row_runs(uint32_t seeds, uint32_t solid)
+{
+    uint32_t grown = seeds;
+    do
+    {
+        seeds = grown;
+        grown = seeds | (((seeds << 1) | (seeds >> 1)) & solid);
+    } while (grown != seeds);
+    return grown;
+}
+
+/* Marks in reached every solid voxel face-connected to voxel seed_x of row seed_row.
+ * A row whose reach grew waits on a stack until its runs are filled and passed on to
+ * the four neighbouring rows (y +-1, z +-1). */
+static void fill_component(const uint32_t solid[VOBJ_ROW_COUNT], uint32_t reached[VOBJ_ROW_COUNT],
+                           int32_t seed_row, int32_t seed_x)
+{
+    uint16_t pending[VOBJ_ROW_COUNT];
+    uint8_t is_pending[VOBJ_ROW_COUNT];
+    memset(is_pending, 0, sizeof(is_pending));
+    int32_t pending_count = 0;
+
+    reached[seed_row] |= 1u << seed_x;
+    pending[pending_count++] = (uint16_t)seed_row;
+    is_pending[seed_row] = 1;
+
+    while (pending_count > 0)
+    {
+        int32_t r = pending[--pending_count];
+        is_pending[r] = 0;
+        uint32_t bits = fill_row_runs(reached[r], solid[r]);
+        reached[r] = bits;
+
+        int32_t y = r % VOBJ_GRID_SIZE;
+        int32_t z = r / VOBJ_GRID_SIZE;
+        int32_t neighbours[4];
+        int32_t neighbour_count = 0;
+        if (y > 0)
+            neighbours[neighbour_count++] = r - 1;
+        if (y < VOBJ_GRID_SIZE - 1)
+            neighbours[neighbour_count++] = r + 1;
+        if (z > 0)
+            neighbours[neighbour_count++] = r - VOBJ_GRID_SIZE;
+        if (z < VOBJ_GRID_SIZE - 1)
+            neighbours[neighbour_count++] = r + VOBJ_GRID_SIZE;
+
+        for (int32_t i = 0; i < neighbour_count; i++)
         {
-            int32_t nx = x + dx[i];
-            int32_t ny = y + dy[i];
-            int32_t nz = z + dz[i];
-
-            if (nx < 0 || nx >= VOBJ_GRID_SIZE ||
-                ny < 0 || ny >= VOBJ_GRID_SIZE ||
-                nz < 0 || nz >= VOBJ_GRID_SIZE)
+            int32_t n = neighbours[i];
+            uint32_t added = bits & solid[n] & ~reached[n];
+            if (added == 0)
                 continue;
-
-            int32_t nidx = vobj_index(nx, ny, nz);
-            if (visited[nidx] || obj->voxels[nidx].material == 0)
-                continue;
-
-            /* Bounds check: prevent stack overflow */
-            if (stack_top >= VOBJ_TOTAL_VOXELS)
-                continue;
-
-            visited[nidx] = 1;
-            stack[stack_top++] = nidx;
+            reached[n] |= added;
+            if (!is_pending[n])
+            {
+                is_pending[n] = 1;
+                pending[pending_count++] = (uint16_t)n;
+            }
         }
     }
 }
@@ -1006,30 +918,27 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
     if (!obj->active || obj->voxel_count <= 1)
         return false;
 
-    uint8_t visited[VOBJ_TOTAL_VOXELS] = {0};
+    uint32_t solid[VOBJ_ROW_COUNT];
+    uint32_t reached[VOBJ_ROW_COUNT];
+    build_solid_rows(obj, solid);
+    memset(reached, 0, sizeof(reached));
 
-    int32_t first_x = -1, first_y = -1, first_z = -1;
-    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS && first_x < 0; i++)
-    {
-        if (obj->voxels[i].material != 0)
-        {
-            vobj_coords(i, &first_x, &first_y, &first_z);
-        }
-    }
-    if (first_x < 0)
+    /* The component of the first voxel in index order stays; the rest moves out */
+    int32_t first_row = 0;
+    while (first_row < VOBJ_ROW_COUNT && solid[first_row] == 0)
+        first_row++;
+    if (first_row == VOBJ_ROW_COUNT)
         return false;
+    int32_t first_x = 0;
+    while (!(solid[first_row] & (1u << first_x)))
+        first_x++;
 
-    flood_fill_voxels_local(obj, visited, first_x, first_y, first_z);
+    fill_component(solid, reached, first_row, first_x);
 
-    int32_t unvisited_count = 0;
-    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
-    {
-        if (obj->voxels[i].material != 0 && !visited[i])
-        {
-            unvisited_count++;
-        }
-    }
-    if (unvisited_count == 0)
+    bool detached = false;
+    for (int32_t r = 0; r < VOBJ_ROW_COUNT && !detached; r++)
+        detached = (solid[r] & ~reached[r]) != 0;
+    if (!detached)
         return false;
 
     int32_t new_obj_idx = voxel_object_world_alloc_slot(world);
@@ -1037,26 +946,34 @@ static bool split_one_island(VoxelObjectWorld *world, int32_t obj_index)
         return false;
 
     VoxelObject *new_obj = &world->objects[new_obj_idx];
-    memset(new_obj, 0, sizeof(VoxelObject));
     new_obj->position = obj->position;
     new_obj->orientation = obj->orientation;
+    new_obj->prev_position = obj->prev_position;
+    new_obj->prev_orientation = obj->prev_orientation;
     new_obj->voxel_size = obj->voxel_size;
     new_obj->active = true;
     new_obj->voxel_count = 0;
+    new_obj->split_source = obj_index + 1;
 
-    for (int32_t i = 0; i < VOBJ_TOTAL_VOXELS; i++)
+    uint64_t moved_bricks = 0;
+    for (int32_t r = 0; r < VOBJ_ROW_COUNT; r++)
     {
-        if (obj->voxels[i].material != 0 && !visited[i])
+        uint32_t moving = solid[r] & ~reached[r];
+        for (int32_t x = 0; moving != 0; x++, moving >>= 1)
         {
+            if (!(moving & 1))
+                continue;
+            int32_t i = r * VOBJ_GRID_SIZE + x;
             new_obj->voxels[i].material = obj->voxels[i].material;
             new_obj->voxel_count++;
             obj->voxels[i].material = 0;
             obj->voxel_count--;
+            moved_bricks |= 1ull << vobj_brick_index(obj, x, r % VOBJ_GRID_SIZE, r / VOBJ_GRID_SIZE);
         }
     }
 
-    obj->voxel_revision++;
-    new_obj->voxel_revision = 1;
+    voxel_object_mark_changed(obj, moved_bricks);
+    new_obj->voxel_revision = voxel_object_next_revision();
 
     voxel_object_recalc_shape(new_obj);
     voxel_object_recalc_shape(obj);
@@ -1081,6 +998,7 @@ void voxel_object_world_process_splits(VoxelObjectWorld *world)
     {
         int32_t obj_index = world->split_queue[world->split_queue_head];
         world->split_queue_head = (world->split_queue_head + 1) % VOBJ_SPLIT_QUEUE_SIZE;
+        world->objects[obj_index].split_queued = false;
 
         if (split_one_island(world, obj_index))
         {

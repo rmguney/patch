@@ -43,18 +43,17 @@ extern "C"
         Vec3 end;
         float wood_radius;
         float leaf_radius;
-        float leaf_vertical_scale;
-        Bounds3D aabb;
+        Bounds3D aabb; /* Covers the branch and all its descendants */
         int32_t sibling_idx;
         int32_t child_idx;
     } TreeBranch;
 
+    /* Branches link to their last child and to their previous sibling */
     typedef struct
     {
         TreeBranch branches[TREE_MAX_BRANCHES];
         int32_t branch_count;
-        int32_t trunk_idx;
-        Bounds3D bounds;
+        int32_t trunk_idx; /* -1 when nothing was generated */
     } ProceduralTree;
 
     typedef enum
@@ -82,8 +81,13 @@ extern "C"
 
     TreeConfig tree_config_create(TreeType type, RngState *rng, float scale);
     void tree_generate(ProceduralTree *tree, const TreeConfig *config, RngState *rng);
-    void tree_voxelize(const ProceduralTree *tree, const TreeConfig *config,
-                       VoxelVolume *vol, Vec3 origin, float voxel_size);
+    /* Writes the tree standing at origin into the voxels inside clip (volume voxel
+     * coordinates): bark over anything, leaves into empty voxels only. Voxelizing a tree
+     * once per box of a partition of the volume writes exactly what one pass over the
+     * whole volume does, so disjoint boxes can be voxelized on different threads. seed is
+     * the world seed, which shapes the leaf crowns' noise. */
+    void tree_voxelize_clipped(const ProceduralTree *tree, const TreeConfig *config, VoxelVolume *vol,
+                               Vec3 origin, const VoxelBox *clip, uint32_t seed);
 
 #ifdef __cplusplus
 }

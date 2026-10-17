@@ -40,14 +40,6 @@ extern "C"
         return (uint32_t)(rng_next(rng) % max);
     }
 
-    static inline int32_t rng_range_i32(RngState *rng, int32_t min, int32_t max)
-    {
-        if (max <= min)
-            return min;
-        uint32_t range = (uint32_t)(max - min + 1);
-        return min + (int32_t)rng_range_u32(rng, range);
-    }
-
     static inline float rng_float(RngState *rng)
     {
         return (float)(rng_next(rng) & 0xFFFFFF) / 16777216.0f;
@@ -56,11 +48,6 @@ extern "C"
     static inline float rng_range_f32(RngState *rng, float min, float max)
     {
         return min + rng_float(rng) * (max - min);
-    }
-
-    static inline float rng_signed_half(RngState *rng)
-    {
-        return rng_float(rng) - 0.5f;
     }
 
 #ifdef __cplusplus

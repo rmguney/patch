@@ -37,4 +37,14 @@ bool is_material_transparent(uint material_id) {
     return get_material_flags(material_id) >= 16.0;
 }
 
+/* A transparent material is water whose colour is the light a white beam keeps after this many
+ * metres of it (content/materials.h) */
+const float WATER_COLOUR_DEPTH = 10.0;
+
+/* Beer-Lambert absorption per metre of the water of a material. The floor keeps a colour
+ * channel of 0 finite: it absorbs as one at the darkest 8-bit sRGB step above it would. */
+vec3 water_absorption(uint material_id) {
+    return -log(max(get_material_color(material_id), vec3(0.0003))) / WATER_COLOUR_DEPTH;
+}
+
 #endif /* MATERIALS_GLSL */

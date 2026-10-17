@@ -3,6 +3,7 @@
 #include "engine/voxel/volume.h"
 #include "content/materials.h"
 #include "test_common.h"
+#include "test_fixtures.h"
 #include <string.h>
 #include <math.h>
 
@@ -206,23 +207,23 @@ static StressResult run_stress_iteration(int32_t chunks_dim)
 
     profile_reset_all();
 
+    /* The engine calls below record their own categories. Wrapping one in the same
+     * category would restart that timer on the inner call. */
+
     /* Init */
-    PROFILE_BEGIN(PROFILE_VOLUME_INIT);
     VoxelVolume *vol = volume_create_dims(chunks_dim, chunks_dim, chunks_dim, vec3_zero(), 0.1f);
-    PROFILE_END(PROFILE_VOLUME_INIT);
     result.init_ms = profile_get_last_ms(PROFILE_VOLUME_INIT);
 
     if (!vol)
         return result;
 
     /* Fill */
-    PROFILE_BEGIN(PROFILE_VOXEL_EDIT);
     volume_edit_begin(vol);
     float size = chunks_dim * 32 * 0.1f * 0.4f;
     Vec3 center = vec3_create(size, size, size);
-    volume_fill_sphere(vol, center, size * 0.8f, MAT_STONE);
+    fixture_fill_sphere(vol, center, size * 0.8f, MAT_STONE);
     volume_edit_end(vol);
-    PROFILE_END(PROFILE_VOXEL_EDIT);
+    profile_frame_end();
     result.fill_ms = profile_get_last_ms(PROFILE_VOXEL_EDIT);
 
     /* Raycast */
@@ -231,12 +232,11 @@ static StressResult run_stress_iteration(int32_t chunks_dim)
     Vec3 hit_pos, hit_normal;
     uint8_t hit_mat;
 
-    PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
     for (int i = 0; i < 100; i++)
     {
         volume_raycast(vol, origin, dir, size * 4.0f, &hit_pos, &hit_normal, &hit_mat, 0);
     }
-    PROFILE_END(PROFILE_VOXEL_RAYCAST);
+    profile_frame_end();
     result.raycast_100_ms = profile_get_last_ms(PROFILE_VOXEL_RAYCAST);
 
     /* Simulated frame time */
@@ -271,9 +271,6 @@ TEST(stress_find_budget_limit)
     printf("    Budget exceeded at: %d chunks\n", budget_exceeded_at);
     printf("    ");
 
-    /* Test passes if we can identify a scaling limit */
-    ASSERT(budget_exceeded_at > 0 || 1);  /* Always pass, this is informational */
-
     return 1;
 }
 
@@ -281,7 +278,7 @@ TEST(stress_raycast_scaling)
 {
     VoxelVolume *vol = volume_create_dims(4, 4, 4, vec3_zero(), 0.1f);
     volume_edit_begin(vol);
-    volume_fill_sphere(vol, vec3_create(0.6f, 0.6f, 0.6f), 0.5f, MAT_STONE);
+    fixture_fill_sphere(vol, vec3_create(0.6f, 0.6f, 0.6f), 0.5f, MAT_STONE);
     volume_edit_end(vol);
 
     Vec3 origin = vec3_create(-1.0f, 0.6f, 0.6f);
@@ -299,13 +296,13 @@ TEST(stress_raycast_scaling)
         int32_t count = counts[i];
         profile_reset_all();
 
-        PROFILE_BEGIN(PROFILE_VOXEL_RAYCAST);
         for (int j = 0; j < count; j++)
         {
             volume_raycast(vol, origin, dir, 10.0f, &hit_pos, &hit_normal, &hit_mat, 0);
         }
-        PROFILE_END(PROFILE_VOXEL_RAYCAST);
 
+        /* The raycasts of a frame add up to one PROFILE_VOXEL_RAYCAST sample */
+        profile_frame_end();
         float ms = profile_get_last_ms(PROFILE_VOXEL_RAYCAST);
         float per_ray_us = (ms / count) * 1000.0f;
 
@@ -349,10 +346,8 @@ static void print_detailed_report(void)
     }
 
     printf("\n--- Frame Budget ---\n");
-    printf("Total frames: %d\n", g_profile_budget.total_frames);
-    printf("Overruns: %d (%.1f%%)\n", g_profile_budget.overrun_count,
-           g_profile_budget.total_frames > 0 ?
-           (float)g_profile_budget.overrun_count / g_profile_budget.total_frames * 100.0f : 0.0f);
+    printf("Frames: %d, overruns: %d\n", profile_get_sample_count(PROFILE_FRAME_TOTAL),
+           g_profile_budget.overrun_count);
     printf("Worst frame: %.2fms (%.0f%% of budget)\n",
            g_profile_budget.worst_frame_ms,
            (g_profile_budget.worst_frame_ms / PROFILE_FRAME_BUDGET_MS) * 100.0f);

@@ -6,11 +6,15 @@
  *
  * Usage: voxelize input.obj output.c [options]
  *   --name <name>      Shape name (default: derived from filename)
- *   --resolution <n>   Target voxel resolution along longest axis (default: 16)
- *   --material <id>    Material ID for solid voxels (default: 1)
+ *   --resolution <n>   Voxels along the longest axis, 1..VOBJ_GRID_SIZE (default: 16)
+ *   --material <id>    Material ID for solid voxels, 1..255 (default: MAT_STONE)
  *
- * Output: C source file with VoxelShape descriptor ready for content/ inclusion.
+ * Output: C source file with a VoxelShape descriptor ready for content/shapes/.
+ * The shape is a surface shell: voxels the mesh's triangles pass through.
  */
+
+#include "content/materials.h"
+#include "engine/voxel/voxel_object.h"
 
 #include <algorithm>
 #include <cctype>
@@ -19,70 +23,61 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
 
-/*
- * Default material ID for voxelization.
- * Must match MAT_STONE in content/materials.h (currently 1).
- * If material IDs are reorganized, update this constant.
- */
-#define VOXELIZE_DEFAULT_MATERIAL 1
-
-/* Vec3 - simple 3D vector */
-struct Vec3
+/* Simple 3D vector (Vec3 is engine/core's plain C struct) */
+namespace
+{
+struct Vec3f
 {
     float x, y, z;
 
-    Vec3() : x(0), y(0), z(0) {}
-    Vec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+    Vec3f() : x(0), y(0), z(0) {}
+    Vec3f(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 
-    Vec3 operator+(const Vec3 &b) const { return Vec3(x + b.x, y + b.y, z + b.z); }
-    Vec3 operator-(const Vec3 &b) const { return Vec3(x - b.x, y - b.y, z - b.z); }
-    Vec3 operator*(float s) const { return Vec3(x * s, y * s, z * s); }
+    Vec3f operator+(const Vec3f &b) const { return Vec3f(x + b.x, y + b.y, z + b.z); }
+    Vec3f operator-(const Vec3f &b) const { return Vec3f(x - b.x, y - b.y, z - b.z); }
+    Vec3f operator*(float s) const { return Vec3f(x * s, y * s, z * s); }
 
-    float dot(const Vec3 &b) const { return x * b.x + y * b.y + z * b.z; }
-    Vec3 cross(const Vec3 &b) const
+    float dot(const Vec3f &b) const { return x * b.x + y * b.y + z * b.z; }
+    Vec3f cross(const Vec3f &b) const
     {
-        return Vec3(y * b.z - z * b.y, z * b.x - x * b.z, x * b.y - y * b.x);
+        return Vec3f(y * b.z - z * b.y, z * b.x - x * b.z, x * b.y - y * b.x);
     }
 
     float length() const { return std::sqrt(x * x + y * y + z * z); }
-    Vec3 normalized() const
-    {
-        float len = length();
-        return len > 0.0001f ? Vec3(x / len, y / len, z / len) : Vec3();
-    }
 
-    static Vec3 min(const Vec3 &a, const Vec3 &b)
+    static Vec3f min(const Vec3f &a, const Vec3f &b)
     {
-        return Vec3(std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z));
+        return Vec3f(std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z));
     }
-    static Vec3 max(const Vec3 &a, const Vec3 &b)
+    static Vec3f max(const Vec3f &a, const Vec3f &b)
     {
-        return Vec3(std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z));
+        return Vec3f(std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z));
     }
 };
 
 /* Triangle */
 struct Triangle
 {
-    Vec3 v0, v1, v2;
+    Vec3f v0, v1, v2;
 };
 
 /* AABB */
 struct AABB
 {
-    Vec3 min_corner, max_corner;
+    Vec3f min_corner, max_corner;
 
-    Vec3 center() const { return (min_corner + max_corner) * 0.5f; }
-    Vec3 half_extents() const { return (max_corner - min_corner) * 0.5f; }
+    Vec3f center() const { return (min_corner + max_corner) * 0.5f; }
+    Vec3f half_extents() const { return (max_corner - min_corner) * 0.5f; }
 };
 
 /* Mesh data */
 struct Mesh
 {
-    std::vector<Vec3> vertices;
+    std::vector<Vec3f> vertices;
     std::vector<Triangle> triangles;
     AABB bounds;
 };
@@ -93,17 +88,14 @@ struct VoxelGrid
     int size_x, size_y, size_z;
     std::vector<uint8_t> voxels;
     float voxel_size;
-    Vec3 origin;
+    Vec3f origin;
 
     uint8_t &at(int x, int y, int z)
     {
         return voxels[x + y * size_x + z * size_x * size_y];
     }
-    uint8_t at(int x, int y, int z) const
-    {
-        return voxels[x + y * size_x + z * size_x * size_y];
-    }
 };
+} // namespace
 
 /*
  * Triangle-AABB overlap test using Separating Axis Theorem.
@@ -111,18 +103,18 @@ struct VoxelGrid
  */
 static bool triangle_aabb_overlap(const Triangle &tri, const AABB &box)
 {
-    Vec3 center = box.center();
-    Vec3 half = box.half_extents();
+    Vec3f center = box.center();
+    Vec3f half = box.half_extents();
 
     /* Move triangle to box center */
-    Vec3 v0 = tri.v0 - center;
-    Vec3 v1 = tri.v1 - center;
-    Vec3 v2 = tri.v2 - center;
+    Vec3f v0 = tri.v0 - center;
+    Vec3f v1 = tri.v1 - center;
+    Vec3f v2 = tri.v2 - center;
 
     /* Compute triangle edges */
-    Vec3 e0 = v1 - v0;
-    Vec3 e1 = v2 - v1;
-    Vec3 e2 = v0 - v2;
+    Vec3f e0 = v1 - v0;
+    Vec3f e1 = v2 - v1;
+    Vec3f e2 = v0 - v2;
 
     /* Test AABB axes (X, Y, Z) */
     float min_val, max_val;
@@ -146,7 +138,7 @@ static bool triangle_aabb_overlap(const Triangle &tri, const AABB &box)
         return false;
 
     /* Test triangle normal as separating axis */
-    Vec3 normal = e0.cross(e1);
+    Vec3f normal = e0.cross(e1);
     float d = normal.dot(v0);
     float r = half.x * std::abs(normal.x) + half.y * std::abs(normal.y) +
               half.z * std::abs(normal.z);
@@ -154,7 +146,7 @@ static bool triangle_aabb_overlap(const Triangle &tri, const AABB &box)
         return false;
 
     /* Test 9 edge cross products (3 edges x 3 axes) */
-    auto axis_test = [&](const Vec3 &axis) {
+    auto axis_test = [&](const Vec3f &axis) {
         float p0 = axis.dot(v0);
         float p1 = axis.dot(v1);
         float p2 = axis.dot(v2);
@@ -165,10 +157,10 @@ static bool triangle_aabb_overlap(const Triangle &tri, const AABB &box)
         return !(min_p > r || max_p < -r);
     };
 
-    Vec3 axes[9] = {
-        Vec3(0, -e0.z, e0.y), Vec3(0, -e1.z, e1.y), Vec3(0, -e2.z, e2.y),
-        Vec3(e0.z, 0, -e0.x), Vec3(e1.z, 0, -e1.x), Vec3(e2.z, 0, -e2.x),
-        Vec3(-e0.y, e0.x, 0), Vec3(-e1.y, e1.x, 0), Vec3(-e2.y, e2.x, 0),
+    Vec3f axes[9] = {
+        Vec3f(0, -e0.z, e0.y), Vec3f(0, -e1.z, e1.y), Vec3f(0, -e2.z, e2.y),
+        Vec3f(e0.z, 0, -e0.x), Vec3f(e1.z, 0, -e1.x), Vec3f(e2.z, 0, -e2.x),
+        Vec3f(-e0.y, e0.x, 0), Vec3f(-e1.y, e1.x, 0), Vec3f(-e2.y, e2.x, 0),
     };
 
     for (int i = 0; i < 9; i++)
@@ -178,6 +170,26 @@ static bool triangle_aabb_overlap(const Triangle &tri, const AABB &box)
     }
 
     return true;
+}
+
+/* The next line of f, however long, without its line break; false at the end of the file
+ * or on a read error */
+static bool read_line(FILE *f, std::string &line)
+{
+    line.clear();
+    char chunk[256];
+    while (!feof(f) && !ferror(f) && fgets(chunk, sizeof(chunk), f))
+    {
+        line += chunk;
+        if (line.back() == '\n')
+        {
+            line.pop_back();
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            return true;
+        }
+    }
+    return !line.empty();
 }
 
 /*
@@ -193,25 +205,38 @@ static bool load_obj(const char *path, Mesh &mesh)
         return false;
     }
 
-    char line[512];
-    mesh.bounds.min_corner = Vec3(1e10f, 1e10f, 1e10f);
-    mesh.bounds.max_corner = Vec3(-1e10f, -1e10f, -1e10f);
+    std::string text;
+    mesh.bounds.min_corner = Vec3f(1e10f, 1e10f, 1e10f);
+    mesh.bounds.max_corner = Vec3f(-1e10f, -1e10f, -1e10f);
 
-    while (fgets(line, sizeof(line), f))
+    while (read_line(f, text))
     {
+        const char *line = text.c_str();
+
         /* Skip comments and empty lines */
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
+        if (line[0] == '#' || line[0] == '\0')
             continue;
 
         /* Vertex */
         if (line[0] == 'v' && line[1] == ' ')
         {
-            Vec3 v;
-            if (sscanf(line + 2, "%f %f %f", &v.x, &v.y, &v.z) == 3)
+            float c[3];
+            const char *ptr = line + 2;
+            int parsed = 0;
+            for (; parsed < 3; parsed++)
             {
+                char *end = nullptr;
+                c[parsed] = std::strtof(ptr, &end);
+                if (end == ptr)
+                    break;
+                ptr = end;
+            }
+            if (parsed == 3)
+            {
+                Vec3f v(c[0], c[1], c[2]);
                 mesh.vertices.push_back(v);
-                mesh.bounds.min_corner = Vec3::min(mesh.bounds.min_corner, v);
-                mesh.bounds.max_corner = Vec3::max(mesh.bounds.max_corner, v);
+                mesh.bounds.min_corner = Vec3f::min(mesh.bounds.min_corner, v);
+                mesh.bounds.max_corner = Vec3f::max(mesh.bounds.max_corner, v);
             }
         }
         /* Face */
@@ -219,26 +244,28 @@ static bool load_obj(const char *path, Mesh &mesh)
         {
             /* Parse face indices (supports v, v/vt, v/vt/vn, v//vn) */
             std::vector<int> indices;
-            char *ptr = line + 2;
+            const char *ptr = line + 2;
 
             while (*ptr)
             {
-                while (*ptr && std::isspace(*ptr))
+                while (*ptr && std::isspace(static_cast<unsigned char>(*ptr)))
                     ptr++;
                 if (!*ptr)
                     break;
 
-                int idx = 0;
-                if (sscanf(ptr, "%d", &idx) == 1)
+                /* The vertex index (any /vt/vn after it is skipped below) */
+                char *end = nullptr;
+                long idx = std::strtol(ptr, &end, 10);
+                if (end != ptr)
                 {
-                    /* OBJ indices are 1-based */
+                    /* OBJ indices are 1-based; negative ones count back from the last vertex */
                     if (idx < 0)
-                        idx = (int)mesh.vertices.size() + idx + 1;
-                    indices.push_back(idx - 1);
+                        idx = (long)mesh.vertices.size() + idx + 1;
+                    indices.push_back((int)idx - 1);
                 }
 
                 /* Skip to next vertex */
-                while (*ptr && !std::isspace(*ptr))
+                while (*ptr && !std::isspace(static_cast<unsigned char>(*ptr)))
                     ptr++;
             }
 
@@ -278,7 +305,7 @@ static bool load_obj(const char *path, Mesh &mesh)
  */
 static void voxelize(const Mesh &mesh, VoxelGrid &grid, int resolution, uint8_t material)
 {
-    Vec3 extent = mesh.bounds.max_corner - mesh.bounds.min_corner;
+    Vec3f extent = mesh.bounds.max_corner - mesh.bounds.min_corner;
     float max_extent = std::max({extent.x, extent.y, extent.z});
 
     /* Compute voxel size to fit resolution along longest axis */
@@ -293,15 +320,14 @@ static void voxelize(const Mesh &mesh, VoxelGrid &grid, int resolution, uint8_t 
 
     grid.origin = mesh.bounds.min_corner;
 
-    /* Compute grid dimensions */
-    grid.size_x = (int)std::ceil(extent.x / grid.voxel_size);
-    grid.size_y = (int)std::ceil(extent.y / grid.voxel_size);
-    grid.size_z = (int)std::ceil(extent.z / grid.voxel_size);
-
-    /* Ensure at least 1 voxel per axis */
-    grid.size_x = std::max(1, grid.size_x);
-    grid.size_y = std::max(1, grid.size_y);
-    grid.size_z = std::max(1, grid.size_z);
+    /* Grid dimensions: at least one voxel, at most resolution (extent / voxel_size can
+     * round to just above it along the longest axis) */
+    auto axis_size = [&](float axis_extent) {
+        return std::clamp((int)std::ceil(axis_extent / grid.voxel_size), 1, resolution);
+    };
+    grid.size_x = axis_size(extent.x);
+    grid.size_y = axis_size(extent.y);
+    grid.size_z = axis_size(extent.z);
 
     /* Allocate voxel grid */
     grid.voxels.resize(grid.size_x * grid.size_y * grid.size_z, 0);
@@ -309,47 +335,55 @@ static void voxelize(const Mesh &mesh, VoxelGrid &grid, int resolution, uint8_t 
     printf("Voxelizing to %dx%dx%d grid (voxel size: %.4f)\n",
            grid.size_x, grid.size_y, grid.size_z, grid.voxel_size);
 
-    /* For each voxel, test against all triangles */
-    int solid_count = 0;
-    for (int z = 0; z < grid.size_z; z++)
-    {
-        for (int y = 0; y < grid.size_y; y++)
-        {
-            for (int x = 0; x < grid.size_x; x++)
-            {
-                /* Compute voxel AABB */
-                AABB voxel_box;
-                voxel_box.min_corner = grid.origin + Vec3(
-                                                         x * grid.voxel_size,
-                                                         y * grid.voxel_size,
-                                                         z * grid.voxel_size);
-                voxel_box.max_corner = voxel_box.min_corner + Vec3(
-                                                                  grid.voxel_size,
-                                                                  grid.voxel_size,
-                                                                  grid.voxel_size);
+    /* Each triangle only tests the voxels around its own bounding box (one voxel of
+     * margin keeps triangles that just touch a voxel face) */
+    auto voxel_range = [&](float lo, float hi, float origin, int size, int *first, int *last) {
+        *first = std::max(0, (int)std::floor((lo - origin) / grid.voxel_size) - 1);
+        *last = std::min(size - 1, (int)std::floor((hi - origin) / grid.voxel_size) + 1);
+    };
 
-                /* Test against all triangles */
-                for (const Triangle &tri : mesh.triangles)
+    for (const Triangle &tri : mesh.triangles)
+    {
+        Vec3f lo = Vec3f::min(Vec3f::min(tri.v0, tri.v1), tri.v2);
+        Vec3f hi = Vec3f::max(Vec3f::max(tri.v0, tri.v1), tri.v2);
+        int x0, x1, y0, y1, z0, z1;
+        voxel_range(lo.x, hi.x, grid.origin.x, grid.size_x, &x0, &x1);
+        voxel_range(lo.y, hi.y, grid.origin.y, grid.size_y, &y0, &y1);
+        voxel_range(lo.z, hi.z, grid.origin.z, grid.size_z, &z0, &z1);
+
+        for (int z = z0; z <= z1; z++)
+        {
+            for (int y = y0; y <= y1; y++)
+            {
+                for (int x = x0; x <= x1; x++)
                 {
+                    if (grid.at(x, y, z) != 0)
+                        continue;
+
+                    AABB voxel_box;
+                    voxel_box.min_corner = grid.origin + Vec3f(x * grid.voxel_size,
+                                                              y * grid.voxel_size,
+                                                              z * grid.voxel_size);
+                    voxel_box.max_corner = voxel_box.min_corner + Vec3f(grid.voxel_size,
+                                                                       grid.voxel_size,
+                                                                       grid.voxel_size);
                     if (triangle_aabb_overlap(tri, voxel_box))
-                    {
                         grid.at(x, y, z) = material;
-                        solid_count++;
-                        break;
-                    }
                 }
             }
         }
     }
 
+    int solid_count = (int)std::count_if(grid.voxels.begin(), grid.voxels.end(),
+                                         [](uint8_t v) { return v != 0; });
     printf("Generated %d solid voxels\n", solid_count);
 }
 
 /*
  * Generate C source code for the voxel shape.
  */
-static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
-                            const char *shape_name)
+static bool generate_c_code(const VoxelGrid &grid, const char *input_path,
+                            const char *output_path, const char *shape_name)
 {
     FILE *f = fopen(output_path, "w");
     if (!f)
@@ -370,13 +404,13 @@ static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
     std::string c_name = shape_name;
     for (char &c : c_name)
     {
-        if (!std::isalnum(c))
+        if (!std::isalnum(static_cast<unsigned char>(c)))
             c = '_';
     }
 
     /* Header comment */
     fprintf(f, "/* Auto-generated voxel shape - do not edit */\n");
-    fprintf(f, "/* Source: %s */\n", shape_name);
+    fprintf(f, "/* Source: %s */\n", input_path);
     fprintf(f, "/* Resolution: %dx%dx%d, Solid voxels: %d */\n\n",
             grid.size_x, grid.size_y, grid.size_z, solid_count);
 
@@ -401,12 +435,10 @@ static bool generate_c_code(const VoxelGrid &grid, const char *output_path,
 
     /* Shape descriptor */
     fprintf(f, "const VoxelShape g_shape_%s = {\n", c_name.c_str());
-    fprintf(f, "    .name = \"%s\",\n", shape_name);
     fprintf(f, "    .size_x = %d,\n", grid.size_x);
     fprintf(f, "    .size_y = %d,\n", grid.size_y);
     fprintf(f, "    .size_z = %d,\n", grid.size_z);
     fprintf(f, "    .voxels = k_%s_voxels,\n", c_name.c_str());
-    fprintf(f, "    .solid_count = %d,\n", solid_count);
     fprintf(f, "};\n");
 
     fclose(f);
@@ -439,11 +471,22 @@ static void print_usage(const char *prog)
     fprintf(stderr, "Usage: %s input.obj output.c [options]\n", prog);
     fprintf(stderr, "Options:\n");
     fprintf(stderr, "  --name <name>       Shape name (default: from filename)\n");
-    fprintf(stderr, "  --resolution <n>    Voxel resolution (default: 16)\n");
-    fprintf(stderr, "  --material <id>     Material ID (default: 1)\n");
+    fprintf(stderr, "  --resolution <n>    Voxels along the longest axis, 1..%d (default: 16)\n", VOBJ_GRID_SIZE);
+    fprintf(stderr, "  --material <id>     Material ID, 1..255 (default: %d)\n", MAT_STONE);
 }
 
-int main(int argc, char *argv[])
+/* Whole-string decimal integer in [min_value, max_value] */
+static bool parse_int(const char *text, int min_value, int max_value, int *out)
+{
+    char *end = nullptr;
+    long value = strtol(text, &end, 10);
+    if (end == text || *end != '\0' || value < min_value || value > max_value)
+        return false;
+    *out = (int)value;
+    return true;
+}
+
+static int run(int argc, char *argv[])
 {
     if (argc < 3)
     {
@@ -455,7 +498,7 @@ int main(int argc, char *argv[])
     const char *output_path = argv[2];
     std::string shape_name = extract_name(input_path);
     int resolution = 16;
-    uint8_t material = VOXELIZE_DEFAULT_MATERIAL;
+    uint8_t material = MAT_STONE;
 
     /* Parse options */
     for (int i = 3; i < argc; i++)
@@ -466,23 +509,26 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "--resolution") == 0 && i + 1 < argc)
         {
-            resolution = atoi(argv[++i]);
-            if (resolution < 1)
-                resolution = 1;
-            if (resolution > 128)
-                resolution = 128;
+            /* The shapes become voxel objects, whose grid is VOBJ_GRID_SIZE voxels a side */
+            const char *value = argv[++i];
+            if (!parse_int(value, 1, VOBJ_GRID_SIZE, &resolution))
+            {
+                fprintf(stderr, "Error: --resolution %s: must be a whole number from 1 to %d "
+                                "(VOBJ_GRID_SIZE, the voxel object grid; larger shapes cannot be spawned)\n",
+                        value, VOBJ_GRID_SIZE);
+                return 1;
+            }
         }
         else if (strcmp(argv[i], "--material") == 0 && i + 1 < argc)
         {
-            int mat_value = atoi(argv[++i]);
-            if (mat_value < 0 || mat_value > 255)
+            const char *value = argv[++i];
+            int mat_value = 0;
+            if (!parse_int(value, 1, 255, &mat_value))
             {
-                fprintf(stderr, "Warning: material ID %d out of range [0,255], clamping\n", mat_value);
-                mat_value = mat_value < 0 ? 0 : 255;
-            }
-            if (mat_value >= 64)
-            {
-                fprintf(stderr, "Note: material ID %d is high; content/materials.h defines ~23 materials\n", mat_value);
+                fprintf(stderr, "Error: --material %s: must be a material ID from 1 to 255 "
+                                "(0 is air and would make an empty shape)\n",
+                        value);
+                return 1;
             }
             material = (uint8_t)mat_value;
         }
@@ -509,7 +555,7 @@ int main(int argc, char *argv[])
     VoxelGrid grid;
     voxelize(mesh, grid, resolution, material);
 
-    if (!generate_c_code(grid, output_path, shape_name.c_str()))
+    if (!generate_c_code(grid, input_path, output_path, shape_name.c_str()))
     {
         fprintf(stderr, "Error: Failed to generate output\n");
         return 1;
@@ -517,4 +563,18 @@ int main(int argc, char *argv[])
 
     printf("Done!\n");
     return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    /* std::vector and std::string report allocation failure by throwing */
+    try
+    {
+        return run(argc, argv);
+    }
+    catch (const std::exception &e)
+    {
+        fprintf(stderr, "Error: %s\n", e.what());
+        return 1;
+    }
 }

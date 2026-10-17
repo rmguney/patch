@@ -1,34 +1,33 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/* particle.vert - proxy cubes for the raymarched particles (debris and weather). The CPU
+ * draws the cubes the camera is outside of with their front faces at their depth, and those it
+ * is inside of, or so close to that the near plane would clip their front faces, with their
+ * back faces on the near plane (pc.camera_inside), which keeps the fragment shader's
+ * conservative depth valid. */
 
+/* Mirror of ParticleGPU (engine/render/raster_gpu_types.h) */
 struct ParticleGPU {
-    vec4 position_radius;  // xyz = position, w = radius
-    vec4 color_flags;      // rgb = color, a = flags (1.0 = active)
+    vec4 position_radius;  /* xyz = position, w = radius (half extent of the cube) */
+    vec4 color_flags;      /* rgb = color, a = 1 lit / 2 emissive */
+    vec4 prev_position;    /* xyz = position drawn last frame, w unused */
 };
 
-layout(std430, SET_BINDING(0, 0)) readonly buffer ParticleBuffer {
+layout(std430, set = 0, binding = 0) readonly buffer ParticleBuffer {
     ParticleGPU particles[];
 };
 
+/* Mirror of ParticlePushConstants (engine/render/raster_gpu_types.h) */
 layout(push_constant) uniform Constants {
     mat4 view_proj;
     vec3 camera_pos;
-    float pad1;
-    int particle_count;
     float near_plane;
     float far_plane;
-    int is_orthographic;
-    float camera_forward[3];
+    int camera_inside;
 } pc;
 
 layout(location = 0) out vec3 out_world_pos;
-layout(location = 1) out vec3 out_ray_origin;
-layout(location = 2) out flat int out_particle_index;
+layout(location = 1) out flat int out_particle_index;
 
 const vec3 CUBE_VERTICES[36] = vec3[36](
     vec3(-1, -1, -1), vec3(-1, -1,  1), vec3(-1,  1,  1),
@@ -45,37 +44,17 @@ const vec3 CUBE_VERTICES[36] = vec3[36](
     vec3(-1, -1,  1), vec3( 1, -1,  1), vec3( 1,  1,  1)
 );
 
+/* One proxy cube per particle (instance = particle index; every instance drawn is active) */
 void main() {
-    int vertex_id = gl_VertexIndex % 36;
-    int particle_idx = gl_InstanceIndex;
+    ParticleGPU p = particles[gl_InstanceIndex];
 
-    if (particle_idx >= pc.particle_count) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        out_world_pos = vec3(0.0);
-        out_ray_origin = vec3(0.0);
-        out_particle_index = -1;
-        return;
-    }
-
-    ParticleGPU p = particles[particle_idx];
-
-    if (p.color_flags.a < 0.5) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        out_world_pos = vec3(0.0);
-        out_ray_origin = vec3(0.0);
-        out_particle_index = -1;
-        return;
-    }
-
-    vec3 center = p.position_radius.xyz;
-    float radius = p.position_radius.w;
-    float expand = 1.1;
-
-    vec3 local_pos = CUBE_VERTICES[vertex_id] * radius * expand;
-    vec3 world_pos = center + local_pos;
+    /* 10% margin around the particle's cube */
+    vec3 world_pos = p.position_radius.xyz + CUBE_VERTICES[gl_VertexIndex] * p.position_radius.w * 1.1;
 
     gl_Position = pc.view_proj * vec4(world_pos, 1.0);
+    if (pc.camera_inside != 0) {
+        gl_Position.z = 0.0;
+    }
     out_world_pos = world_pos;
-    out_ray_origin = pc.camera_pos;
-    out_particle_index = particle_idx;
+    out_particle_index = gl_InstanceIndex;
 }

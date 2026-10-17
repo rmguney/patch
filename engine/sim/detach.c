@@ -1,91 +1,151 @@
 #include "detach.h"
 #include "content/materials.h"
 #include "engine/core/profile.h"
+#include <math.h>
 #include <string.h>
+
+/* The oversized-island split uses the connectivity stack as a BFS queue (of packed voxel
+ * positions) for one group of at most VOBJ_TOTAL_VOXELS voxels */
+STATIC_ASSERT(CONNECTIVITY_MIN_STACK_SIZE >= VOBJ_TOTAL_VOXELS, "split queue must fit the work stack");
+
+/* The cube around the largest terrain destruction sphere bounds its edits */
+STATIC_ASSERT((2 * DETACH_TERRAIN_MAX_RADIUS_VOXELS + 1) * (2 * DETACH_TERRAIN_MAX_RADIUS_VOXELS + 1) *
+                      (2 * DETACH_TERRAIN_MAX_RADIUS_VOXELS + 1) <= VOLUME_MAX_EDITS_PER_TICK,
+              "terrain destruction sphere must fit one edit batch");
 
 int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
                                Vec3 impact_point, float destroy_radius,
                                Vec3 *out_positions, uint8_t *out_materials,
                                int32_t max_output)
 {
-    PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
-
     if (obj_index < 0 || obj_index >= world->object_count)
-    {
-        PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
         return 0;
-    }
 
     VoxelObject *obj = &world->objects[obj_index];
     if (!obj->active)
-    {
-        PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
         return 0;
+
+    PROFILE_BEGIN(PROFILE_SIM_VOXEL_UPDATE);
+
+    /* Work in the object's grid space: rotate the impact point in once instead of
+     * every voxel out, and visit only the grid cells the sphere can reach */
+    float rot_mat[9], inv_rot_mat[9];
+    quat_to_mat3(obj->orientation, rot_mat);
+    mat3_transpose(rot_mat, inv_rot_mat);
+
+    float vs = obj->voxel_size;
+    float half_size = vs * (float)VOBJ_GRID_SIZE * 0.5f;
+    Vec3 local_impact = mat3_transform_vec3(inv_rot_mat, vec3_sub(impact_point, obj->position));
+    float radius_sq = destroy_radius * destroy_radius;
+
+    float impact_grid[3] = {(local_impact.x + half_size) / vs,
+                            (local_impact.y + half_size) / vs,
+                            (local_impact.z + half_size) / vs};
+    float radius_grid = destroy_radius / vs;
+    int32_t lo[3], hi[3];
+    for (int32_t a = 0; a < 3; a++)
+    {
+        lo[a] = (int32_t)fmaxf(floorf(impact_grid[a] - radius_grid), 0.0f);
+        hi[a] = (int32_t)fminf(floorf(impact_grid[a] + radius_grid), (float)(VOBJ_GRID_SIZE - 1));
     }
 
     int32_t destroyed_count = 0;
-    float half_size = obj->voxel_size * (float)VOBJ_GRID_SIZE * 0.5f;
-    float rot_mat[9];
-    quat_to_mat3(obj->orientation, rot_mat);
-    Vec3 pivot = obj->position;
-
-    for (int32_t z = 0; z < VOBJ_GRID_SIZE; z++)
+    uint64_t changed_bricks = 0;
+    for (int32_t z = lo[2]; z <= hi[2]; z++)
     {
-        for (int32_t y = 0; y < VOBJ_GRID_SIZE; y++)
+        for (int32_t y = lo[1]; y <= hi[1]; y++)
         {
-            for (int32_t x = 0; x < VOBJ_GRID_SIZE; x++)
+            for (int32_t x = lo[0]; x <= hi[0]; x++)
             {
                 int32_t idx = vobj_index(x, y, z);
                 if (obj->voxels[idx].material == 0)
                     continue;
 
-                Vec3 local_pos;
-                local_pos.x = ((float)x + 0.5f) * obj->voxel_size - half_size;
-                local_pos.y = ((float)y + 0.5f) * obj->voxel_size - half_size;
-                local_pos.z = ((float)z + 0.5f) * obj->voxel_size - half_size;
+                Vec3 local_pos = vec3_create(((float)x + 0.5f) * vs - half_size,
+                                             ((float)y + 0.5f) * vs - half_size,
+                                             ((float)z + 0.5f) * vs - half_size);
+                if (vec3_length_sq(vec3_sub(local_pos, local_impact)) >= radius_sq)
+                    continue;
 
-                Vec3 rotated = mat3_transform_vec3(rot_mat, local_pos);
-                Vec3 voxel_pos = vec3_add(pivot, rotated);
-
-                float dist = vec3_length(vec3_sub(voxel_pos, impact_point));
-
-                if (dist < destroy_radius)
+                if (destroyed_count < max_output)
                 {
-                    if (destroyed_count < max_output)
-                    {
-                        if (out_positions)
-                            out_positions[destroyed_count] = voxel_pos;
-                        if (out_materials)
-                            out_materials[destroyed_count] = obj->voxels[idx].material;
-                        destroyed_count++;
-                    }
-
-                    obj->voxels[idx].material = 0;
-                    obj->voxel_count--;
+                    if (out_positions)
+                        out_positions[destroyed_count] =
+                            vec3_add(obj->position, mat3_transform_vec3(rot_mat, local_pos));
+                    if (out_materials)
+                        out_materials[destroyed_count] = obj->voxels[idx].material;
                 }
+                destroyed_count++;
+
+                obj->voxels[idx].material = 0;
+                obj->voxel_count--;
+                changed_bricks |= 1ull << vobj_brick_index(obj, x, y, z);
             }
         }
     }
 
-    if (obj->voxel_count <= 0)
-    {
-        obj->active = false;
-        voxel_object_world_free_slot(world, obj_index);
-    }
-    else
-    {
-        /* Defer shape recalc and island splitting to per-frame budget */
-        voxel_object_world_mark_dirty(world, obj_index);
-        voxel_object_world_queue_split(world, obj_index);
-    }
-
     if (destroyed_count > 0)
     {
-        obj->voxel_revision++;
+        voxel_object_mark_changed(obj, changed_bricks);
+        if (obj->voxel_count <= 0)
+        {
+            voxel_object_world_free_slot(world, obj_index);
+        }
+        else
+        {
+            /* Defer shape recalc and island splitting to per-frame budget */
+            voxel_object_world_mark_dirty(world, obj_index);
+            voxel_object_world_queue_split(world, obj_index);
+        }
     }
 
     PROFILE_END(PROFILE_SIM_VOXEL_UPDATE);
     return destroyed_count;
+}
+
+int32_t detach_terrain_at_point(VoxelVolume *vol, Vec3 center, int32_t radius_voxels,
+                                Vec3 *out_positions, uint8_t *out_materials,
+                                int32_t max_output)
+{
+    const float vs = vol->voxel_size;
+    const int32_t r = radius_voxels < DETACH_TERRAIN_MAX_RADIUS_VOXELS ? radius_voxels
+                                                                     : DETACH_TERRAIN_MAX_RADIUS_VOXELS;
+    int32_t output_count = 0;
+
+    volume_edit_begin(vol);
+    for (int32_t ix = -r; ix <= r; ix++)
+    {
+        for (int32_t iy = -r; iy <= r; iy++)
+        {
+            for (int32_t iz = -r; iz <= r; iz++)
+            {
+                if (ix * ix + iy * iy + iz * iz > r * r)
+                    continue;
+
+                Vec3 pos = vec3_add(center, vec3_scale(vec3_create((float)ix, (float)iy, (float)iz), vs));
+                uint8_t mat = volume_get_at(vol, pos);
+                if (!material_is_breakable(mat))
+                    continue;
+
+                volume_edit_set(vol, pos, MATERIAL_EMPTY);
+                if (output_count < max_output)
+                {
+                    if (out_positions)
+                        out_positions[output_count] = pos;
+                    if (out_materials)
+                        out_materials[output_count] = mat;
+                    output_count++;
+                }
+            }
+        }
+    }
+    return volume_edit_end(vol);
+}
+
+/* Material of the voxel at a volume_voxel_linear_index */
+static inline uint8_t volume_voxel_material(const VoxelVolume *vol, size_t voxel_index)
+{
+    return vol->chunks[voxel_index / CHUNK_VOXEL_COUNT].voxels[voxel_index % CHUNK_VOXEL_COUNT].material;
 }
 
 static void detach_spawn_island_particles(const VoxelVolume *vol,
@@ -94,8 +154,6 @@ static void detach_spawn_island_particles(const VoxelVolume *vol,
                                           ParticleSystem *particles,
                                           RngState *rng)
 {
-    int32_t chunks_x = vol->chunks_x;
-    int32_t chunks_xy = vol->chunks_x * vol->chunks_y;
     uint16_t target_id = (uint16_t)island->island_id;
     float vs = vol->voxel_size;
 
@@ -105,20 +163,11 @@ static void detach_spawn_island_particles(const VoxelVolume *vol,
         {
             for (int32_t x = island->voxel_min_x; x <= island->voxel_max_x; x++)
             {
-                int32_t cx = x / CHUNK_SIZE, lx = x % CHUNK_SIZE;
-                int32_t cy = y / CHUNK_SIZE, ly = y % CHUNK_SIZE;
-                int32_t cz = z / CHUNK_SIZE, lz = z % CHUNK_SIZE;
-                int32_t gi = (cx + cy * chunks_x + cz * chunks_xy) * CHUNK_VOXEL_COUNT +
-                              lx + ly * CHUNK_SIZE + lz * CHUNK_SIZE * CHUNK_SIZE;
-                if (gi < 0 || gi >= work->island_ids_size)
-                    continue;
+                size_t gi = volume_voxel_linear_index(vol, x, y, z);
                 if (work->island_ids[gi] != target_id)
                     continue;
 
-                Chunk *chunk = volume_get_chunk((VoxelVolume *)vol, cx, cy, cz);
-                if (!chunk)
-                    continue;
-                uint8_t mat = chunk_get(chunk, lx, ly, lz);
+                uint8_t mat = volume_voxel_material(vol, gi);
                 if (mat == 0)
                     continue;
 
@@ -139,10 +188,162 @@ static void detach_spawn_island_particles(const VoxelVolume *vol,
                 velocity.y += 0.5f;
 
                 Vec3 color = material_get_color(mat);
-                particle_system_add(particles, rng, pos, velocity, color, vs * 0.4f);
+                particle_system_add(particles, pos, velocity, color, vs * 0.4f);
             }
         }
     }
+}
+
+/* Next visited generation of the work buffer, resetting all stamps on wrap */
+static uint16_t next_generation(ConnectivityWorkBuffer *work)
+{
+    work->generation++;
+    if (work->generation == 0)
+    {
+        work->generation = 1;
+        memset(work->visited_gen, 0, work->visited_size * sizeof(uint16_t));
+    }
+    return work->generation;
+}
+
+/* Spawn an island wider than VOBJ_GRID_SIZE as several bodies: grow a group from
+ * each voxel not yet extracted (BFS within the island, bounding box capped at
+ * VOBJ_GRID_SIZE) and turn every group into a body, up to max_bodies. Returns the
+ * number of bodies spawned. */
+static int32_t detach_split_oversized_island(const VoxelVolume *vol, VoxelObjectWorld *obj_world,
+                                             const IslandInfo *island, ConnectivityWorkBuffer *work,
+                                             int32_t max_bodies, DetachResult *result)
+{
+    /* Two stamps for the whole island: members of the growing group carry group_gen
+     * until the group is extracted, then consumed_gen. Taking both up front (not a
+     * fresh one per group) keeps a generation wrap, and the stamp reset it causes,
+     * from erasing the consumed marks halfway through. */
+    uint16_t consumed_gen = next_generation(work);
+    uint16_t group_gen = next_generation(work);
+
+    uint16_t target_id = (uint16_t)island->island_id;
+    int32_t spawned = 0;
+
+    static const int32_t dx[6] = {1, -1, 0, 0, 0, 0};
+    static const int32_t dy[6] = {0, 0, 1, -1, 0, 0};
+    static const int32_t dz[6] = {0, 0, 0, 0, 1, -1};
+
+    for (int32_t seed_z = island->voxel_min_z; seed_z <= island->voxel_max_z; seed_z++)
+    {
+        for (int32_t seed_y = island->voxel_min_y; seed_y <= island->voxel_max_y; seed_y++)
+        {
+            for (int32_t seed_x = island->voxel_min_x; seed_x <= island->voxel_max_x; seed_x++)
+            {
+                if (spawned >= max_bodies)
+                    return spawned;
+
+                size_t seed_gi = volume_voxel_linear_index(vol, seed_x, seed_y, seed_z);
+                if (work->island_ids[seed_gi] != target_id || work->visited_gen[seed_gi] == consumed_gen)
+                    continue;
+
+                int32_t gmin_x = seed_x, gmax_x = seed_x;
+                int32_t gmin_y = seed_y, gmax_y = seed_y;
+                int32_t gmin_z = seed_z, gmax_z = seed_z;
+
+                /* BFS with the work stack as a FIFO queue */
+                work->visited_gen[seed_gi] = group_gen;
+                work->stack[0] = volume_pack_voxel_pos(seed_x >> CHUNK_SIZE_BITS, seed_y >> CHUNK_SIZE_BITS,
+                                                       seed_z >> CHUNK_SIZE_BITS, seed_x & CHUNK_SIZE_MASK,
+                                                       seed_y & CHUNK_SIZE_MASK, seed_z & CHUNK_SIZE_MASK);
+                int32_t front = 0, back = 1;
+
+                while (front < back)
+                {
+                    int32_t cx, cy, cz, lx, ly, lz;
+                    volume_unpack_voxel_pos(work->stack[front++], &cx, &cy, &cz, &lx, &ly, &lz);
+                    int32_t vx = cx * CHUNK_SIZE + lx;
+                    int32_t vy = cy * CHUNK_SIZE + ly;
+                    int32_t vz = cz * CHUNK_SIZE + lz;
+
+                    for (int32_t d = 0; d < 6; d++)
+                    {
+                        int32_t nx = vx + dx[d];
+                        int32_t ny = vy + dy[d];
+                        int32_t nz = vz + dz[d];
+                        if (nx < island->voxel_min_x || nx > island->voxel_max_x ||
+                            ny < island->voxel_min_y || ny > island->voxel_max_y ||
+                            nz < island->voxel_min_z || nz > island->voxel_max_z)
+                            continue;
+
+                        int32_t new_min_x = gmin_x < nx ? gmin_x : nx;
+                        int32_t new_max_x = gmax_x > nx ? gmax_x : nx;
+                        int32_t new_min_y = gmin_y < ny ? gmin_y : ny;
+                        int32_t new_max_y = gmax_y > ny ? gmax_y : ny;
+                        int32_t new_min_z = gmin_z < nz ? gmin_z : nz;
+                        int32_t new_max_z = gmax_z > nz ? gmax_z : nz;
+                        if (new_max_x - new_min_x + 1 > VOBJ_GRID_SIZE ||
+                            new_max_y - new_min_y + 1 > VOBJ_GRID_SIZE ||
+                            new_max_z - new_min_z + 1 > VOBJ_GRID_SIZE)
+                            continue;
+
+                        size_t ngi = volume_voxel_linear_index(vol, nx, ny, nz);
+                        if (work->island_ids[ngi] != target_id ||
+                            work->visited_gen[ngi] == group_gen ||
+                            work->visited_gen[ngi] == consumed_gen)
+                            continue;
+
+                        gmin_x = new_min_x; gmax_x = new_max_x;
+                        gmin_y = new_min_y; gmax_y = new_max_y;
+                        gmin_z = new_min_z; gmax_z = new_max_z;
+
+                        work->visited_gen[ngi] = group_gen;
+                        work->stack[back++] = volume_pack_voxel_pos(nx >> CHUNK_SIZE_BITS, ny >> CHUNK_SIZE_BITS,
+                                                                    nz >> CHUNK_SIZE_BITS, nx & CHUNK_SIZE_MASK,
+                                                                    ny & CHUNK_SIZE_MASK, nz & CHUNK_SIZE_MASK);
+                    }
+                }
+
+                /* Copy the group out of its bounding box and mark it consumed */
+                int32_t sub_ex = gmax_x - gmin_x + 1;
+                int32_t sub_ey = gmax_y - gmin_y + 1;
+                int32_t sub_ez = gmax_z - gmin_z + 1;
+
+                uint8_t sub_buf[VOBJ_TOTAL_VOXELS];
+                memset(sub_buf, 0, sizeof(sub_buf));
+
+                for (int32_t gz = gmin_z; gz <= gmax_z; gz++)
+                {
+                    for (int32_t gy = gmin_y; gy <= gmax_y; gy++)
+                    {
+                        for (int32_t gx = gmin_x; gx <= gmax_x; gx++)
+                        {
+                            size_t gi = volume_voxel_linear_index(vol, gx, gy, gz);
+                            if (work->visited_gen[gi] != group_gen)
+                                continue;
+                            work->visited_gen[gi] = consumed_gen;
+
+                            int32_t ox = gx - gmin_x;
+                            int32_t oy = gy - gmin_y;
+                            int32_t oz = gz - gmin_z;
+                            sub_buf[ox + oy * sub_ex + oz * sub_ex * sub_ey] = volume_voxel_material(vol, gi);
+                        }
+                    }
+                }
+
+                Vec3 sub_origin = vec3_create(
+                    vol->bounds.min_x + (float)gmin_x * vol->voxel_size,
+                    vol->bounds.min_y + (float)gmin_y * vol->voxel_size,
+                    vol->bounds.min_z + (float)gmin_z * vol->voxel_size);
+
+                int32_t obj_idx = voxel_object_world_add_from_voxels(
+                    obj_world, sub_buf, sub_ex, sub_ey, sub_ez, sub_origin, vol->voxel_size);
+                if (obj_idx >= 0)
+                {
+                    obj_world->objects[obj_idx].render_delay = 3;
+                    if (result->bodies_spawned < DETACH_MAX_SPAWNED)
+                        result->spawned_indices[result->bodies_spawned] = obj_idx;
+                    result->bodies_spawned++;
+                    spawned++;
+                }
+            }
+        }
+    }
+    return spawned;
 }
 
 void detach_terrain_process(VoxelVolume *vol,
@@ -169,26 +370,25 @@ void detach_terrain_process(VoxelVolume *vol,
             active_bodies++;
     }
 
+    /* Analyse every edit accumulated since the last pass, not just the last batch */
     float anchor_y = vol->bounds.min_y + config->anchor_y_offset;
     ConnectivityResult conn_result;
-
-    /* Consume all pending dirty chunks accumulated across edit batches.
-     * This ensures analysis covers ALL chunks modified since last analysis,
-     * not just the last frame's edits. */
     volume_consume_pending_analysis(vol);
+    connectivity_analyze_dirty(vol, anchor_y, work, &conn_result);
 
-    /* Dirty-chunk analysis: scan all voxels in affected region (dirty chunks
-     * + 1 chunk expansion), flood-fill each connected component. Uses bounded
-     * BFS with anchor detection: solid neighbor outside bounds = anchored. */
-    connectivity_analyze_dirty(vol, anchor_y, 0, work, &conn_result);
+    /* If this pass cannot handle every floating island (result truncated, or the
+     * per-tick limit), keep the analysed edits pending so the next pass finds the rest
+     * instead of leaving them hovering. The body limit is not a reason: see below. */
+    if (conn_result.truncated || conn_result.island_count > config->max_islands_per_tick)
+    {
+        volume_requeue_last_analysis(vol);
+        local_result.analysis_requeued = true;
+    }
 
     int32_t processed = 0;
     for (int32_t i = 0; i < conn_result.island_count && processed < config->max_islands_per_tick; i++)
     {
         IslandInfo *island = &conn_result.islands[i];
-        if (!island->is_floating)
-            continue;
-
         local_result.islands_processed++;
 
         if (island->voxel_count < config->min_voxels_per_island)
@@ -209,9 +409,15 @@ void detach_terrain_process(VoxelVolume *vol,
             continue;
         }
 
+        /* At the body limit the island crumbles to debris, as the part of an oversized
+         * island beyond the limit does. Left in the terrain it would hover, and keeping
+         * it pending re-ran the whole analysis every frame until bodies were freed. */
         if (active_bodies >= config->max_bodies_alive)
         {
+            connectivity_remove_island(vol, island, work);
+            local_result.voxels_removed += island->voxel_count;
             local_result.islands_skipped++;
+            processed++;
             continue;
         }
 
@@ -219,204 +425,22 @@ void detach_terrain_process(VoxelVolume *vol,
         int32_t ext_size_y = island->voxel_max_y - island->voxel_min_y + 1;
         int32_t ext_size_z = island->voxel_max_z - island->voxel_min_z + 1;
 
-        /* Oversized islands: BFS-based subdivision into organic 32³ chunks */
         if (ext_size_x > VOBJ_GRID_SIZE || ext_size_y > VOBJ_GRID_SIZE || ext_size_z > VOBJ_GRID_SIZE)
         {
-            uint16_t target_id = (uint16_t)island->island_id;
-            bool any_spawned = false;
-            int32_t chunks_x = vol->chunks_x;
-            int32_t chunks_xy = vol->chunks_x * vol->chunks_y;
+            int32_t spawned = detach_split_oversized_island(vol, obj_world, island, work,
+                                                            config->max_bodies_alive - active_bodies,
+                                                            &local_result);
+            active_bodies += spawned;
 
-            /* Use a fresh visited generation for consumed-voxel tracking */
-            work->generation++;
-            if (work->generation == 0)
-            {
-                work->generation = 1;
-                memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
-            }
-            uint16_t consumed_gen = work->generation;
-
-            /* Scan island for seed voxels, BFS each into a bounded sub-group */
-            for (int32_t seed_z = island->voxel_min_z; seed_z <= island->voxel_max_z; seed_z++)
-            {
-                for (int32_t seed_y = island->voxel_min_y; seed_y <= island->voxel_max_y; seed_y++)
-                {
-                    for (int32_t seed_x = island->voxel_min_x; seed_x <= island->voxel_max_x; seed_x++)
-                    {
-                        if (active_bodies >= config->max_bodies_alive)
-                            goto oversized_done;
-
-                        int32_t scx = seed_x / CHUNK_SIZE, slx = seed_x % CHUNK_SIZE;
-                        int32_t scy = seed_y / CHUNK_SIZE, sly = seed_y % CHUNK_SIZE;
-                        int32_t scz = seed_z / CHUNK_SIZE, slz = seed_z % CHUNK_SIZE;
-                        int32_t seed_gi = (scx + scy * chunks_x + scz * chunks_xy) * CHUNK_VOXEL_COUNT +
-                                           slx + sly * CHUNK_SIZE + slz * CHUNK_SIZE * CHUNK_SIZE;
-                        if (seed_gi < 0 || seed_gi >= work->island_ids_size)
-                            continue;
-                        if (work->island_ids[seed_gi] != target_id)
-                            continue;
-                        if (work->visited_gen[seed_gi] == consumed_gen)
-                            continue;
-
-                        /* Use a unique generation for this group so we can extract it */
-                        work->generation++;
-                        if (work->generation == 0)
-                        {
-                            work->generation = 1;
-                            memset(work->visited_gen, 0, (size_t)work->visited_size * sizeof(uint16_t));
-                        }
-                        uint16_t group_gen = work->generation;
-
-                        int32_t gmin_x = seed_x, gmax_x = seed_x;
-                        int32_t gmin_y = seed_y, gmax_y = seed_y;
-                        int32_t gmin_z = seed_z, gmax_z = seed_z;
-
-                        /* BFS with 32³ bounding box constraint */
-                        work->visited_gen[seed_gi] = group_gen;
-                        work->stack[0] = seed_gi;
-                        int32_t front = 0, back = 1;
-
-                        static const int32_t dx[6] = {1,-1, 0, 0, 0, 0};
-                        static const int32_t dy[6] = {0, 0, 1,-1, 0, 0};
-                        static const int32_t dz[6] = {0, 0, 0, 0, 1,-1};
-
-                        while (front < back)
-                        {
-                            int32_t gi = work->stack[front++];
-                            int32_t li = gi % CHUNK_VOXEL_COUNT;
-                            int32_t ci = gi / CHUNK_VOXEL_COUNT;
-                            int32_t vx = (ci % chunks_x) * CHUNK_SIZE + (li % CHUNK_SIZE);
-                            int32_t vy = ((ci / chunks_x) % vol->chunks_y) * CHUNK_SIZE +
-                                         ((li / CHUNK_SIZE) % CHUNK_SIZE);
-                            int32_t vz = (ci / chunks_xy) * CHUNK_SIZE +
-                                         (li / (CHUNK_SIZE * CHUNK_SIZE));
-
-                            for (int32_t d = 0; d < 6; d++)
-                            {
-                                int32_t nx = vx + dx[d];
-                                int32_t ny = vy + dy[d];
-                                int32_t nz = vz + dz[d];
-                                if (nx < island->voxel_min_x || nx > island->voxel_max_x ||
-                                    ny < island->voxel_min_y || ny > island->voxel_max_y ||
-                                    nz < island->voxel_min_z || nz > island->voxel_max_z)
-                                    continue;
-
-                                /* Check 32³ constraint before adding */
-                                int32_t new_min_x = gmin_x < nx ? gmin_x : nx;
-                                int32_t new_max_x = gmax_x > nx ? gmax_x : nx;
-                                int32_t new_min_y = gmin_y < ny ? gmin_y : ny;
-                                int32_t new_max_y = gmax_y > ny ? gmax_y : ny;
-                                int32_t new_min_z = gmin_z < nz ? gmin_z : nz;
-                                int32_t new_max_z = gmax_z > nz ? gmax_z : nz;
-                                if (new_max_x - new_min_x + 1 > VOBJ_GRID_SIZE ||
-                                    new_max_y - new_min_y + 1 > VOBJ_GRID_SIZE ||
-                                    new_max_z - new_min_z + 1 > VOBJ_GRID_SIZE)
-                                    continue;
-
-                                int32_t ncx = nx / CHUNK_SIZE, nlx = nx % CHUNK_SIZE;
-                                int32_t ncy = ny / CHUNK_SIZE, nly = ny % CHUNK_SIZE;
-                                int32_t ncz = nz / CHUNK_SIZE, nlz = nz % CHUNK_SIZE;
-                                int32_t ngi = (ncx + ncy * chunks_x + ncz * chunks_xy) * CHUNK_VOXEL_COUNT +
-                                               nlx + nly * CHUNK_SIZE + nlz * CHUNK_SIZE * CHUNK_SIZE;
-                                if (ngi < 0 || ngi >= work->island_ids_size)
-                                    continue;
-                                if (work->island_ids[ngi] != target_id)
-                                    continue;
-                                if (work->visited_gen[ngi] == group_gen ||
-                                    work->visited_gen[ngi] == consumed_gen)
-                                    continue;
-
-                                gmin_x = new_min_x; gmax_x = new_max_x;
-                                gmin_y = new_min_y; gmax_y = new_max_y;
-                                gmin_z = new_min_z; gmax_z = new_max_z;
-
-                                work->visited_gen[ngi] = group_gen;
-                                if (back < work->stack_capacity)
-                                    work->stack[back++] = ngi;
-                            }
-                        }
-
-                        /* Extract group voxels by scanning the bounded region */
-                        int32_t sub_ex = gmax_x - gmin_x + 1;
-                        int32_t sub_ey = gmax_y - gmin_y + 1;
-                        int32_t sub_ez = gmax_z - gmin_z + 1;
-
-                        uint8_t sub_buf[VOBJ_TOTAL_VOXELS];
-                        memset(sub_buf, 0, sizeof(sub_buf));
-                        int32_t sub_count = 0;
-
-                        for (int32_t gz = gmin_z; gz <= gmax_z; gz++)
-                        {
-                            for (int32_t gy = gmin_y; gy <= gmax_y; gy++)
-                            {
-                                for (int32_t gx = gmin_x; gx <= gmax_x; gx++)
-                                {
-                                    int32_t cx = gx / CHUNK_SIZE, lx = gx % CHUNK_SIZE;
-                                    int32_t cy = gy / CHUNK_SIZE, ly = gy % CHUNK_SIZE;
-                                    int32_t cz = gz / CHUNK_SIZE, lz = gz % CHUNK_SIZE;
-                                    int32_t gi = (cx + cy * chunks_x + cz * chunks_xy) * CHUNK_VOXEL_COUNT +
-                                                  lx + ly * CHUNK_SIZE + lz * CHUNK_SIZE * CHUNK_SIZE;
-                                    if (gi < 0 || gi >= work->island_ids_size)
-                                        continue;
-                                    if (work->visited_gen[gi] != group_gen)
-                                        continue;
-
-                                    Chunk *chunk = volume_get_chunk(vol, cx, cy, cz);
-                                    if (!chunk)
-                                        continue;
-                                    uint8_t mat = chunk_get(chunk, lx, ly, lz);
-                                    if (mat == 0)
-                                        continue;
-
-                                    int32_t ox = gx - gmin_x;
-                                    int32_t oy = gy - gmin_y;
-                                    int32_t oz = gz - gmin_z;
-                                    sub_buf[ox + oy * sub_ex + oz * sub_ex * sub_ey] = mat;
-                                    sub_count++;
-
-                                    /* Mark as consumed so future seeds skip these */
-                                    work->visited_gen[gi] = consumed_gen;
-                                }
-                            }
-                        }
-
-                        if (sub_count == 0)
-                            continue;
-
-                        Vec3 sub_origin = vec3_create(
-                            vol->bounds.min_x + gmin_x * vol->voxel_size,
-                            vol->bounds.min_y + gmin_y * vol->voxel_size,
-                            vol->bounds.min_z + gmin_z * vol->voxel_size);
-
-                        int32_t obj_idx = voxel_object_world_add_from_voxels(
-                            obj_world, sub_buf,
-                            sub_ex, sub_ey, sub_ez,
-                            sub_origin, vol->voxel_size);
-
-                        if (obj_idx >= 0)
-                        {
-                            any_spawned = true;
-                            obj_world->objects[obj_idx].render_delay = 3;
-                            if (local_result.bodies_spawned < DETACH_MAX_SPAWNED)
-                                local_result.spawned_indices[local_result.bodies_spawned] = obj_idx;
-                            local_result.bodies_spawned++;
-                            active_bodies++;
-                        }
-                    }
-                }
-            }
-
-        oversized_done:
+            /* Whatever did not fit under the body limit goes as debris */
             connectivity_remove_island(vol, island, work);
-            if (!any_spawned)
+            if (spawned == 0)
                 local_result.voxels_removed += island->voxel_count;
             processed++;
             continue;
         }
 
         uint8_t extract_buf[VOBJ_TOTAL_VOXELS];
-        memset(extract_buf, 0, sizeof(extract_buf));
-
         Vec3 extract_origin;
         int32_t extracted = connectivity_extract_island_with_ids(vol, island, work,
                                                                  extract_buf,

@@ -43,9 +43,10 @@ typedef struct
     int32_t islands_processed;
     int32_t bodies_spawned;
     int32_t voxels_removed;
-    int32_t islands_skipped;
+    int32_t islands_skipped; /* Removed as debris: max_bodies_alive was reached */
     int32_t particles_spawned;
     int32_t spawned_indices[DETACH_MAX_SPAWNED];
+    bool analysis_requeued; /* Some floating islands were left for the next call */
 } DetachResult;
 
 /* Default config */
@@ -62,8 +63,9 @@ static inline DetachConfig detach_config_default(void)
 }
 
 /*
- * Destroy voxels at a point on an object.
- * Automatically splits disconnected islands into separate objects.
+ * Destroy the object's voxels within destroy_radius of impact_point. Shape recalc
+ * and splitting off disconnected pieces are queued for
+ * voxel_object_world_process_recalcs / voxel_object_world_process_splits.
  *
  * Returns number of voxels destroyed.
  * Optionally outputs destroyed voxel positions and materials.
@@ -72,6 +74,23 @@ int32_t detach_object_at_point(VoxelObjectWorld *world, int32_t obj_index,
                                Vec3 impact_point, float destroy_radius,
                                Vec3 *out_positions, uint8_t *out_materials,
                                int32_t max_output);
+
+/* Largest terrain destruction radius: the sphere must fit one edit batch, or
+ * volume_edit_set would drop edits past the budget while they are still reported */
+#define DETACH_TERRAIN_MAX_RADIUS_VOXELS 7
+
+/*
+ * Destroy the breakable terrain voxels at the whole-voxel offsets from center within
+ * radius_voxels (clamped to DETACH_TERRAIN_MAX_RADIUS_VOXELS). Integer offsets, not
+ * float steps: accumulated rounding used to drop the sphere's axis tips. Done as one
+ * edit batch, which queues the cut for detach_terrain_process.
+ *
+ * Returns number of voxels destroyed.
+ * Optionally outputs destroyed voxel positions and materials.
+ */
+int32_t detach_terrain_at_point(VoxelVolume *vol, Vec3 center, int32_t radius_voxels,
+                                Vec3 *out_positions, uint8_t *out_materials,
+                                int32_t max_output);
 
 /*
  * Process terrain detachment after voxel edits.

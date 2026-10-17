@@ -2,204 +2,47 @@
 #define CAMERA_GLSL
 
 /*
- * camera.glsl - Unified camera utilities for ray generation and depth handling
- *
- * All functions take explicit parameters to work with any push constant naming.
- * Supports both perspective and orthographic projection.
+ * camera.glsl - perspective camera ray generation and depth conversion.
+ * Linear depth is the distance along the primary ray from the camera position.
  */
 
-/*
- * Generate a ray for a given pixel coordinate.
- *
- * For perspective: rays originate from camera_pos, direction varies per pixel
- * For orthographic: ray origin varies per pixel, direction is constant (forward)
- */
+/* Primary ray through the center of a pixel */
 void camera_generate_ray(
     ivec2 pixel,
     ivec2 screen_size,
     mat4 inv_view,
     mat4 inv_projection,
     vec3 camera_pos,
-    bool is_orthographic,
     out vec3 ray_origin,
     out vec3 ray_dir
 ) {
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(screen_size);
-    vec2 ndc = uv * 2.0 - 1.0;
+    vec2 ndc = (vec2(pixel) + 0.5) / vec2(screen_size) * 2.0 - 1.0;
 
-    if (is_orthographic) {
-        /* Orthographic: parallel rays from near plane */
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = inv_projection * near_clip;
-        vec4 far_view = inv_projection * far_clip;
-        vec3 near_world = (inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        ray_origin = near_world;
-        ray_dir = normalize(far_world - near_world);
-    } else {
-        /* Perspective: rays from camera position */
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        ray_dir = normalize((inv_view * ray_view).xyz);
-        ray_origin = camera_pos;
-    }
+    vec4 ray_view = inv_projection * vec4(ndc, -1.0, 1.0);
+    ray_dir = normalize((inv_view * vec4(ray_view.xy, -1.0, 0.0)).xyz);
+    ray_origin = camera_pos;
 }
 
-/*
- * Halton sequence for TAA jitter (base 2 and 3)
- */
-float halton(int index, int base) {
-    float f = 1.0;
-    float r = 0.0;
-    int i = index;
-    while (i > 0) {
-        f = f / float(base);
-        r = r + f * float(i % base);
-        i = i / base;
-    }
-    return r;
-}
-
-vec2 get_taa_jitter(int frame_index) {
-    int idx = (frame_index % 16) + 1; /* 16-sample Halton sequence */
-    return vec2(halton(idx, 2), halton(idx, 3)) - 0.5; /* Center around 0 */
-}
-
-/*
- * Generate a ray with TAA subpixel jitter.
- */
-void camera_generate_ray_jittered(
-    ivec2 pixel,
-    ivec2 screen_size,
-    mat4 inv_view,
-    mat4 inv_projection,
-    vec3 camera_pos,
-    bool is_orthographic,
-    vec2 jitter, /* Subpixel offset in range [-0.5, 0.5] */
-    out vec3 ray_origin,
-    out vec3 ray_dir
-) {
-    vec2 uv = (vec2(pixel) + 0.5 + jitter) / vec2(screen_size);
-    vec2 ndc = uv * 2.0 - 1.0;
-
-    if (is_orthographic) {
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = inv_projection * near_clip;
-        vec4 far_view = inv_projection * far_clip;
-        vec3 near_world = (inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        ray_origin = near_world;
-        ray_dir = normalize(far_world - near_world);
-    } else {
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        ray_dir = normalize((inv_view * ray_view).xyz);
-        ray_origin = camera_pos;
-    }
-}
-
-/*
- * Generate a ray from UV coordinates (for fragment shaders).
- */
-void camera_generate_ray_uv(
-    vec2 uv,
-    mat4 inv_view,
-    mat4 inv_projection,
-    vec3 camera_pos,
-    bool is_orthographic,
-    out vec3 ray_origin,
-    out vec3 ray_dir
-) {
-    vec2 ndc = uv * 2.0 - 1.0;
-
-    if (is_orthographic) {
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = inv_projection * near_clip;
-        vec4 far_view = inv_projection * far_clip;
-        vec3 near_world = (inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        ray_origin = near_world;
-        ray_dir = normalize(far_world - near_world);
-    } else {
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        ray_dir = normalize((inv_view * ray_view).xyz);
-        ray_origin = camera_pos;
-    }
-}
-
-/*
- * Reconstruct world position from UV and linear depth.
- *
- * This is the inverse of the ray generation - given where a ray hit,
- * compute the 3D world position.
- */
-vec3 camera_reconstruct_world_pos(
-    vec2 uv,
-    float depth,
-    mat4 inv_view,
-    mat4 inv_projection,
-    vec3 camera_pos,
-    bool is_orthographic
-) {
-    vec2 ndc = uv * 2.0 - 1.0;
-
-    if (is_orthographic) {
-        vec4 near_clip = vec4(ndc.x, ndc.y, 0.0, 1.0);
-        vec4 far_clip = vec4(ndc.x, ndc.y, 1.0, 1.0);
-        vec4 near_view = inv_projection * near_clip;
-        vec4 far_view = inv_projection * far_clip;
-        vec3 near_world = (inv_view * vec4(near_view.xyz, 1.0)).xyz;
-        vec3 far_world = (inv_view * vec4(far_view.xyz, 1.0)).xyz;
-        vec3 ray_dir = normalize(far_world - near_world);
-        return near_world + ray_dir * depth;
-    } else {
-        vec4 ray_clip = vec4(ndc.x, ndc.y, -1.0, 1.0);
-        vec4 ray_view = inv_projection * ray_clip;
-        ray_view.z = -1.0;
-        ray_view.w = 0.0;
-        vec3 ray_dir = normalize((inv_view * ray_view).xyz);
-        return camera_pos + ray_dir * depth;
-    }
-}
-
-/*
- * Convert linear depth to NDC depth for gl_FragDepth.
- *
- * Perspective uses reverse-Z mapping for better depth precision.
- * Orthographic uses linear mapping since depth is distance from near plane.
- */
-float camera_linear_depth_to_ndc_ortho(float linear_depth, float near, float far, bool is_orthographic) {
-    if (is_orthographic) {
-        /* Ortho: depth is distance from near plane, maps linearly to [0,1] */
-        return clamp(linear_depth / (far - near), 0.0, 1.0);
-    } else {
-        /* Perspective: reverse-Z for better precision */
-        return (far - near * far / linear_depth) / (far - near);
-    }
-}
-
-/* Legacy overload for shaders without orthographic flag - assumes perspective */
+/* Linear depth to the [0, 1] depth-buffer value of the projection (standard, not reversed Z) */
 float camera_linear_depth_to_ndc(float linear_depth, float near, float far) {
     return (far - near * far / linear_depth) / (far - near);
 }
 
+/* Clip w (view distance) below which a point counts as at or behind the previous camera */
+const float CAMERA_MIN_PREV_W = 1e-4;
+
 /*
- * Get camera forward direction in world space.
- * For orthographic projection, this is the ray direction (same for all pixels).
+ * Motion vector (previous uv - current uv) of a point from where it is on screen this frame
+ * without the TAA jitter (the pixel centre minus the jitter, both in uv) and its clip position
+ * last frame. A point at or behind the previous camera had no screen position: the result lies
+ * off screen, so every temporal pass rejects its history.
  */
-vec3 camera_get_forward(mat4 inv_view) {
-    /* Camera looks down -Z in view space, transform to world space */
-    return normalize((inv_view * vec4(0.0, 0.0, -1.0, 0.0)).xyz);
+vec2 camera_motion_vector(vec2 curr_uv, vec4 prev_clip) {
+    if (prev_clip.w <= CAMERA_MIN_PREV_W) {
+        return vec2(2.0);
+    }
+    vec2 prev_uv = (prev_clip.xy / prev_clip.w) * 0.5 + 0.5;
+    return prev_uv - curr_uv;
 }
 
 #endif /* CAMERA_GLSL */

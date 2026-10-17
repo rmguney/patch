@@ -9,27 +9,19 @@
  * 1. CREATE FILE: Add content/shapes/shape_<name>.c with:
  *    - static const uint8_t k_<name>_voxels[...]
  *    - const VoxelShape g_shape_<name> = { ... }
+ *    or convert a mesh: voxelize models/helmet.obj content/shapes/shape_helmet.c --name helmet
  *
- * 2. ADD TO BUILD: Update CMakeLists.txt CONTENT_SHAPE_SOURCES or rely on glob.
+ * 2. BUILD: The CMake glob over content/shapes/ picks the file up.
  *
  * 3. DECLARE: In voxel_shapes.h, add:
  *    #define SHAPE_<NAME> N   // next available ID
- *    extern const VoxelShape g_shape_<name>;
  *
- * 4. REGISTER: Add pointer to g_voxel_shapes[] below.
+ * 4. REGISTER: Add an extern below and a pointer to g_voxel_shapes[] at index N.
  *
- * 5. UPDATE: Increment g_voxel_shape_count and static_assert.
- *
- * === GENERATED SHAPES (from voxelize tool) ===
- *
- * Run: ./build/voxelize models/helmet.obj content/shapes/shape_helmet.c --name helmet
- * Then follow steps 2-5 above.
- *
- * === LINK-TIME VALIDATION ===
+ * 5. UPDATE: Base g_voxel_shape_count on the new highest ID.
  *
  * - Missing shape file → linker error (unresolved symbol)
- * - Missing registration → static_assert fails
- * - ID mismatch → static_assert fails
+ * - Missing registration → NULL table entry (test_content checks every ID)
  */
 
 #include "voxel_shapes.h"
@@ -39,16 +31,12 @@ extern const VoxelShape g_shape_sphere;
 extern const VoxelShape g_shape_cube;
 extern const VoxelShape g_shape_gary;
 
-/*
- * Global shape registration table.
- * Order must match SHAPE_* constants in voxel_shapes.h.
- */
+/* Global shape registration table, indexed by SHAPE_* */
 const VoxelShape *const g_voxel_shapes[VOXEL_SHAPE_MAX_COUNT] = {
-    &g_shape_sphere, /* SHAPE_SPHERE = 0 */
-    &g_shape_cube,   /* shape_cube = 1 */
-    &g_shape_gary,   /* SHAPE_GARY = 2 */
+    [SHAPE_SPHERE] = &g_shape_sphere,
+    [SHAPE_CUBE] = &g_shape_cube,
+    [SHAPE_GARY] = &g_shape_gary,
 };
 
-const int32_t g_voxel_shape_count = 3;
-
-STATIC_ASSERT(SHAPE_GARY + 1 == 3, "Shape count must match g_voxel_shape_count");
+/* SHAPE_GARY is the highest registered ID */
+const int32_t g_voxel_shape_count = SHAPE_GARY + 1;

@@ -3,6 +3,7 @@
 
 #include "engine/core/types.h"
 #include "engine/core/math.h"
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -10,69 +11,44 @@ extern "C"
 {
 #endif
 
-/* Material ID 0 is reserved for empty/air (alias for engine constant) */
-#define MATERIAL_ID_EMPTY VOXEL_MATERIAL_EMPTY
-
 /* Maximum number of materials (must match engine constant) */
 #define MATERIAL_MAX_COUNT VOXEL_MATERIAL_MAX
 
-    /* Physical properties flags */
+    /* Material flags. The values reach the GPU palette as a float: the shaders treat
+     * flags >= MAT_FLAG_TRANSPARENT as see-through (shaders/include/materials.glsl).
+     *
+     * Ground, rock, wood, leaves and props are SOLID (and all but metal BREAKABLE). Ground
+     * flora (flowers, mushrooms) is BREAKABLE only: bodies and debris pass through it,
+     * though it still rides along when the ground under it breaks loose. Water is
+     * TRANSPARENT and LIQUID: nothing collides with it, it never joins a loose island or a
+     * body, and picking rays pass through it. Air is TRANSPARENT only. */
     typedef enum
     {
-        MAT_FLAG_NONE = 0,
-        MAT_FLAG_SOLID = 1 << 0,       /* Blocks movement */
-        MAT_FLAG_BREAKABLE = 1 << 1,   /* Can be destroyed */
-        MAT_FLAG_FLAMMABLE = 1 << 2,   /* Can burn */
-        MAT_FLAG_CONDUCTIVE = 1 << 3,  /* Conducts electricity */
-        MAT_FLAG_TRANSPARENT = 1 << 4, /* Light passes through */
-        MAT_FLAG_LIQUID = 1 << 5,      /* Liquid material (water, lava) */
+        MAT_FLAG_SOLID = 1 << 0,       /* Rigid bodies and debris collide with it */
+        MAT_FLAG_BREAKABLE = 1 << 1,   /* Player destruction removes it */
+        MAT_FLAG_TRANSPARENT = 1 << 4, /* Light passes through; rendered as water (see below) */
+        MAT_FLAG_LIQUID = 1 << 5,      /* Stays where it is: never part of an island or a body */
     } MaterialFlags;
+
+    /* A transparent material is rendered as water whose colour is the light a white beam
+     * keeps after 10 metres of it: the lighting derives the water's absorption per metre from
+     * it (shaders/include/materials.glsl, WATER_COLOUR_DEPTH), and a water surface with
+     * nothing opaque under it shows it. */
 
     /*
      * MaterialDescriptor: immutable definition of a material type.
      * RGB color is stored here, not per-voxel.
-     * Minecraft-style properties for destruction/interaction.
      */
     typedef struct
     {
-        const char *name;  /* Display name (for debug/tools only) */
-        uint8_t r, g, b;   /* Base RGB color */
+        uint8_t r, g, b;   /* Base RGB color (sRGB) */
         uint8_t flags;     /* MaterialFlags */
-        float density;     /* Reserved for physics: mass per voxel unit */
-        float hardness;    /* Resistance to damage (0-1), affects break time */
-        float friction;    /* Surface friction coefficient */
-        float restitution; /* Bounciness (0-1) */
+        float density;     /* Mass per voxel unit (voxel object mass) */
+        float friction;    /* Surface friction coefficient (rigid body ground contact) */
         float emissive;    /* Emissive intensity (0-1+, can exceed 1 for glow) */
         float roughness;   /* Surface roughness for specular (0=mirror, 1=matte) */
-
-        /* Minecraft-style destruction/interaction properties */
-        float blast_resistance; /* Resistance to explosions (0-1) */
-        float burn_rate;        /* How fast it burns when on fire (0=won't burn) */
-        uint8_t drop_id;        /* Material dropped when destroyed (0xFF = same as self) */
-        uint8_t tool_tier;      /* Minimum tool tier required to break (0=hand) */
-
-        /* Render properties (single source of truth) */
-        float metallic; /* Metallic factor for PBR (0=dielectric, 1=metal) */
-
-        /* Liquid/transparency properties (for water, glass, etc.) */
-        float transparency;   /* 0=opaque, 1=fully transparent */
-        float ior;            /* Index of refraction (1.0=air, 1.33=water, 1.5=glass) */
-        float absorption[3];  /* RGB absorption coefficients for colored transparency */
+        float metallic;    /* Metallic factor for PBR (0=dielectric, 1=metal) */
     } MaterialDescriptor;
-
-    /* Drop ID constant: material drops itself */
-#define MAT_DROP_SELF 0xFF
-
-    /* Tool tier constants */
-#define TOOL_TIER_HAND 0
-#define TOOL_TIER_WOOD 1
-#define TOOL_TIER_STONE 2
-#define TOOL_TIER_IRON 3
-#define TOOL_TIER_DIAMOND 4
-
-    /* Static assertion for descriptor size (includes liquid properties) */
-STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 88,
-              "MaterialDescriptor size unexpected");
 
     /*
      * Global material table - explicit registration via pointer array.
@@ -82,11 +58,7 @@ STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
     extern const MaterialDescriptor *const g_materials[MATERIAL_MAX_COUNT];
     extern const int32_t g_material_count;
 
-    /*
-     * Lookup material by ID.
-     * Returns pointer to material descriptor.
-     * Out-of-range IDs return NULL (undefined materials).
-     */
+    /* Lookup material by ID. Unregistered IDs return NULL. */
     static inline const MaterialDescriptor *material_get(uint8_t id)
     {
         return g_materials[id];
@@ -104,99 +76,25 @@ STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
             (float)mat->b / 255.0f);
     }
 
-    /* Check material flags */
-    static inline bool material_is_solid(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat && (mat->flags & MAT_FLAG_SOLID) != 0;
-    }
-
     static inline bool material_is_breakable(uint8_t id)
     {
         const MaterialDescriptor *mat = material_get(id);
         return mat && (mat->flags & MAT_FLAG_BREAKABLE) != 0;
     }
 
-    /* Get material emissive intensity */
-    static inline float material_get_emissive(uint8_t id)
+    static inline bool material_is_solid(uint8_t id)
     {
         const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->emissive : 0.0f;
+        return mat && (mat->flags & MAT_FLAG_SOLID) != 0;
     }
 
-    /* Get material roughness */
-    static inline float material_get_roughness(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->roughness : 1.0f;
-    }
-
-    /* Get blast resistance */
-    static inline float material_get_blast_resistance(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->blast_resistance : 0.0f;
-    }
-
-    /* Get metallic factor */
-    static inline float material_get_metallic(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->metallic : 0.0f;
-    }
-
-    /* Get drop material ID (returns self if MAT_DROP_SELF) */
-    static inline uint8_t material_get_drop_id(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        if (!mat)
-            return 0;
-        uint8_t drop = mat->drop_id;
-        return (drop == MAT_DROP_SELF) ? id : drop;
-    }
-
-    /* Check if material can be broken by given tool tier */
-    static inline bool material_can_break_with_tier(uint8_t id, uint8_t tool_tier)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat && (mat->flags & MAT_FLAG_BREAKABLE) != 0 && tool_tier >= mat->tool_tier;
-    }
-
-    /* Calculate damage multiplier based on hardness (higher hardness = more hits) */
-    static inline float material_get_damage_multiplier(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        if (!mat)
-            return 1.0f;
-        float hardness = mat->hardness;
-        return (hardness > 0.0f) ? (1.0f / hardness) : 1.0f;
-    }
-
-    /* Check if material is liquid */
     static inline bool material_is_liquid(uint8_t id)
     {
         const MaterialDescriptor *mat = material_get(id);
         return mat && (mat->flags & MAT_FLAG_LIQUID) != 0;
     }
 
-    /* Get material transparency (0=opaque, 1=fully transparent) */
-    static inline float material_get_transparency(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->transparency : 0.0f;
-    }
-
-    /* Get material index of refraction */
-    static inline float material_get_ior(uint8_t id)
-    {
-        const MaterialDescriptor *mat = material_get(id);
-        return mat ? mat->ior : 1.0f;
-    }
-
-/*
- * Predefined material IDs for common types.
- * These must match the registration order in materials.c.
- */
+/* Material IDs: indices into g_materials (registered in materials.c) */
 #define MAT_AIR VOXEL_MATERIAL_EMPTY /* Canonical: 0 */
 #define MAT_STONE 1
 #define MAT_DIRT 2
@@ -230,16 +128,22 @@ STATIC_ASSERT(sizeof(MaterialDescriptor) >= 72 && sizeof(MaterialDescriptor) <= 
 #define MAT_MUSHROOM 30
 #define MAT_SAND 31
 #define MAT_SNOW 32
-#define MAT_ICE 33
-#define MAT_MOSS 34
-#define MAT_CLAY 35
-#define MAT_GRAVEL 36
-#define MAT_COBBLESTONE 37
-#define MAT_WEAK_ROCK 38
-#define MAT_GLOWING_ROCK 39
-#define MAT_GLOWING_MUSHROOM 40
-#define MAT_WATER 41
-#define MAT_LAVA 42
+#define MAT_MOSS 33
+#define MAT_GRAVEL 34
+#define MAT_GLOWING_MUSHROOM 35
+#define MAT_WATER 36
+#define MAT_DRY_GRASS 37
+#define MAT_JUNGLE_GRASS 38
+#define MAT_MUD 39
+#define MAT_PODZOL 40
+#define MAT_SANDSTONE 41
+#define MAT_ICE 42
+#define MAT_CACTUS 43
+#define MAT_SWAMP_WATER 44
+
+/* The pastel colours of props and pillars: the consecutive IDs MAT_PINK .. MAT_ROSE */
+#define MAT_PASTEL_FIRST MAT_PINK
+#define MAT_PASTEL_COUNT (MAT_ROSE - MAT_PINK + 1)
 
 #ifdef __cplusplus
 }

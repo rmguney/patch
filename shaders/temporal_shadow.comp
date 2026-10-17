@@ -1,49 +1,23 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/*
+ * temporal_shadow.comp - temporal accumulation of the shadow mask: reprojects last frame's
+ * resolved shadow with the motion vectors and blends it with a depth-aware 3x3 blur of the
+ * current one, clamped to the current neighborhood.
+ */
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(push_constant) uniform Constants {
-    mat4 inv_view;
-    mat4 inv_projection;
-    vec3 bounds_min;
-    float voxel_size;
-    vec3 bounds_max;
-    float chunk_size;
-    vec3 camera_pos;
-    int history_valid;
-    ivec3 grid_size;
-    int total_chunks;
-    ivec3 chunks_dim;
-    int frame_count;
-    int object_shadow_quality;
-    int debug_mode;
-    int is_orthographic;
-    int max_steps;
-    float near_plane;
-    float far_plane;
-    int object_count;
-    int shadow_quality;
-    int shadow_contact;
-    int ao_quality;
-    int lod_quality;
-    int taa_quality;
-} pc;
+#include "include/voxel_push_constants.glsl"
 
-/* Set 0: inputs */
-layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;  /* Keep for potential future use */
-layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;        /* Keep for potential future use */
-layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
-layout(SET_BINDING(0, 3)) uniform sampler2D shadow_current;
-layout(SET_BINDING(0, 4)) uniform sampler2D shadow_history;
+/* Set 0: inputs (binding 4, the temporal UBO, is used by temporal_ao.comp only) */
+layout(set = 0, binding = 0) uniform sampler2D gbuffer_linear_depth;
+layout(set = 0, binding = 1) uniform sampler2D gbuffer_motion_vector;
+layout(set = 0, binding = 2) uniform sampler2D shadow_current;
+layout(set = 0, binding = 3) uniform sampler2D shadow_history;
 
 /* Set 1: output */
-layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_shadow_resolved;
+layout(r8, set = 1, binding = 0) writeonly uniform image2D out_shadow_resolved;
 
 const float HISTORY_BLEND_MAX = 0.86;  /* Higher = smoother but more lag */
 const float HISTORY_BLEND_MIN = 0.50;  /* Lower = faster response during motion */

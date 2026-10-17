@@ -1,6 +1,6 @@
 #include "ui_renderer.h"
 #include "renderer.h"
-#include "ui_font.h"
+#include "engine/sim/ui_layout.h"
 #include <cstdio>
 
 namespace patch
@@ -22,11 +22,6 @@ namespace patch
         int32_t window_width;
         int32_t window_height;
     };
-
-    static inline float clampf_local(float v, float lo, float hi)
-    {
-        return v < lo ? lo : (v > hi ? hi : v);
-    }
 
     static void draw_rect_px(UIDrawContext *ctx, float x_px, float y_px, float w_px, float h_px, Vec3 color, float alpha)
     {
@@ -50,7 +45,7 @@ namespace patch
         Vec3 text_color = enabled ? (hovered ? color_hover : color_text) : color_text_dim;
 
         const float unit = text_h_px / 7.0f;
-        const float border_px = clampf_local(unit * 0.7f, 1.0f, 4.0f);
+        const float border_px = clampf(unit * 0.7f, 1.0f, 4.0f);
 
         const float x_px = cx_px - w_px * 0.5f;
         const float y_px = cy_px - h_px * 0.5f;
@@ -72,7 +67,7 @@ namespace patch
         draw_text_centered_px(ctx, cx_px, y_px, title_h_px, color_primary_bright, 1.0f, title);
 
         const float line_w_px = w * 0.25f;
-        const float line_h_px = clampf_local(min_dim * 0.003f, 2.0f, 6.0f);
+        const float line_h_px = clampf(min_dim * 0.003f, 2.0f, 6.0f);
         const float line_x_px = cx_px - line_w_px * 0.5f;
         const float line_y_px = y_px + title_h_px + (title_h_px / 7.0f) * 2.0f;
         draw_rect_px(ctx, line_x_px, line_y_px, line_w_px, line_h_px, color_primary, 0.7f);
@@ -84,25 +79,23 @@ namespace patch
         const float h = (float)((ctx->window_height > 0) ? ctx->window_height : 1);
         const float min_dim = w < h ? w : h;
 
-        const float title_h_px = clampf_local(min_dim * 0.06f, 28.0f, 56.0f);
-        const float item_h_px = clampf_local(min_dim * 0.024f, 12.0f, 20.0f);
-        const float label_h_px = clampf_local(item_h_px * 0.85f, 10.0f, 18.0f);
+        const float title_h_px = clampf(min_dim * 0.06f, 28.0f, 56.0f);
+        /* The rows where ui_menu_update() hit-tests them */
+        const UIMenuLayout layout = ui_menu_layout(menu->item_count, ctx->window_width, ctx->window_height);
+        const float item_h_px = layout.item_h_px;
+        const float label_h_px = clampf(item_h_px * 0.85f, 10.0f, 18.0f);
         const float unit = item_h_px / 7.0f;
 
         draw_title_px(ctx, menu->title, title_h_px);
 
-        const float button_w_px = clampf_local(w * 0.32f, 200.0f, 480.0f);
-        const float button_h_px = clampf_local(item_h_px * 1.8f, 22.0f, 40.0f);
-        const float spacing_px = clampf_local(button_h_px * 0.35f, 6.0f, 16.0f);
-
-        const float cx_px = w * 0.5f;
-        const float center_y_px = h * 0.55f;
-        const float start_y_px = center_y_px - (float)(menu->item_count - 1) * (button_h_px + spacing_px) * 0.5f;
+        const float button_w_px = layout.button_w_px;
+        const float button_h_px = layout.button_h_px;
+        const float cx_px = layout.x_px + button_w_px * 0.5f;
 
         for (int32_t i = 0; i < menu->item_count; i++)
         {
             UIMenuItem *item = &menu->items[i];
-            float row_y_px = start_y_px + (float)i * (button_h_px + spacing_px);
+            float row_y_px = ui_menu_row_y(&layout, i);
 
             if (item->type == UI_ITEM_LABEL)
             {
@@ -111,21 +104,10 @@ namespace patch
                     draw_text_centered_px(ctx, cx_px, row_y_px, label_h_px, color_text_dim, 0.8f, item->text);
                 }
             }
-            else if (item->type == UI_ITEM_BUTTON || item->type == UI_ITEM_TOGGLE)
+            else if (item->type == UI_ITEM_BUTTON)
             {
-                char display_text[UI_MAX_TEXT_LEN + 8];
-                if (item->type == UI_ITEM_TOGGLE)
-                {
-                    snprintf(display_text, sizeof(display_text), "%s: %s",
-                             item->text, item->toggle_state ? "ON" : "OFF");
-                }
-                else
-                {
-                    snprintf(display_text, sizeof(display_text), "%s", item->text);
-                }
-
                 draw_button_px(ctx, cx_px, row_y_px + button_h_px * 0.5f, button_w_px, button_h_px,
-                               item_h_px, display_text, item->hovered, item->enabled);
+                               item_h_px, item->text, item->hovered, item->enabled);
             }
             else if (item->type == UI_ITEM_SLIDER)
             {
@@ -146,7 +128,7 @@ namespace patch
                 Vec3 border_color = can_interact ? color_hover : (item->enabled ? color_primary : color_text_dim);
                 Vec3 text_color = item->enabled ? (can_interact ? color_hover : color_text) : color_text_dim;
 
-                const float border_px = clampf_local(unit * 0.7f, 1.0f, 4.0f);
+                const float border_px = clampf(unit * 0.7f, 1.0f, 4.0f);
                 const float x_px = cx_px - button_w_px * 0.5f;
                 const float y_px = row_y_px;
 
@@ -207,7 +189,7 @@ namespace patch
 
         const float margin_px = min_dim * 0.025f;
         const float corner_size_px = min_dim * 0.04f;
-        const float corner_thickness_px = clampf_local(min_dim * 0.002f, 2.0f, 6.0f);
+        const float corner_thickness_px = clampf(min_dim * 0.002f, 2.0f, 6.0f);
 
         Vec3 deco_color = color_primary;
         float deco_alpha = 0.5f;
@@ -230,7 +212,7 @@ namespace patch
         const float w = (float)((ctx->window_width > 0) ? ctx->window_width : 1);
         const float h = (float)((ctx->window_height > 0) ? ctx->window_height : 1);
         const float min_dim = w < h ? w : h;
-        const float text_h_px = clampf_local(min_dim * 0.025f, 12.0f, 20.0f);
+        const float text_h_px = clampf(min_dim * 0.025f, 12.0f, 20.0f);
         const float unit = text_h_px / 7.0f;
         draw_text_centered_px(ctx, w * 0.5f, h - (unit * 10.0f), text_h_px, color_text_dim, 0.6f, "PATCH PHYSICS SANDBOX");
     }
@@ -285,20 +267,20 @@ namespace patch
         draw_rect_px(&ctx, 0.0f, 0.0f, w, h, color_background, 1.0f);
         draw_decorations_px(&ctx);
 
-        const float title_h = clampf_local(min_dim * 0.06f, 28.0f, 56.0f);
+        const float title_h = clampf(min_dim * 0.06f, 28.0f, 56.0f);
         draw_text_centered_px(&ctx, cx, h * 0.35f, title_h, color_primary_bright, 1.0f, "LOADING");
 
-        const float stage_h = clampf_local(min_dim * 0.025f, 12.0f, 20.0f);
+        const float stage_h = clampf(min_dim * 0.025f, 12.0f, 20.0f);
         if (state->stage_name && state->stage_name[0] != '\0')
         {
             draw_text_centered_px(&ctx, cx, h * 0.43f, stage_h, color_text_dim, 0.8f, state->stage_name);
         }
 
-        const float bar_w = clampf_local(w * 0.4f, 200.0f, 600.0f);
-        const float bar_h = clampf_local(min_dim * 0.015f, 8.0f, 20.0f);
+        const float bar_w = clampf(w * 0.4f, 200.0f, 600.0f);
+        const float bar_h = clampf(min_dim * 0.015f, 8.0f, 20.0f);
         const float bar_x = cx - bar_w * 0.5f;
         const float bar_y = h * 0.52f;
-        const float border = clampf_local(min_dim * 0.002f, 1.0f, 3.0f);
+        const float border = clampf(min_dim * 0.002f, 1.0f, 3.0f);
 
         draw_rect_px(&ctx, bar_x - border, bar_y - border,
                      bar_w + border * 2.0f, bar_h + border * 2.0f, color_primary, 0.4f);

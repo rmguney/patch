@@ -1,9 +1,32 @@
 #include "app_debug.h"
 #include "engine/core/profile.h"
+#include "game/weather.h"
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <cmath>
+
+#ifdef PATCH_PROFILE
+/* CSV keys per ProfileCategory, in enum order (test_render_perf parses these) */
+static const char *const PROFILE_CSV_NAMES[] = {
+    "frame_total", "poll_events", "ui_update", "sim_tick", "sim_physics",
+    "sim_voxel_update", "sim_connectivity", "sim_particles",
+    "voxel_raycast", "voxel_edit", "voxel_occupancy", "voxel_upload",
+    "render_total", "render_shadow", "render_main", "render_ui_overlay", "render_ui",
+    "volume_init",
+    "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise",
+    "render_volume_begin", "render_chunk_upload", "render_shadow_volume",
+    "shadow_terrain_pack", "shadow_mip_regen", "shadow_upload"};
+static_assert(sizeof(PROFILE_CSV_NAMES) / sizeof(PROFILE_CSV_NAMES[0]) == PROFILE_COUNT,
+              "PROFILE_CSV_NAMES must name every ProfileCategory");
+#endif
+
+/* Debug view names, indexed by the renderer's debug mode (shaders/include/debug_views.glsl) */
+static const char *const TERRAIN_DEBUG_MODE_NAMES[] = {
+    "Normal", "Normals", "Albedo", "Depth", "Roughness", "Metallic", "Emissive",
+    "WaterDepth", "Objects", "WorldPos", "ShadowUVW", "Shadow", "AO",
+    "DenoiseRaw", "DenoiseDiff", "Specular+Env"};
+static_assert(sizeof(TERRAIN_DEBUG_MODE_NAMES) / sizeof(TERRAIN_DEBUG_MODE_NAMES[0]) == TERRAIN_DEBUG_MODE_COUNT,
+              "TERRAIN_DEBUG_MODE_NAMES must name every debug view");
 
 void debug_info_clear(DebugInfo *info)
 {
@@ -55,11 +78,6 @@ void debug_info_populate_renderer(DebugInfo *info, const patch::Renderer *render
     if (!renderer)
         return;
 
-    info->gbuffer_init = renderer->DEBUG_is_gbuffer_initialized();
-    info->gbuffer_pipeline_valid = renderer->DEBUG_is_gbuffer_pipeline_valid();
-    info->gbuffer_descriptors_valid = renderer->DEBUG_is_gbuffer_descriptors_valid();
-    info->voxel_res_init = renderer->DEBUG_is_voxel_resources_initialized();
-    info->vobj_res_init = renderer->DEBUG_is_vobj_resources_initialized();
     info->terrain_debug_mode = renderer->DEBUG_get_terrain_debug_mode();
     info->terrain_draw_count = renderer->DEBUG_get_terrain_draw_count();
 
@@ -73,6 +91,9 @@ void debug_info_populate_renderer(DebugInfo *info, const patch::Renderer *render
     info->camera_fwd[2] = cam_fwd.z;
 
     info->gpu_name = renderer->get_gpu_name();
+    const VkExtent2D extent = renderer->get_render_extent();
+    info->render_width = extent.width;
+    info->render_height = extent.height;
     info->cpu_fence_ms = renderer->get_last_wait_fence_ms();
     info->cpu_acquire_ms = renderer->get_last_acquire_ms();
     info->cpu_present_ms = renderer->get_last_present_ms();
@@ -80,8 +101,8 @@ void debug_info_populate_renderer(DebugInfo *info, const patch::Renderer *render
     patch::Renderer::GPUTimings gpu;
     if (renderer->get_last_gpu_timings(&gpu))
     {
-        info->gpu_shadow_ms = gpu.shadow_pass_ms;
-        info->gpu_main_ms = gpu.main_pass_ms;
+        info->gpu_shadow_ms = gpu.shadow_compute_ms;
+        info->gpu_main_ms = gpu.render_pass_ms;
         info->gpu_total_ms = gpu.total_gpu_ms;
         info->gpu_gbuffer_ms = gpu.gbuffer_compute_ms;
         info->gpu_temporal_shadow_ms = gpu.temporal_shadow_ms;
@@ -95,7 +116,9 @@ void debug_info_populate_renderer(DebugInfo *info, const patch::Renderer *render
 
 void debug_info_populate_profiler(DebugInfo *info)
 {
-#ifdef PATCH_PROFILE
+#ifndef PATCH_PROFILE
+    (void)info;
+#else
     float frame_ms = profile_get_last_ms(PROFILE_FRAME_TOTAL);
     info->frame_ms_current = frame_ms;
     info->fps_current = frame_ms > 0.001f ? 1000.0f / frame_ms : 0.0f;
@@ -103,8 +126,6 @@ void debug_info_populate_profiler(DebugInfo *info)
     info->fps_avg = profile_get_avg_fps();
     info->frame_ms_avg = profile_get_avg_ms(PROFILE_FRAME_TOTAL);
     info->frame_ms_max = profile_get_max_ms(PROFILE_FRAME_TOTAL);
-    info->frame_ms_p50 = profile_get_p50_ms(PROFILE_FRAME_TOTAL);
-    info->frame_ms_p95 = profile_get_p95_ms(PROFILE_FRAME_TOTAL);
     info->frame_ms_p99 = profile_get_p99_ms(PROFILE_FRAME_TOTAL);
     info->budget_pct = profile_budget_used_pct();
     info->budget_overruns = profile_budget_overruns();
@@ -113,7 +134,7 @@ void debug_info_populate_profiler(DebugInfo *info)
     info->sim_tick_ms = profile_get_avg_ms(PROFILE_SIM_TICK);
     info->sim_physics_ms = profile_get_avg_ms(PROFILE_SIM_PHYSICS);
     info->sim_particles_ms = profile_get_avg_ms(PROFILE_SIM_PARTICLES);
-    info->sim_collision_ms = profile_get_avg_ms(PROFILE_SIM_COLLISION);
+    info->poll_events_ms = profile_get_avg_ms(PROFILE_POLL_EVENTS);
 
     info->render_total_ms = profile_get_avg_ms(PROFILE_RENDER_TOTAL);
     info->render_shadow_ms = profile_get_avg_ms(PROFILE_RENDER_SHADOW);
@@ -160,6 +181,7 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
 
     fprintf(f, "--- GPU ---\n");
     fprintf(f, "Device: %s\n", info->gpu_name);
+    fprintf(f, "Resolution: %ux%u\n", info->render_width, info->render_height);
     if (info->gpu_timings_valid)
     {
         fprintf(f, "GPU: %.2fms total (gbuf %.2f, shad %.2f, tshad %.2f, ao %.2f, tao %.2f, rend %.2f, taa %.2f, den %.2f)\n",
@@ -171,8 +193,8 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
             info->cpu_fence_ms, info->cpu_acquire_ms, info->cpu_present_ms);
 
     fprintf(f, "--- Sim Timing ---\n");
-    fprintf(f, "Tick: %.2fms (physics %.2fms, particles %.2fms, collision %.2fms)\n\n",
-            info->sim_tick_ms, info->sim_physics_ms, info->sim_particles_ms, info->sim_collision_ms);
+    fprintf(f, "Tick: %.2fms (physics %.2fms, particles %.2fms); event polling %.2fms\n\n",
+            info->sim_tick_ms, info->sim_physics_ms, info->sim_particles_ms, info->poll_events_ms);
 
     fprintf(f, "--- Render Timing ---\n");
     fprintf(f, "Total: %.2fms\n", info->render_total_ms);
@@ -196,11 +218,6 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
     fprintf(f, "Dirty overflow: %s\n\n", info->dirty_overflow ? "YES" : "no");
 
     fprintf(f, "--- Renderer State ---\n");
-    fprintf(f, "G-buffer init: %s\n", info->gbuffer_init ? "yes" : "NO");
-    fprintf(f, "G-buffer pipeline: %s\n", info->gbuffer_pipeline_valid ? "yes" : "NO");
-    fprintf(f, "G-buffer descriptors: %s\n", info->gbuffer_descriptors_valid ? "yes" : "NO");
-    fprintf(f, "Voxel resources init: %s\n", info->voxel_res_init ? "yes" : "NO");
-    fprintf(f, "Vobj resources init: %s\n", info->vobj_res_init ? "yes" : "NO");
     fprintf(f, "Terrain debug mode: %d\n", info->terrain_debug_mode);
     fprintf(f, "Terrain draw count: %d\n\n", info->terrain_draw_count);
 
@@ -242,22 +259,10 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
 
     fprintf(f, "category,avg_ms,max_ms,min_ms,p50_ms,p95_ms,samples\n");
 
-    const char *names[] = {
-        "frame_total", "sim_tick", "sim_physics", "sim_collision",
-        "sim_voxel_update", "sim_connectivity", "sim_particles",
-        "voxel_raycast", "voxel_edit", "voxel_occupancy", "voxel_upload",
-        "render_total", "render_shadow", "render_main", "render_ui_overlay", "render_ui",
-        "volume_init", "prop_spawn",
-        "render_gbuffer", "render_objects", "render_lighting", "render_ao", "render_denoise",
-        "render_volume_begin", "render_chunk_upload", "render_shadow_volume",
-        "shadow_terrain_pack", "shadow_object_stamp", "shadow_mip_regen", "shadow_upload"};
-
-    const int name_count = (int)(sizeof(names) / sizeof(names[0]));
-    const int count = (PROFILE_COUNT < name_count) ? PROFILE_COUNT : name_count;
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < PROFILE_COUNT; i++)
     {
         fprintf(f, "%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
-                names[i],
+                PROFILE_CSV_NAMES[i],
                 profile_get_avg_ms((ProfileCategory)i),
                 profile_get_max_ms((ProfileCategory)i),
                 profile_get_min_ms((ProfileCategory)i),
@@ -269,6 +274,207 @@ bool export_debug_report(const char *filename, const DebugInfo *info)
 
     fclose(f);
     return true;
+}
+
+/*
+ * F2 overlay. Its lines are formatted first, then laid out in whole pixels: the 5x7 font at an
+ * integer scale (unit: screen pixels per font pixel) that the widest line fits at, from the
+ * window's smaller side down to 1; lines still too wide are cut. The buttons below the lines
+ * are hit-tested with the same layout they are drawn with.
+ */
+static constexpr int OVERLAY_MAX_LINES = 16;
+static constexpr int OVERLAY_LINE_CHARS = 128;
+static constexpr float OVERLAY_MARGIN_PX = 20.0f;
+static constexpr int TIME_BUTTON_COUNT = 4;
+static constexpr int WEATHER_BUTTON_COUNT = WEATHER_COUNT; /* one per WeatherState */
+
+/* In font pixels (units) */
+static constexpr float LINE_STEP = 10.0f;    /* from one line to the next */
+static constexpr float SECTION_STEP = 14.0f; /* to a section header */
+static constexpr float EXPORT_BUTTON_W = 60.0f;
+static constexpr float BUTTON_H = 12.0f;
+static constexpr float BUTTON_GAP = 2.0f;
+static constexpr float ROW_GAP = 4.0f;
+static constexpr float TEXT_INSET = 2.0f;
+
+/* Width of a line of 5x7 glyphs on a 6-unit advance */
+static constexpr float text_units(int chars) { return 6.0f * (float)chars - 1.0f; }
+static constexpr float SMALL_BUTTON_W = text_units(6) + 2.0f * TEXT_INSET; /* "CLOUDY", the longest label */
+static constexpr float BUTTON_LABEL_W = text_units(8) + 4.0f;             /* "WEATHER:" and a gap */
+
+static const char *const TIME_LABELS[TIME_BUTTON_COUNT] = {"DAWN", "NOON", "DUSK", "NIGHT"};
+/* WeatherState order; a storm rains or snows by the local climate */
+static const char *const WEATHER_LABELS[WEATHER_BUTTON_COUNT] = {"CLEAR", "CLOUDY", "STORM"};
+static_assert(TIME_BUTTON_COUNT >= WEATHER_BUTTON_COUNT, "the time row is the widest button row");
+
+struct OverlayLine
+{
+    char text[OVERLAY_LINE_CHARS];
+    Vec3 color;
+    float step; /* units down from the previous line (0 for the first) */
+};
+
+struct OverlayText
+{
+    OverlayLine lines[OVERLAY_MAX_LINES];
+    int count;
+};
+
+struct OverlayRect
+{
+    float x, y, w, h;
+
+    bool contains(float px, float py) const { return px >= x && px <= x + w && py >= y && py <= y + h; }
+};
+
+struct OverlayLayout
+{
+    float unit;
+    float text_h;
+    int max_chars; /* longest line that fits */
+    float line_y[OVERLAY_MAX_LINES];
+    OverlayRect export_button;
+    OverlayRect time_buttons[TIME_BUTTON_COUNT];
+    OverlayRect weather_buttons[WEATHER_BUTTON_COUNT];
+};
+
+static OverlayLine *next_line(OverlayText *text, float step, Vec3 color)
+{
+    OverlayLine *line = &text->lines[text->count++];
+    line->step = text->count == 1 ? 0.0f : step;
+    line->color = color;
+    return line;
+}
+
+static void format_overlay_lines(const DebugInfo *info, OverlayText *text)
+{
+    text->count = 0;
+    const Vec3 info_color = vec3_create(0.82f, 0.9f, 1.0f);
+
+    const float display_fps = info->fps_current > 0.001f ? info->fps_current : info->fps_avg;
+    const float display_ms = info->frame_ms_current > 0.001f ? info->frame_ms_current : info->frame_ms_avg;
+    const Vec3 fps_color = display_fps >= 55.0f ? vec3_create(0.4f, 0.9f, 0.4f)
+                           : display_fps >= 30.0f ? vec3_create(1.0f, 0.8f, 0.2f)
+                                                  : vec3_create(1.0f, 0.3f, 0.3f);
+    snprintf(next_line(text, LINE_STEP, fps_color)->text, OVERLAY_LINE_CHARS, "FPS %.0f (%.1fms)", display_fps,
+             display_ms);
+    snprintf(next_line(text, LINE_STEP, info_color)->text, OVERLAY_LINE_CHARS, "Scene: %s", info->scene_name);
+    if (info->spawn_count > 0 || info->tick_count > 0)
+    {
+        snprintf(next_line(text, LINE_STEP, info_color)->text, OVERLAY_LINE_CHARS, "Spawns %d  Ticks %d  Particles %d",
+                 info->spawn_count, info->tick_count, info->particle_count);
+    }
+    snprintf(next_line(text, SECTION_STEP, vec3_create(1.0f, 0.9f, 0.6f))->text, OVERLAY_LINE_CHARS,
+             "--- Debug (F2 toggle, F3 export, F4/F5 mode) ---");
+
+#ifdef PATCH_PROFILE
+    const Vec3 profile_color = vec3_create(1.0f, 0.6f, 0.4f);
+    const float min_fps = info->frame_ms_max > 0.001f ? 1000.0f / info->frame_ms_max : 0.0f;
+    snprintf(next_line(text, LINE_STEP, profile_color)->text, OVERLAY_LINE_CHARS,
+             "FPS: %.0f avg, %.0f min (worst frame)", info->fps_avg, min_fps);
+    snprintf(next_line(text, LINE_STEP, profile_color)->text, OVERLAY_LINE_CHARS,
+             "Frame: %.2fms avg, %.2fms max, %.2fms p99", info->frame_ms_avg, info->frame_ms_max, info->frame_ms_p99);
+    snprintf(next_line(text, LINE_STEP, profile_color)->text, OVERLAY_LINE_CHARS, "Budget: %.0f%% used, %d overruns",
+             info->budget_pct, info->budget_overruns);
+    snprintf(next_line(text, LINE_STEP, profile_color)->text, OVERLAY_LINE_CHARS, "Sim: %.2fms (phys %.2fms, part %.2fms)",
+             info->sim_tick_ms, info->sim_physics_ms, info->sim_particles_ms);
+#endif
+
+    const Vec3 gpu_color = vec3_create(0.8f, 0.7f, 1.0f);
+    snprintf(next_line(text, LINE_STEP, vec3_create(0.6f, 0.9f, 0.6f))->text, OVERLAY_LINE_CHARS, "Device: %s  %ux%u",
+             info->gpu_name, info->render_width, info->render_height);
+    if (info->gpu_timings_valid)
+    {
+        snprintf(next_line(text, LINE_STEP, gpu_color)->text, OVERLAY_LINE_CHARS,
+                 "GPU: %.1fms  gbuf %.1f shad %.1f ts %.1f ao %.1f", info->gpu_total_ms, info->gpu_gbuffer_ms,
+                 info->gpu_shadow_ms, info->gpu_temporal_shadow_ms, info->gpu_ao_ms);
+        snprintf(next_line(text, LINE_STEP, gpu_color)->text, OVERLAY_LINE_CHARS, "     ta %.1f rend %.1f taa %.1f den %.1f",
+                 info->gpu_temporal_ao_ms, info->gpu_main_ms, info->gpu_taa_ms, info->gpu_denoise_ms);
+    }
+
+    snprintf(next_line(text, SECTION_STEP, vec3_create(1.0f, 1.0f, 0.0f))->text, OVERLAY_LINE_CHARS,
+             "--- Scene Debug ---");
+    snprintf(next_line(text, LINE_STEP, vec3_create(1.0f, 1.0f, 0.0f))->text, OVERLAY_LINE_CHARS,
+             "OBJ: %d  CHUNKS: %d/%d  SOLID: %d", info->object_count, info->active_chunks, info->total_chunks,
+             info->solid_voxels);
+    snprintf(next_line(text, LINE_STEP, vec3_create(0.5f, 1.0f, 0.5f))->text, OVERLAY_LINE_CHARS,
+             "UPLOADED: %d  DIRTY_Q: %d  OVERFLOW: %s", info->total_uploaded, info->dirty_queue_count,
+             info->dirty_overflow ? "YES" : "no");
+    const char *mode_name = (info->terrain_debug_mode >= 0 && info->terrain_debug_mode < TERRAIN_DEBUG_MODE_COUNT)
+                                ? TERRAIN_DEBUG_MODE_NAMES[info->terrain_debug_mode]
+                                : "?";
+    snprintf(next_line(text, LINE_STEP, vec3_create(0.5f, 1.0f, 1.0f))->text, OVERLAY_LINE_CHARS,
+             "CAM: %.1f, %.1f, %.1f  MODE: %d (%s)  DRAWS: %d", info->camera_pos[0], info->camera_pos[1],
+             info->camera_pos[2], info->terrain_debug_mode, mode_name, info->terrain_draw_count);
+}
+
+static OverlayLayout layout_overlay(int32_t window_width, int32_t window_height, const OverlayText *text)
+{
+    const float w = (float)((window_width > 0) ? window_width : 1);
+    const float h = (float)((window_height > 0) ? window_height : 1);
+    const float min_dim = (w < h) ? w : h;
+
+    /* Widest row in units: the lines (6 units a character, less the last one's spacing) and the
+     * rows of small buttons */
+    float widest = BUTTON_LABEL_W + TIME_BUTTON_COUNT * SMALL_BUTTON_W + (TIME_BUTTON_COUNT - 1) * BUTTON_GAP;
+    for (int i = 0; i < text->count; i++)
+    {
+        const float line_units = 6.0f * (float)strlen(text->lines[i].text) - 1.0f;
+        widest = line_units > widest ? line_units : widest;
+    }
+
+    OverlayLayout layout = {};
+    const float room = w - 2.0f * OVERLAY_MARGIN_PX;
+    const float preferred = min_dim * 0.022f / 7.0f;
+    const float fitting = room / widest;
+    layout.unit = floorf(preferred < fitting ? preferred : fitting);
+    layout.unit = layout.unit > 1.0f ? layout.unit : 1.0f;
+    layout.text_h = layout.unit * 7.0f;
+    const int fit = (int)((room / layout.unit + 1.0f) / 6.0f);
+    layout.max_chars = fit < OVERLAY_LINE_CHARS - 1 ? (fit > 0 ? fit : 0) : OVERLAY_LINE_CHARS - 1;
+
+    const float u = layout.unit;
+    const float x = OVERLAY_MARGIN_PX;
+    float y = OVERLAY_MARGIN_PX;
+    for (int i = 0; i < text->count; i++)
+    {
+        y += text->lines[i].step * u;
+        layout.line_y[i] = y;
+    }
+
+    y += 12.0f * u;
+    layout.export_button = {x, y, EXPORT_BUTTON_W * u, BUTTON_H * u};
+    y += (BUTTON_H + ROW_GAP) * u;
+    for (int i = 0; i < TIME_BUTTON_COUNT; i++)
+        layout.time_buttons[i] = {x + (BUTTON_LABEL_W + (float)i * (SMALL_BUTTON_W + BUTTON_GAP)) * u, y, SMALL_BUTTON_W * u,
+                                  BUTTON_H * u};
+    y += (BUTTON_H + ROW_GAP) * u;
+    for (int i = 0; i < WEATHER_BUTTON_COUNT; i++)
+        layout.weather_buttons[i] = {x + (BUTTON_LABEL_W + (float)i * (SMALL_BUTTON_W + BUTTON_GAP)) * u, y,
+                                     SMALL_BUTTON_W * u, BUTTON_H * u};
+    return layout;
+}
+
+bool debug_overlay_hit(int32_t window_width, int32_t window_height, const DebugInfo *info, float x, float y)
+{
+    if (!info)
+        return false;
+    OverlayText text;
+    format_overlay_lines(info, &text);
+    const OverlayLayout layout = layout_overlay(window_width, window_height, &text);
+    if (layout.export_button.contains(x, y))
+        return true;
+    for (int i = 0; i < TIME_BUTTON_COUNT; i++)
+    {
+        if (layout.time_buttons[i].contains(x, y))
+            return true;
+    }
+    for (int i = 0; i < WEATHER_BUTTON_COUNT; i++)
+    {
+        if (layout.weather_buttons[i].contains(x, y))
+            return true;
+    }
+    return false;
 }
 
 void draw_debug_overlay(patch::Renderer &renderer,
@@ -288,176 +494,65 @@ void draw_debug_overlay(patch::Renderer &renderer,
     if (!info)
         return;
 
+    OverlayText text;
+    format_overlay_lines(info, &text);
+    const OverlayLayout layout = layout_overlay(window_width, window_height, &text);
+    const float u = layout.unit;
+    const float x = OVERLAY_MARGIN_PX;
+    const Vec3 white = vec3_create(1.0f, 1.0f, 1.0f);
+
     renderer.begin_ui();
-    const float w = (float)((window_width > 0) ? window_width : 1);
-    const float h = (float)((window_height > 0) ? window_height : 1);
-    const float min_dim = (w < h) ? w : h;
 
-    const float text_h_px = min_dim * 0.022f;
-    const float unit = text_h_px / 7.0f;
-    const float margin_px = 20.0f;
-    float x_px = margin_px;
-    float y_px = margin_px;
-    char line[128];
-
-    float display_fps = info->fps_current > 0.001f ? info->fps_current : info->fps_avg;
-    float display_ms = info->frame_ms_current > 0.001f ? info->frame_ms_current : info->frame_ms_avg;
-
-    Vec3 fps_color = display_fps >= 55.0f ? vec3_create(0.4f, 0.9f, 0.4f) : display_fps >= 30.0f ? vec3_create(1.0f, 0.8f, 0.2f)
-                                                                                                 : vec3_create(1.0f, 0.3f, 0.3f);
-    snprintf(line, sizeof(line), "FPS %.0f (%.1fms)", display_fps, display_ms);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, fps_color, 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "Scene: %s", info->scene_name);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.82f, 0.9f, 1.0f), 1.0f, line);
-
-    if (info->spawn_count > 0 || info->tick_count > 0)
+    for (int i = 0; i < text.count; i++)
     {
-        y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "Spawns %d  Ticks %d  Particles %d",
-                 info->spawn_count, info->tick_count, info->particle_count);
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.82f, 0.9f, 1.0f), 1.0f, line);
+        OverlayLine &line = text.lines[i];
+        line.text[layout.max_chars] = '\0'; /* past the window's edge: a long GPU name */
+        renderer.draw_ui_text_px(x, layout.line_y[i], layout.text_h, line.color, 1.0f, line.text);
     }
 
-    y_px += unit * 14.0f;
-    snprintf(line, sizeof(line), "--- Debug (F2 toggle, F3 export, F4/F5 mode) ---");
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.9f, 0.6f), 1.0f, line);
-
-#ifdef PATCH_PROFILE
-    y_px += unit * 10.0f;
-    float min_fps = info->frame_ms_max > 0.001f ? 1000.0f / info->frame_ms_max : 0.0f;
-    snprintf(line, sizeof(line), "FPS: %.0f avg, %.0f min (worst frame)", info->fps_avg, min_fps);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "Frame: %.2fms avg, %.2fms max, %.2fms p99",
-             info->frame_ms_avg, info->frame_ms_max, info->frame_ms_p99);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "Budget: %.0f%% used, %d overruns",
-             info->budget_pct, info->budget_overruns);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "Sim: %.2fms (phys %.2fms, part %.2fms)",
-             info->sim_tick_ms, info->sim_physics_ms, info->sim_particles_ms);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.6f, 0.4f), 1.0f, line);
-#endif
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "Device: %s", info->gpu_name);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.6f, 0.9f, 0.6f), 1.0f, line);
-
-    if (info->gpu_timings_valid)
-    {
-        y_px += unit * 10.0f;
-        snprintf(line, sizeof(line), "GPU: %.1fms  gbuf %.1f shad %.1f ts %.1f ao %.1f ta %.1f rend %.1f taa %.1f den %.1f",
-                 info->gpu_total_ms, info->gpu_gbuffer_ms, info->gpu_shadow_ms,
-                 info->gpu_temporal_shadow_ms, info->gpu_ao_ms, info->gpu_temporal_ao_ms,
-                 info->gpu_main_ms, info->gpu_taa_ms, info->gpu_denoise_ms);
-        renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.8f, 0.7f, 1.0f), 1.0f, line);
-    }
-
-    y_px += unit * 14.0f;
-    snprintf(line, sizeof(line), "--- Scene Debug ---");
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 1.0f, 0.0f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "OBJ: %d  CHUNKS: %d/%d  SOLID: %d",
-             info->object_count, info->active_chunks, info->total_chunks, info->solid_voxels);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 1.0f, 0.0f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "GBUF: %s  PIPE: %s  DESC: %s  VOXRES: %s  VOBJ: %s",
-             info->gbuffer_init ? "yes" : "NO",
-             info->gbuffer_pipeline_valid ? "yes" : "NO",
-             info->gbuffer_descriptors_valid ? "yes" : "NO",
-             info->voxel_res_init ? "yes" : "NO",
-             info->vobj_res_init ? "yes" : "NO");
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(1.0f, 0.5f, 0.0f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    snprintf(line, sizeof(line), "UPLOADED: %d  DIRTY_Q: %d  OVERFLOW: %s",
-             info->total_uploaded, info->dirty_queue_count,
-             info->dirty_overflow ? "YES" : "no");
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 0.5f), 1.0f, line);
-
-    y_px += unit * 10.0f;
-    const char *mode_names[] = {
-        "Normal", "Normals", "Albedo", "Depth", "UVW", "Material", "Roughness",
-        "Metallic", "ObjectID", "---", "WorldPos", "ShadowUVW", "Shadow", "AO",
-        "DenoiseRaw", "DenoiseDiff", "Specular+Env"};
-    const char *mode_name = (info->terrain_debug_mode >= 0 && info->terrain_debug_mode < 17)
-                                ? mode_names[info->terrain_debug_mode]
-                                : "?";
-    snprintf(line, sizeof(line), "CAM: %.1f, %.1f, %.1f  MODE: %d (%s)  DRAWS: %d",
-             info->camera_pos[0], info->camera_pos[1], info->camera_pos[2],
-             info->terrain_debug_mode, mode_name, info->terrain_draw_count);
-    renderer.draw_ui_text_px(x_px, y_px, text_h_px, vec3_create(0.5f, 1.0f, 1.0f), 1.0f, line);
-
-    y_px += unit * 12.0f;
-    const float btn_w = unit * 60.0f;
-    const float btn_h = unit * 12.0f;
-    bool export_hovered = mouse_x >= x_px && mouse_x <= x_px + btn_w &&
-                          mouse_y >= y_px && mouse_y <= y_px + btn_h;
+    const OverlayRect &export_button = layout.export_button;
+    const bool export_hovered = export_button.contains(mouse_x, mouse_y);
     Vec3 btn_color = export_hovered ? vec3_create(0.4f, 0.6f, 0.9f) : vec3_create(0.2f, 0.4f, 0.7f);
-    renderer.draw_ui_quad_px(x_px, y_px, btn_w, btn_h, btn_color, 0.9f);
-    renderer.draw_ui_text_px(x_px + unit * 4.0f, y_px + unit * 2.0f, text_h_px,
-                             vec3_create(1.0f, 1.0f, 1.0f), 1.0f, "[EXPORT] F3");
-
+    renderer.draw_ui_quad_px(export_button.x, export_button.y, export_button.w, export_button.h, btn_color, 0.9f);
+    renderer.draw_ui_text_px(export_button.x + u * 4.0f, export_button.y + u * TEXT_INSET, layout.text_h, white, 1.0f,
+                             "[EXPORT] F3");
     if (out_actions && export_hovered && mouse_clicked)
         out_actions->export_clicked = true;
 
     if (feedback && feedback->timer > 0.0f)
     {
         Vec3 fb_color = feedback->success ? vec3_create(0.3f, 1.0f, 0.3f) : vec3_create(1.0f, 0.3f, 0.3f);
-        snprintf(line, sizeof(line), "%s: %s",
-                 feedback->success ? "Saved" : "Failed",
-                 feedback->filename);
-        renderer.draw_ui_text_px(x_px + btn_w + unit * 4.0f, y_px + unit * 2.0f, text_h_px, fb_color, 1.0f, line);
+        char line[OVERLAY_LINE_CHARS];
+        snprintf(line, sizeof(line), "%s: %s", feedback->success ? "Saved" : "Failed", feedback->filename);
+        renderer.draw_ui_text_px(export_button.x + export_button.w + u * 4.0f, export_button.y + u * TEXT_INSET,
+                                 layout.text_h, fb_color, 1.0f, line);
     }
 
-    /* Time-of-day buttons */
-    y_px += btn_h + unit * 4.0f;
-    const float small_btn_w = unit * 28.0f;
-    const float small_btn_h = unit * 12.0f;
-    const float label_offset = unit * 42.0f;
-
-    renderer.draw_ui_text_px(x_px, y_px + unit * 2.0f, text_h_px,
-                             vec3_create(0.8f, 0.8f, 0.6f), 1.0f, "TIME:");
-
-    const char *time_labels[] = {"DAWN", "NOON", "DUSK", "NIGHT"};
-    for (int i = 0; i < 4; i++)
+    /* Time-of-day and weather buttons */
+    const Vec3 label_color = vec3_create(0.8f, 0.8f, 0.6f);
+    renderer.draw_ui_text_px(x, layout.time_buttons[0].y + u * TEXT_INSET, layout.text_h, label_color, 1.0f, "TIME:");
+    renderer.draw_ui_text_px(x, layout.weather_buttons[0].y + u * TEXT_INSET, layout.text_h, label_color, 1.0f,
+                             "WEATHER:");
+    for (int i = 0; i < TIME_BUTTON_COUNT; i++)
     {
-        float bx = x_px + label_offset + (float)i * (small_btn_w + unit * 2.0f);
-        bool bh = mouse_x >= bx && mouse_x <= bx + small_btn_w &&
-                  mouse_y >= y_px && mouse_y <= y_px + small_btn_h;
-        Vec3 bc = bh ? vec3_create(0.9f, 0.7f, 0.3f) : vec3_create(0.5f, 0.4f, 0.2f);
-        renderer.draw_ui_quad_px(bx, y_px, small_btn_w, small_btn_h, bc, 0.9f);
-        renderer.draw_ui_text_px(bx + unit * 2.0f, y_px + unit * 2.0f, text_h_px,
-                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, time_labels[i]);
-        if (out_actions && bh && mouse_clicked)
+        const OverlayRect &time_button = layout.time_buttons[i];
+        const bool time_hovered = time_button.contains(mouse_x, mouse_y);
+        renderer.draw_ui_quad_px(time_button.x, time_button.y, time_button.w, time_button.h,
+                                 time_hovered ? vec3_create(0.9f, 0.7f, 0.3f) : vec3_create(0.5f, 0.4f, 0.2f), 0.9f);
+        renderer.draw_ui_text_px(time_button.x + u * TEXT_INSET, time_button.y + u * TEXT_INSET, layout.text_h, white, 1.0f,
+                                 TIME_LABELS[i]);
+        if (out_actions && time_hovered && mouse_clicked)
             out_actions->time_preset = i;
     }
-
-    /* Weather buttons */
-    y_px += small_btn_h + unit * 4.0f;
-    renderer.draw_ui_text_px(x_px, y_px + unit * 2.0f, text_h_px,
-                             vec3_create(0.8f, 0.8f, 0.6f), 1.0f, "WEATHER:");
-
-    const char *weather_labels[] = {"CLEAR", "CLOUDY", "RAIN", "SNOW"};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < WEATHER_BUTTON_COUNT; i++)
     {
-        float bx = x_px + label_offset + (float)i * (small_btn_w + unit * 2.0f);
-        bool bh = mouse_x >= bx && mouse_x <= bx + small_btn_w &&
-                  mouse_y >= y_px && mouse_y <= y_px + small_btn_h;
-        Vec3 bc = bh ? vec3_create(0.3f, 0.6f, 0.9f) : vec3_create(0.2f, 0.3f, 0.5f);
-        renderer.draw_ui_quad_px(bx, y_px, small_btn_w, small_btn_h, bc, 0.9f);
-        renderer.draw_ui_text_px(bx + unit * 2.0f, y_px + unit * 2.0f, text_h_px,
-                                 vec3_create(1.0f, 1.0f, 1.0f), 1.0f, weather_labels[i]);
-        if (out_actions && bh && mouse_clicked)
+        const OverlayRect &weather_button = layout.weather_buttons[i];
+        const bool weather_hovered = weather_button.contains(mouse_x, mouse_y);
+        renderer.draw_ui_quad_px(weather_button.x, weather_button.y, weather_button.w, weather_button.h,
+                                 weather_hovered ? vec3_create(0.3f, 0.6f, 0.9f) : vec3_create(0.2f, 0.3f, 0.5f), 0.9f);
+        renderer.draw_ui_text_px(weather_button.x + u * TEXT_INSET, weather_button.y + u * TEXT_INSET, layout.text_h, white, 1.0f,
+                                 WEATHER_LABELS[i]);
+        if (out_actions && weather_hovered && mouse_clicked)
             out_actions->weather_preset = i;
     }
 

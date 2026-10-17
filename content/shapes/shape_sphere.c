@@ -362,10 +362,8 @@ static const uint8_t k_sphere_voxels[7 * 7 * 7] = {
 #undef _
 
 const VoxelShape g_shape_sphere = {
-    .name = "sphere",
     .size_x = 7,
     .size_y = 7,
     .size_z = 7,
     .voxels = k_sphere_voxels,
-    .solid_count = 123,
 };

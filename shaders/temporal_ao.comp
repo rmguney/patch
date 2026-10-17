@@ -1,52 +1,35 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/*
+ * temporal_ao.comp - temporal accumulation of ambient occlusion with reprojection. The history
+ * keeps each pixel's linear depth beside its AO; history is rejected on disocclusion, where the
+ * depth the reprojected history saw differs from the depth this surface point had from last
+ * frame's camera.
+ */
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(push_constant) uniform Constants {
-    mat4 inv_view;
-    mat4 inv_projection;
-    vec3 bounds_min;
-    float voxel_size;
-    vec3 bounds_max;
-    float chunk_size;
-    vec3 camera_pos;
-    int history_valid;
-    ivec3 grid_size;
-    int total_chunks;
-    ivec3 chunks_dim;
-    int frame_count;
-    int object_shadow_quality;
-    int debug_mode;
-    int is_orthographic;
-    int max_steps;
-    float near_plane;
-    float far_plane;
-    int object_count;
-    int shadow_quality;
-    int shadow_contact;
-    int ao_quality;
-    int lod_quality;
-    int taa_quality;
-} pc;
+#include "include/voxel_push_constants.glsl"
+#include "include/camera.glsl"
 
-layout(SET_BINDING(0, 0)) uniform sampler2D gbuffer_linear_depth;
-layout(SET_BINDING(0, 1)) uniform sampler2D gbuffer_normal;
-layout(SET_BINDING(0, 2)) uniform sampler2D gbuffer_motion_vector;
-layout(SET_BINDING(0, 3)) uniform sampler2D ao_current;
-layout(SET_BINDING(0, 4)) uniform sampler2D ao_history;
+layout(set = 0, binding = 0) uniform sampler2D gbuffer_linear_depth;
+layout(set = 0, binding = 1) uniform sampler2D gbuffer_motion_vector;
+layout(set = 0, binding = 2) uniform sampler2D ao_current;
+layout(set = 0, binding = 3) uniform sampler2D ao_history; /* r: resolved AO, g: its linear depth */
 
-layout(r8, SET_BINDING(1, 0)) writeonly uniform image2D out_ao_resolved;
+layout(std140, set = 0, binding = 4) uniform TemporalUBO {
+    mat4 prev_view_proj;
+    vec4 prev_camera_pos;
+    vec2 jitter_uv;
+    vec2 inv_render_size;
+};
+
+layout(rg16f, set = 1, binding = 0) writeonly uniform image2D out_ao_resolved;
 
 const float HISTORY_BLEND_MAX = 0.75;
 const float HISTORY_BLEND_MIN = 0.45;
 const float DEPTH_REJECT_THRESHOLD = 0.02;
-const float NORMAL_REJECT_THRESHOLD = 0.9;
+const float HISTORY_DEPTH_MAX = 65504.0; /* largest half float: sky depth (1e10) is stored as this */
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -57,9 +40,11 @@ void main() {
     vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(size);
 
     float current_ao = texelFetch(ao_current, pixel, 0).r;
+    float current_depth = texelFetch(gbuffer_linear_depth, pixel, 0).r;
+    vec4 current = vec4(current_ao, min(current_depth, HISTORY_DEPTH_MAX), 0.0, 0.0);
 
     if (pc.history_valid == 0) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_ao_resolved, pixel, current);
         return;
     }
 
@@ -67,22 +52,21 @@ void main() {
     vec2 prev_uv = uv + motion;
 
     if (any(lessThan(prev_uv, vec2(0.0))) || any(greaterThan(prev_uv, vec2(1.0)))) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_ao_resolved, pixel, current);
         return;
     }
 
-    float current_depth = texelFetch(gbuffer_linear_depth, pixel, 0).r;
-    float reproj_depth = texture(gbuffer_linear_depth, prev_uv).r;
-    float depth_diff = abs(current_depth - reproj_depth) / max(current_depth, 0.001);
+    /* This pixel's surface point, and its distance from last frame's camera: the depth the
+     * history must have seen there if the point was visible then */
+    vec3 ray_origin, ray_dir;
+    camera_generate_ray(pixel, size, pc.inv_view, pc.inv_projection, pc.camera_pos, ray_origin, ray_dir);
+    vec3 surface = ray_origin + ray_dir * current_depth;
+    float expected_depth = length(surface - prev_camera_pos.xyz);
+
+    vec2 history = texture(ao_history, prev_uv).rg;
+    float depth_diff = abs(history.g - expected_depth) / max(expected_depth, 0.001);
     if (depth_diff > DEPTH_REJECT_THRESHOLD) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
-        return;
-    }
-
-    vec3 current_normal = texelFetch(gbuffer_normal, pixel, 0).xyz * 2.0 - 1.0;
-    vec3 reproj_normal = texture(gbuffer_normal, prev_uv).xyz * 2.0 - 1.0;
-    if (dot(current_normal, reproj_normal) < NORMAL_REJECT_THRESHOLD) {
-        imageStore(out_ao_resolved, pixel, vec4(current_ao, 0.0, 0.0, 0.0));
+        imageStore(out_ao_resolved, pixel, current);
         return;
     }
 
@@ -90,7 +74,6 @@ void main() {
     float velocity_weight = clamp(motion_len / 4.0, 0.0, 1.0);
     float history_blend = mix(HISTORY_BLEND_MAX, HISTORY_BLEND_MIN, velocity_weight);
 
-    float history_ao = texture(ao_history, prev_uv).r;
-    float resolved = mix(current_ao, history_ao, history_blend);
-    imageStore(out_ao_resolved, pixel, vec4(resolved, 0.0, 0.0, 0.0));
+    float resolved = mix(current_ao, history.r, history_blend);
+    imageStore(out_ao_resolved, pixel, vec4(resolved, current.g, 0.0, 0.0));
 }

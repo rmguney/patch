@@ -15,8 +15,7 @@ extern "C"
 #define CHUNK_SIZE_MASK (CHUNK_SIZE - 1)
 #define CHUNK_VOXEL_COUNT (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 
-#define MATERIAL_EMPTY VOXEL_MATERIAL_EMPTY   /* 0 = air/empty */
-#define MATERIAL_MAX (VOXEL_MATERIAL_MAX - 1) /* 255 = max valid material ID */
+#define MATERIAL_EMPTY VOXEL_MATERIAL_EMPTY /* 0 = air/empty */
 
     /*
      * VoxelCell: minimal payload per voxel.
@@ -29,17 +28,12 @@ extern "C"
 
 STATIC_ASSERT(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
 
-    /*
-     * Chunk state for lifecycle management.
-     * Inspired by REF_GUIDE: chunk lifecycle state machine with explicit transitions.
-     */
+    /* Chunk lifecycle state (GPU upload tracking). A zeroed chunk is empty and ACTIVE,
+     * so a calloc'd volume needs no initialisation pass. */
     typedef enum
     {
-        CHUNK_STATE_EMPTY,    /* No voxel data, not allocated */
-        CHUNK_STATE_LOADING,  /* Being populated (generation or load) */
-        CHUNK_STATE_ACTIVE,   /* Live simulation data */
-        CHUNK_STATE_DIRTY,    /* Modified, needs GPU upload */
-        CHUNK_STATE_UPLOADING /* Being sent to GPU */
+        CHUNK_STATE_ACTIVE, /* GPU copy is current */
+        CHUNK_STATE_DIRTY   /* Modified, needs GPU upload */
     } ChunkState;
 
 /*
@@ -50,9 +44,7 @@ STATIC_ASSERT(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
  * Level 2: 1 bit for entire chunk
  */
 #define CHUNK_MIP0_SIZE 4
-#define CHUNK_MIP0_BITS (CHUNK_MIP0_SIZE * CHUNK_MIP0_SIZE * CHUNK_MIP0_SIZE)
 #define CHUNK_MIP1_SIZE 2
-#define CHUNK_MIP1_BITS (CHUNK_MIP1_SIZE * CHUNK_MIP1_SIZE * CHUNK_MIP1_SIZE)
 
     typedef struct
     {
@@ -70,22 +62,16 @@ STATIC_ASSERT(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
         VoxelCell voxels[CHUNK_VOXEL_COUNT];
         ChunkOccupancy occupancy;
         ChunkState state;
-        uint32_t dirty_frame;              /* Frame when last modified (for upload scheduling) */
-        int32_t coord_x, coord_y, coord_z; /* Chunk coordinates in volume */
+        /* Level-0 regions an open edit batch emptied voxels in. Their occupancy bits may
+         * still be set although the region is empty (never the reverse), until
+         * volume_edit_end rescans them once. */
+        uint64_t stale_regions;
     } Chunk;
 
     /* Linear index from local voxel coordinates within chunk */
     static inline int32_t chunk_voxel_index(int32_t x, int32_t y, int32_t z)
     {
         return x + (y << CHUNK_SIZE_BITS) + (z << (CHUNK_SIZE_BITS * 2));
-    }
-
-    /* Extract local coordinates from linear index */
-    static inline void chunk_voxel_coords(int32_t index, int32_t *x, int32_t *y, int32_t *z)
-    {
-        *x = index & CHUNK_SIZE_MASK;
-        *y = (index >> CHUNK_SIZE_BITS) & CHUNK_SIZE_MASK;
-        *z = (index >> (CHUNK_SIZE_BITS * 2)) & CHUNK_SIZE_MASK;
     }
 
     /* Check if local coordinates are within chunk bounds */
@@ -104,83 +90,54 @@ STATIC_ASSERT(sizeof(VoxelCell) == 1, "VoxelCell must be 1 byte");
         return chunk->voxels[chunk_voxel_index(x, y, z)].material;
     }
 
-    /* Forward declaration for incremental occupancy update */
-    void chunk_update_occupancy_region(Chunk *chunk, int32_t region_x, int32_t region_y, int32_t region_z);
+    /* Level-0 occupancy bit of the 8x8x8 region holding local voxel (x, y, z) */
+    static inline uint64_t chunk_region_bit(int32_t x, int32_t y, int32_t z)
+    {
+        return 1ULL << ((x >> 3) + (y >> 3) * CHUNK_MIP0_SIZE + (z >> 3) * CHUNK_MIP0_SIZE * CHUNK_MIP0_SIZE);
+    }
 
-    /* Set voxel material at local coordinates */
+    /* Level-1 occupancy bit of the 16x16x16 region holding local voxel (x, y, z) */
+    static inline uint8_t chunk_level1_bit(int32_t x, int32_t y, int32_t z)
+    {
+        return (uint8_t)(1u << ((x >> 4) + (y >> 4) * CHUNK_MIP1_SIZE + (z >> 4) * CHUNK_MIP1_SIZE * CHUNK_MIP1_SIZE));
+    }
+
+    /* Rescan the level-0 regions in `regions` (a level-0 bit mask), then derive level1 */
+    void chunk_refresh_regions(Chunk *chunk, uint64_t regions);
+
+    /* Set voxel material at local coordinates, keeping the occupancy exact */
     static inline void chunk_set(Chunk *chunk, int32_t x, int32_t y, int32_t z, uint8_t material)
     {
         if (!chunk_in_bounds(x, y, z))
             return;
         int32_t idx = chunk_voxel_index(x, y, z);
         uint8_t old_mat = chunk->voxels[idx].material;
+        if (old_mat == material)
+            return;
 
-        if (old_mat != material)
+        chunk->voxels[idx].material = material;
+
+        /* A new solid voxel just sets its region bits; an emptied one may have been
+         * its region's last, so that region needs a rescan */
+        if (old_mat == MATERIAL_EMPTY)
         {
-            chunk->voxels[idx].material = material;
-
-            /* Update solid count */
-            if (old_mat == MATERIAL_EMPTY && material != MATERIAL_EMPTY)
-            {
-                chunk->occupancy.solid_count++;
-            }
-            else if (old_mat != MATERIAL_EMPTY && material == MATERIAL_EMPTY)
-            {
-                chunk->occupancy.solid_count--;
-            }
-
-            chunk->occupancy.has_any = (chunk->occupancy.solid_count > 0) ? 1 : 0;
-
-            /* Update hierarchical occupancy for the affected region */
-            chunk_update_occupancy_region(chunk, x / 8, y / 8, z / 8);
-
-            if (chunk->state == CHUNK_STATE_ACTIVE)
-            {
-                chunk->state = CHUNK_STATE_DIRTY;
-            }
+            chunk->occupancy.solid_count++;
+            chunk->occupancy.level0 |= chunk_region_bit(x, y, z);
+            chunk->occupancy.level1 |= chunk_level1_bit(x, y, z);
         }
-    }
-
-    /* Check if voxel at coordinates is solid (non-empty) */
-    static inline bool chunk_is_solid(const Chunk *chunk, int32_t x, int32_t y, int32_t z)
-    {
-        return chunk_get(chunk, x, y, z) != MATERIAL_EMPTY;
-    }
-
-    /* Initialize chunk to empty state */
-    static inline void chunk_init(Chunk *chunk, int32_t cx, int32_t cy, int32_t cz)
-    {
-        for (int32_t i = 0; i < CHUNK_VOXEL_COUNT; i++)
+        else if (material == MATERIAL_EMPTY)
         {
-            chunk->voxels[i].material = MATERIAL_EMPTY;
+            chunk->occupancy.solid_count--;
+            chunk_refresh_regions(chunk, chunk_region_bit(x, y, z));
         }
-        chunk->occupancy.level0 = 0;
-        chunk->occupancy.level1 = 0;
-        chunk->occupancy.has_any = 0;
-        chunk->occupancy.solid_count = 0;
-        chunk->state = CHUNK_STATE_EMPTY;
-        chunk->dirty_frame = 0;
-        chunk->coord_x = cx;
-        chunk->coord_y = cy;
-        chunk->coord_z = cz;
+        chunk->occupancy.has_any = chunk->occupancy.solid_count > 0 ? 1 : 0;
+
+        if (chunk->state == CHUNK_STATE_ACTIVE)
+            chunk->state = CHUNK_STATE_DIRTY;
     }
 
-    /* Rebuild hierarchical occupancy from voxel data */
+    /* Rebuild hierarchical occupancy and the solid count from voxel data */
     void chunk_rebuild_occupancy(Chunk *chunk);
-
-    /* Update occupancy for voxels in the given local coordinate range (inclusive) */
-    void chunk_update_occupancy_range(Chunk *chunk, int32_t x0, int32_t y0, int32_t z0,
-                                      int32_t x1, int32_t y1, int32_t z1);
-
-    /* Fill chunk with a single material */
-    void chunk_fill(Chunk *chunk, uint8_t material);
-
-    /* Fill sphere within chunk (local coordinates, returns voxels modified) */
-    int32_t chunk_fill_sphere(Chunk *chunk, float cx, float cy, float cz, float radius, uint8_t material);
-
-    /* Fill box within chunk (local coordinates, returns voxels modified) */
-    int32_t chunk_fill_box(Chunk *chunk, int32_t x0, int32_t y0, int32_t z0,
-                           int32_t x1, int32_t y1, int32_t z1, uint8_t material);
 
 #ifdef __cplusplus
 }

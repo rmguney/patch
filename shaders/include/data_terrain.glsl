@@ -1,25 +1,15 @@
 #ifndef DATA_TERRAIN_GLSL
 #define DATA_TERRAIN_GLSL
 
-/* Enable terrain-specific HDDA functions in hdda_core.glsl */
-#define HDDA_TERRAIN_ENABLED
-
 #include "hdda_types.glsl"
 
 /*
- * data_terrain.glsl - Terrain voxel data access functions
+ * data_terrain.glsl - terrain voxel data access
  *
- * REQUIREMENTS: The including shader must define:
- * 1. Buffer bindings (before including this file):
- *    layout(std430, set = 0, binding = 0) readonly buffer VoxelBuffer { uint voxel_data[]; };
- *    layout(std430, set = 0, binding = 1) readonly buffer ChunkHeaders { uvec4 chunk_headers[]; };
- *
- * 2. Global variables for grid parameters:
- *    ivec3 pc_grid_size;
- *    ivec3 pc_chunks_dim;
- *    int pc_total_chunks;
- *
- * These can be initialized from push constants in main().
+ * The including shader must declare, before including this file:
+ *   readonly buffer { uint voxel_data[]; };          (8-bit material IDs, 4 per uint)
+ *   readonly buffer { uvec4 chunk_headers[]; };      (GPUChunkHeader)
+ *   ivec3 pc_grid_size; ivec3 pc_chunks_dim; int pc_total_chunks;
  */
 
 /* Check if chunk has any solid voxels (level 2 hierarchy) */
@@ -28,14 +18,9 @@ bool sample_occupancy_chunk(int chunk_idx) {
     return (chunk_headers[chunk_idx].z & 0xFFu) != 0u;
 }
 
-/* Get level0 occupancy bitmask for chunk */
-uvec2 terrain_get_level0(int chunk_idx) {
-    return chunk_headers[chunk_idx].xy;
-}
-
-/* Check if 8x8x8 region is occupied (level 1 hierarchy) */
+/* Check if an 8x8x8 region of a chunk is occupied (level 1 hierarchy) */
 bool sample_occupancy_region(int chunk_idx, ivec3 region) {
-    uvec2 level0 = terrain_get_level0(chunk_idx);
+    uvec2 level0 = chunk_headers[chunk_idx].xy;
     int bit = region.x + region.y * 4 + region.z * 16;
     if (bit < 32) {
         return (level0.x & (1u << bit)) != 0u;
@@ -66,8 +51,5 @@ uint sample_material(ivec3 p) {
     uint packed = voxel_data[chunk_data_offset + uint_idx];
     return (packed >> (byte_idx * 8)) & 0xFFu;
 }
-
-/* Include HDDA core after callback functions are defined */
-#include "hdda_core.glsl"
 
 #endif /* DATA_TERRAIN_GLSL */

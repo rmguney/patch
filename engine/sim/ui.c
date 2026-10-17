@@ -1,7 +1,11 @@
 #include "ui.h"
+#include "ui_layout.h"
 #include "engine/core/math.h"
 #include <string.h>
 #include <stdio.h>
+
+/* Menu fade in and out: alpha per second */
+#define UI_FADE_SPEED 4.0f
 
 void ui_menu_clear(UIMenu *menu, const char *title)
 {
@@ -45,40 +49,6 @@ void ui_menu_add_label(UIMenu *menu, const char *text)
     item->hovered = false;
 }
 
-void ui_menu_add_toggle(UIMenu *menu, const char *text, int32_t action_id, bool initial)
-{
-    if (menu->item_count >= UI_MAX_MENU_ITEMS)
-        return;
-
-    UIMenuItem *item = &menu->items[menu->item_count++];
-    item->type = UI_ITEM_TOGGLE;
-    snprintf(item->text, UI_MAX_TEXT_LEN, "%s", text);
-    item->action_id = action_id;
-    item->toggle_state = initial;
-    item->enabled = true;
-    item->hovered = false;
-}
-
-void ui_menu_add_slider(UIMenu *menu, const char *text, int32_t action_id,
-                        int32_t value, int32_t min_val, int32_t max_val, int32_t step)
-{
-    if (menu->item_count >= UI_MAX_MENU_ITEMS)
-        return;
-
-    UIMenuItem *item = &menu->items[menu->item_count++];
-    item->type = UI_ITEM_SLIDER;
-    snprintf(item->text, UI_MAX_TEXT_LEN, "%s", text);
-    item->action_id = action_id;
-    item->slider_value = value;
-    item->slider_min = min_val;
-    item->slider_max = max_val;
-    item->slider_step = step;
-    item->enabled = true;
-    item->hovered = false;
-    item->slider_labels = NULL;
-    item->slider_label_count = 0;
-}
-
 void ui_menu_add_slider_labeled(UIMenu *menu, const char *text, int32_t action_id,
                                 int32_t value, int32_t min_val, int32_t max_val,
                                 const char *const *labels, int32_t label_count)
@@ -93,7 +63,6 @@ void ui_menu_add_slider_labeled(UIMenu *menu, const char *text, int32_t action_i
     item->slider_value = value;
     item->slider_min = min_val;
     item->slider_max = max_val;
-    item->slider_step = 1;
     item->enabled = true;
     item->hovered = false;
     item->slider_labels = labels;
@@ -105,7 +74,6 @@ void ui_context_init(UIContext *ctx)
     memset(ctx, 0, sizeof(UIContext));
     ctx->fade_alpha = 1.0f;
     ctx->fade_target = 1.0f;
-    ctx->fade_speed = 4.0f;
     ctx->visible = true;
 }
 
@@ -120,6 +88,13 @@ void ui_context_hide(UIContext *ctx)
     ctx->fade_target = 0.0f;
 }
 
+void ui_context_hide_now(UIContext *ctx)
+{
+    ctx->fade_target = 0.0f;
+    ctx->fade_alpha = 0.0f;
+    ctx->visible = false;
+}
+
 void ui_context_update(UIContext *ctx, float dt, float mouse_x, float mouse_y, bool mouse_down)
 {
     ctx->mouse_x = mouse_x;
@@ -130,13 +105,13 @@ void ui_context_update(UIContext *ctx, float dt, float mouse_x, float mouse_y, b
 
     if (ctx->fade_alpha < ctx->fade_target)
     {
-        ctx->fade_alpha += ctx->fade_speed * dt;
+        ctx->fade_alpha += UI_FADE_SPEED * dt;
         if (ctx->fade_alpha > ctx->fade_target)
             ctx->fade_alpha = ctx->fade_target;
     }
     else if (ctx->fade_alpha > ctx->fade_target)
     {
-        ctx->fade_alpha -= ctx->fade_speed * dt;
+        ctx->fade_alpha -= UI_FADE_SPEED * dt;
         if (ctx->fade_alpha < ctx->fade_target)
             ctx->fade_alpha = ctx->fade_target;
     }
@@ -145,11 +120,6 @@ void ui_context_update(UIContext *ctx, float dt, float mouse_x, float mouse_y, b
     {
         ctx->visible = false;
     }
-}
-
-bool ui_context_is_blocking(const UIContext *ctx)
-{
-    return ctx->visible;
 }
 
 static bool point_in_rect_xywh(float px, float py, float x, float y, float w, float h)
@@ -162,24 +132,7 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
     if (!ctx->visible || !menu)
         return 0;
 
-    float w = (float)window_width;
-    float h = (float)window_height;
-    if (w < 1.0f)
-        w = 1.0f;
-    if (h < 1.0f)
-        h = 1.0f;
-    const float min_dim = w < h ? w : h;
-
-    const float item_h_px = clampf(min_dim * 0.024f, 12.0f, 20.0f);
-    const float button_w_px = clampf(w * 0.32f, 200.0f, 480.0f);
-    const float button_h_px = clampf(item_h_px * 1.8f, 22.0f, 40.0f);
-    const float spacing_px = clampf(button_h_px * 0.35f, 6.0f, 16.0f);
-
-    const float cx_px = w * 0.5f;
-    const float center_y_px = h * 0.55f;
-    const float start_y_px = center_y_px - (float)(menu->item_count - 1) * (button_h_px + spacing_px) * 0.5f;
-    const float rect_x_px = cx_px - button_w_px * 0.5f;
-
+    const UIMenuLayout layout = ui_menu_layout(menu->item_count, window_width, window_height);
     int32_t triggered_action = 0;
 
     for (int32_t i = 0; i < menu->item_count; i++)
@@ -191,21 +144,17 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
             continue;
         }
 
-        const float rect_y_px = start_y_px + (float)i * (button_h_px + spacing_px);
-        item->hovered = point_in_rect_xywh(ctx->mouse_x, ctx->mouse_y, rect_x_px, rect_y_px, button_w_px, button_h_px);
+        const float rect_y_px = ui_menu_row_y(&layout, i);
+        item->hovered = point_in_rect_xywh(ctx->mouse_x, ctx->mouse_y, layout.x_px, rect_y_px, layout.button_w_px,
+                                           layout.button_h_px);
 
         if (item->hovered && ctx->mouse_clicked)
         {
             triggered_action = item->action_id;
 
-            if (item->type == UI_ITEM_TOGGLE)
-            {
-                item->toggle_state = !item->toggle_state;
-            }
-
             if (item->type == UI_ITEM_SLIDER)
             {
-                float rel_x = (ctx->mouse_x - rect_x_px) / button_w_px;
+                float rel_x = (ctx->mouse_x - layout.x_px) / layout.button_w_px;
                 if (rel_x < 0.0f)
                     rel_x = 0.0f;
                 if (rel_x > 1.0f)
@@ -217,7 +166,6 @@ int32_t ui_menu_update(UIContext *ctx, UIMenu *menu, int32_t window_width, int32
                     new_value = item->slider_max;
                 if (new_value < item->slider_min)
                     new_value = item->slider_min;
-                new_value = (new_value / item->slider_step) * item->slider_step;
                 item->slider_value = new_value;
             }
         }

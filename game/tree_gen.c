@@ -1,24 +1,14 @@
 #include "tree_gen.h"
+#include "game/terrain_gen.h"
 #include "content/materials.h"
 #include "engine/core/noise.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define K_TAU (2.0f * K_PI)
 #define K_PHI 0.618033988749895f
 #define K_RAD_PER_BRANCH (K_TAU * K_PHI)
-
-static Bounds3D bounds_empty(void)
-{
-    Bounds3D b;
-    b.min_x = 1e20f;
-    b.min_y = 1e20f;
-    b.min_z = 1e20f;
-    b.max_x = -1e20f;
-    b.max_y = -1e20f;
-    b.max_z = -1e20f;
-    return b;
-}
 
 static Bounds3D bounds_expand(Bounds3D a, Bounds3D b)
 {
@@ -59,6 +49,9 @@ static int32_t add_branch(ProceduralTree *tree, const TreeConfig *config,
 {
     if (tree->branch_count >= TREE_MAX_BRANCHES)
         return -1;
+
+    /* Claim the slot before recursing, so a full array drops leaves, never their parents */
+    int32_t idx = tree->branch_count++;
 
     Vec3 end = vec3_add(start, vec3_scale(dir, branch_len));
     float wood_radius = branch_radius;
@@ -141,29 +134,21 @@ static int32_t add_branch(ProceduralTree *tree, const TreeConfig *config,
         }
     }
 
-    int32_t idx = tree->branch_count;
-    if (idx >= TREE_MAX_BRANCHES)
-        return -1;
-
-    tree->branches[idx].start = start;
-    tree->branches[idx].end = end;
-    tree->branches[idx].wood_radius = wood_radius;
-    tree->branches[idx].leaf_radius = leaf_radius;
-    tree->branches[idx].leaf_vertical_scale = config->leaf_vertical_scale;
-    tree->branches[idx].aabb = aabb;
-    tree->branches[idx].sibling_idx = sibling_idx;
-    tree->branches[idx].child_idx = child_idx;
-    tree->branch_count++;
+    TreeBranch *b = &tree->branches[idx];
+    b->start = start;
+    b->end = end;
+    b->wood_radius = wood_radius;
+    b->leaf_radius = leaf_radius;
+    b->aabb = aabb;
+    b->sibling_idx = sibling_idx;
+    b->child_idx = child_idx;
 
     return idx;
 }
 
 void tree_generate(ProceduralTree *tree, const TreeConfig *config, RngState *rng)
 {
-    memset(tree, 0, sizeof(ProceduralTree));
     tree->branch_count = 0;
-    tree->trunk_idx = -1;
-    tree->bounds = bounds_empty();
 
     Vec3 trunk_origin = vec3_create(0.0f, -config->trunk_radius * 0.5f, 0.0f);
     Vec3 trunk_dir = vec3_normalize(vec3_create(
@@ -171,99 +156,235 @@ void tree_generate(ProceduralTree *tree, const TreeConfig *config, RngState *rng
         10.0f,
         rng_float(rng) * 0.2f - 0.1f));
 
-    int32_t trunk_idx = add_branch(tree, config, trunk_origin, trunk_dir,
-                                    config->trunk_len, config->trunk_radius,
-                                    0, -1, 1.0f, rng);
-    tree->trunk_idx = trunk_idx;
-
-    if (trunk_idx >= 0)
-        tree->bounds = tree->branches[trunk_idx].aabb;
+    tree->trunk_idx = add_branch(tree, config, trunk_origin, trunk_dir,
+                                 config->trunk_len, config->trunk_radius,
+                                 0, -1, 1.0f, rng);
 }
 
-static void voxelize_branch(const TreeBranch *branches, int32_t idx,
-                             const TreeConfig *config, VoxelVolume *vol,
-                             Vec3 origin, float voxel_size)
+/* Leaf crowns swell by up to this factor with the radius noise (|noise| <= 1) */
+#define LEAF_NOISE_MAX_SCALE 1.45f
+/* Seeds of the leaf radius noise's two octaves, added to the world seed */
+#define LEAF_NOISE_SEED_A 88888u
+#define LEAF_NOISE_SEED_B 99999u
+
+/* Index range of the voxel centres inside [lo, hi] on one axis, clipped to the volume and
+ * to clip_first..clip_last; false when empty */
+static bool voxel_span(float lo, float hi, float vol_min, float voxel_size,
+                       int32_t clip_first, int32_t clip_last, int32_t *first, int32_t *last)
 {
-    if (idx < 0)
-        return;
+    *first = (int32_t)ceilf((lo - vol_min) / voxel_size - 0.5f);
+    *last = (int32_t)floorf((hi - vol_min) / voxel_size - 0.5f);
+    if (*first < clip_first)
+        *first = clip_first;
+    if (*last > clip_last)
+        *last = clip_last;
+    return *first <= *last;
+}
 
-    const TreeBranch *b = &branches[idx];
+/* Leaf radius noise of the voxel columns under one tree, computed on first use: the leaf
+ * clusters of a tree overlap heavily and would otherwise evaluate it again for each */
+typedef struct
+{
+    float *scale; /* 0 = not computed yet (the scale is always > 0.5) */
+    int32_t first_x, first_z;
+    int32_t nx, nz;
+    uint32_t seed; /* World seed */
+} LeafNoiseCache;
 
-    Bounds3D world_aabb;
-    world_aabb.min_x = origin.x + b->aabb.min_x;
-    world_aabb.min_y = origin.y + b->aabb.min_y;
-    world_aabb.min_z = origin.z + b->aabb.min_z;
-    world_aabb.max_x = origin.x + b->aabb.max_x;
-    world_aabb.max_y = origin.y + b->aabb.max_y;
-    world_aabb.max_z = origin.z + b->aabb.max_z;
+static float leaf_noise_scale(LeafNoiseCache *cache, int32_t ix, int32_t iz, float x, float z)
+{
+    float *slot = NULL;
+    int32_t cx = ix - cache->first_x;
+    int32_t cz = iz - cache->first_z;
+    if (cache->scale && cx >= 0 && cx < cache->nx && cz >= 0 && cz < cache->nz)
+    {
+        slot = &cache->scale[cz * cache->nx + cx];
+        if (*slot > 0.0f)
+            return *slot;
+    }
+    float n1 = noise_value_2d(x * 2.0f, z * 2.0f, cache->seed + LEAF_NOISE_SEED_A);
+    float n2 = noise_value_2d(x * 5.0f, z * 5.0f, cache->seed + LEAF_NOISE_SEED_B);
+    float scale = 1.0f + n1 * 0.3f + n2 * 0.15f;
+    if (slot)
+        *slot = scale;
+    return scale;
+}
 
-    if (world_aabb.max_x < vol->bounds.min_x || world_aabb.min_x > vol->bounds.max_x ||
-        world_aabb.max_y < vol->bounds.min_y || world_aabb.min_y > vol->bounds.max_y ||
-        world_aabb.max_z < vol->bounds.min_z || world_aabb.min_z > vol->bounds.max_z)
-        return;
-
+/* Writes one branch's own wood and leaves into the voxel centres of the box around its
+ * segment (its aabb also spans the children, which are written separately), inside the
+ * clip box. The wood fills a capsule around the segment and the leaves an ellipsoid
+ * around its middle, so each is only tested inside its own bounds; the leaves never
+ * leave the segment box. */
+static void voxelize_branch_shape(const TreeBranch *b, const TreeConfig *config, VoxelVolume *vol,
+                                  Vec3 origin, float voxel_size, const VoxelBox *clip,
+                                  LeafNoiseCache *leaf_noise)
+{
     Vec3 ws = vec3_add(origin, b->start);
     Vec3 we = vec3_add(origin, b->end);
+    float extent = maxf(b->wood_radius, b->leaf_radius);
 
-    float step = voxel_size;
-    float wood_r2 = b->wood_radius * b->wood_radius;
-    bool has_leaves = b->leaf_radius > 0.0f;
-    Vec3 mid = vec3_scale(vec3_add(ws, we), 0.5f);
-    float yscale = b->leaf_vertical_scale;
-    if (yscale < K_EPSILON)
-        yscale = 1.0f;
-
-    for (float x = world_aabb.min_x; x <= world_aabb.max_x; x += step)
+    const int32_t clip_first[3] = {clip->min_x, clip->min_y, clip->min_z};
+    const int32_t clip_last[3] = {clip->max_x, clip->max_y, clip->max_z};
+    const float vol_min[3] = {vol->bounds.min_x, vol->bounds.min_y, vol->bounds.min_z};
+    const float seg_lo[3] = {minf(ws.x, we.x), minf(ws.y, we.y), minf(ws.z, we.z)};
+    const float seg_hi[3] = {maxf(ws.x, we.x), maxf(ws.y, we.y), maxf(ws.z, we.z)};
+    int32_t first[3], last[3];
+    for (int axis = 0; axis < 3; axis++)
     {
-        for (float z = world_aabb.min_z; z <= world_aabb.max_z; z += step)
+        if (!voxel_span(seg_lo[axis] - extent, seg_hi[axis] + extent, vol_min[axis], voxel_size,
+                        clip_first[axis], clip_last[axis], &first[axis], &last[axis]))
+            return;
+    }
+
+    /* Wood: segment box grown by the wood radius */
+    float wood_r2 = b->wood_radius * b->wood_radius;
+    int32_t wf[3], wl[3];
+    bool has_wood = b->wood_radius > 0.0f;
+    for (int axis = 0; axis < 3 && has_wood; axis++)
+        has_wood = voxel_span(seg_lo[axis] - b->wood_radius, seg_hi[axis] + b->wood_radius, vol_min[axis],
+                              voxel_size, first[axis], last[axis], &wf[axis], &wl[axis]);
+    if (has_wood)
+    {
+        for (int32_t ix = wf[0]; ix <= wl[0]; ix++)
         {
-            float n1 = noise_value_2d(x * 2.0f, z * 2.0f, 88888);
-            float n2 = noise_value_2d(x * 5.0f, z * 5.0f, 99999);
-            float noisy_r = b->leaf_radius * (1.0f + n1 * 0.3f + n2 * 0.15f);
-            float noisy_r2 = noisy_r * noisy_r;
-
-            for (float y = world_aabb.min_y; y <= world_aabb.max_y; y += step)
+            float x = vol_min[0] + ((float)ix + 0.5f) * voxel_size;
+            for (int32_t iz = wf[2]; iz <= wl[2]; iz++)
             {
-                Vec3 pos = vec3_create(x, y, z);
-                float d2 = dist_to_line_segment_sq(pos, ws, we);
-
-                if (d2 <= wood_r2)
+                float z = vol_min[2] + ((float)iz + 0.5f) * voxel_size;
+                for (int32_t iy = wf[1]; iy <= wl[1]; iy++)
                 {
-                    volume_set_at(vol, pos, config->bark_material);
-                }
-                else if (has_leaves)
-                {
-                    Vec3 diff = vec3_sub(pos, mid);
-                    float scaled_y = diff.y / yscale;
-                    float leaf_d2 = diff.x * diff.x + scaled_y * scaled_y + diff.z * diff.z;
-                    if (leaf_d2 <= noisy_r2)
-                    {
-                        if (!volume_is_solid_at(vol, pos))
-                            volume_set_at(vol, pos, config->leaf_material);
-                    }
+                    Vec3 pos = vec3_create(x, vol_min[1] + ((float)iy + 0.5f) * voxel_size, z);
+                    if (dist_to_line_segment_sq(pos, ws, we) <= wood_r2)
+                        terrain_voxel_set(vol, ix, iy, iz, config->bark_material);
                 }
             }
         }
     }
 
-    voxelize_branch(branches, b->child_idx, config, vol, origin, voxel_size);
-    voxelize_branch(branches, b->sibling_idx, config, vol, origin, voxel_size);
+    if (b->leaf_radius <= 0.0f)
+        return;
+
+    /* Leaves: ellipsoid around the middle, its radius swollen by noise per column */
+    Vec3 mid = vec3_scale(vec3_add(ws, we), 0.5f);
+    float yscale = config->leaf_vertical_scale;
+    if (yscale < K_EPSILON)
+        yscale = 1.0f;
+    const float reach = b->leaf_radius * LEAF_NOISE_MAX_SCALE + voxel_size;
+    int32_t lf[3], ll[3];
+    if (!voxel_span(mid.x - reach, mid.x + reach, vol_min[0], voxel_size, first[0], last[0], &lf[0], &ll[0]) ||
+        !voxel_span(mid.z - reach, mid.z + reach, vol_min[2], voxel_size, first[2], last[2], &lf[2], &ll[2]))
+        return;
+
+    for (int32_t ix = lf[0]; ix <= ll[0]; ix++)
+    {
+        float x = vol_min[0] + ((float)ix + 0.5f) * voxel_size;
+        float dx = x - mid.x;
+        for (int32_t iz = lf[2]; iz <= ll[2]; iz++)
+        {
+            float z = vol_min[2] + ((float)iz + 0.5f) * voxel_size;
+            float dz = z - mid.z;
+
+            float noisy_r = b->leaf_radius * leaf_noise_scale(leaf_noise, ix, iz, x, z);
+            float noisy_r2 = noisy_r * noisy_r;
+            float rest = noisy_r2 - dx * dx - dz * dz;
+            if (rest < 0.0f)
+                continue;
+
+            /* Rows this column's slice of the ellipsoid can reach (a voxel of slack: the
+             * exact test below decides) */
+            float half_height = yscale * sqrtf(rest) + voxel_size;
+            int32_t y_first, y_last;
+            if (!voxel_span(mid.y - half_height, mid.y + half_height, vol_min[1], voxel_size,
+                            first[1], last[1], &y_first, &y_last))
+                continue;
+
+            for (int32_t iy = y_first; iy <= y_last; iy++)
+            {
+                Vec3 pos = vec3_create(x, vol_min[1] + ((float)iy + 0.5f) * voxel_size, z);
+                Vec3 diff = vec3_sub(pos, mid);
+                float scaled_y = diff.y / yscale;
+                float leaf_d2 = diff.x * diff.x + scaled_y * scaled_y + diff.z * diff.z;
+                /* The segment's own wood is already solid, as are earlier branches */
+                if (leaf_d2 <= noisy_r2 && terrain_voxel_get(vol, ix, iy, iz) == MAT_AIR)
+                    terrain_voxel_set(vol, ix, iy, iz, config->leaf_material);
+            }
+        }
+    }
 }
 
-void tree_voxelize(const ProceduralTree *tree, const TreeConfig *config,
-                   VoxelVolume *vol, Vec3 origin, float voxel_size)
+/* World-space bounds of the voxels of a clip box */
+typedef struct
+{
+    float min_x, min_y, min_z;
+    float max_x, max_y, max_z;
+} ClipBounds;
+
+static void voxelize_branch(const TreeBranch *branches, int32_t idx, const TreeConfig *config,
+                            VoxelVolume *vol, Vec3 origin, float voxel_size, const VoxelBox *clip,
+                            const ClipBounds *clip_bounds, LeafNoiseCache *leaf_noise)
+{
+    /* Siblings are walked here, not through the recursion, so culling one branch's
+     * subtree never drops the siblings after it. A branch writes only inside its aabb, so
+     * when that misses the clip box neither the branch nor its children write there. */
+    for (; idx >= 0; idx = branches[idx].sibling_idx)
+    {
+        const TreeBranch *b = &branches[idx];
+
+        if (origin.x + b->aabb.max_x < clip_bounds->min_x || origin.x + b->aabb.min_x > clip_bounds->max_x ||
+            origin.y + b->aabb.max_y < clip_bounds->min_y || origin.y + b->aabb.min_y > clip_bounds->max_y ||
+            origin.z + b->aabb.max_z < clip_bounds->min_z || origin.z + b->aabb.min_z > clip_bounds->max_z)
+            continue;
+
+        voxelize_branch_shape(b, config, vol, origin, voxel_size, clip, leaf_noise);
+        voxelize_branch(branches, b->child_idx, config, vol, origin, voxel_size, clip, clip_bounds, leaf_noise);
+    }
+}
+
+void tree_voxelize_clipped(const ProceduralTree *tree, const TreeConfig *config, VoxelVolume *vol,
+                           Vec3 origin, const VoxelBox *clip, uint32_t seed)
 {
     if (tree->trunk_idx < 0)
         return;
 
-    voxelize_branch(tree->branches, tree->trunk_idx, config, vol, origin, voxel_size);
+    const float voxel_size = vol->voxel_size;
+    ClipBounds clip_bounds;
+    clip_bounds.min_x = vol->bounds.min_x + (float)clip->min_x * voxel_size;
+    clip_bounds.min_y = vol->bounds.min_y + (float)clip->min_y * voxel_size;
+    clip_bounds.min_z = vol->bounds.min_z + (float)clip->min_z * voxel_size;
+    clip_bounds.max_x = vol->bounds.min_x + (float)(clip->max_x + 1) * voxel_size;
+    clip_bounds.max_y = vol->bounds.min_y + (float)(clip->max_y + 1) * voxel_size;
+    clip_bounds.max_z = vol->bounds.min_z + (float)(clip->max_z + 1) * voxel_size;
+
+    /* The trunk's box spans the whole tree; without memory for the cache the noise is
+     * evaluated per use */
+    const Bounds3D *box = &tree->branches[tree->trunk_idx].aabb;
+    LeafNoiseCache leaf_noise = {0};
+    leaf_noise.seed = seed;
+    int32_t last_x, last_z;
+    if (voxel_span(origin.x + box->min_x, origin.x + box->max_x, vol->bounds.min_x, voxel_size, clip->min_x,
+                   clip->max_x, &leaf_noise.first_x, &last_x) &&
+        voxel_span(origin.z + box->min_z, origin.z + box->max_z, vol->bounds.min_z, voxel_size, clip->min_z,
+                   clip->max_z, &leaf_noise.first_z, &last_z))
+    {
+        leaf_noise.nx = last_x - leaf_noise.first_x + 1;
+        leaf_noise.nz = last_z - leaf_noise.first_z + 1;
+        leaf_noise.scale = (float *)calloc((size_t)leaf_noise.nx * (size_t)leaf_noise.nz, sizeof(float));
+    }
+
+    voxelize_branch(tree->branches, tree->trunk_idx, config, vol, origin, voxel_size, clip, &clip_bounds,
+                    &leaf_noise);
+    free(leaf_noise.scale);
 }
 
 /* --- Tree config presets ported from Veloren tree.rs:382-680 --- */
 
 TreeConfig tree_config_create(TreeType type, RngState *rng, float scale)
 {
-    float s = scale * (0.8f + rng_float(rng) * rng_float(rng) * 0.5f);
+    /* size: this tree against the species' typical one. Lengths and radii follow s; counts
+     * and length ratios (the conifers' branches) follow size alone, so a world scale that
+     * shrinks every tree does not thin out their branches. */
+    float size = 0.8f + rng_float(rng) * rng_float(rng) * 0.5f;
+    float s = scale * size;
     float log_s = maxf(s, 0.15f);
 
     TreeConfig c;
@@ -295,16 +416,16 @@ TreeConfig tree_config_create(TreeType type, RngState *rng, float scale)
     case TREE_PINE:
         c.trunk_len = 20.0f * s;
         c.trunk_radius = 1.5f * s;
-        c.branch_child_len = 0.3f / maxf(s, 0.5f);
+        c.branch_child_len = 0.3f / size;
         c.branch_child_radius = 0.0f;
         c.branch_child_radius_lerp = false;
-        c.leaf_radius_min = 1.2f;
-        c.leaf_radius_max = 2.0f;
+        c.leaf_radius_min = 1.2f * log_s;
+        c.leaf_radius_max = 2.0f * log_s;
         c.leaf_radius_scaled = 0.3f * log_s;
         c.straightness = 0.3f;
         c.max_depth = 1;
-        c.splits_min = 20.0f * s;
-        c.splits_max = 22.0f * s;
+        c.splits_min = 20.0f * size;
+        c.splits_max = 22.0f * size;
         c.split_range_min = 0.1f;
         c.split_range_max = 1.2f;
         c.branch_len_bias = 0.75f;
@@ -317,16 +438,16 @@ TreeConfig tree_config_create(TreeType type, RngState *rng, float scale)
     case TREE_FROSTPINE:
         c.trunk_len = 36.0f * s;
         c.trunk_radius = 2.3f * s;
-        c.branch_child_len = 0.25f / maxf(s, 0.5f);
+        c.branch_child_len = 0.25f / size;
         c.branch_child_radius = 0.0f;
         c.branch_child_radius_lerp = false;
-        c.leaf_radius_min = 1.3f;
-        c.leaf_radius_max = 2.2f;
+        c.leaf_radius_min = 1.3f * log_s;
+        c.leaf_radius_max = 2.2f * log_s;
         c.leaf_radius_scaled = 0.4f * log_s;
         c.straightness = 0.3f;
         c.max_depth = 1;
-        c.splits_min = 34.0f * s;
-        c.splits_max = 35.0f * s;
+        c.splits_min = 34.0f * size;
+        c.splits_max = 35.0f * size;
         c.split_range_min = 0.1f;
         c.split_range_max = 1.2f;
         c.branch_len_bias = 0.75f;
@@ -477,16 +598,16 @@ TreeConfig tree_config_create(TreeType type, RngState *rng, float scale)
     case TREE_REDWOOD:
         c.trunk_len = 50.0f * s;
         c.trunk_radius = 3.0f * s;
-        c.branch_child_len = 0.3f / maxf(s, 0.5f);
+        c.branch_child_len = 0.3f / size;
         c.branch_child_radius = 0.0f;
         c.branch_child_radius_lerp = false;
-        c.leaf_radius_min = 1.5f;
-        c.leaf_radius_max = 2.5f;
+        c.leaf_radius_min = 1.5f * log_s;
+        c.leaf_radius_max = 2.5f * log_s;
         c.leaf_radius_scaled = 0.5f * log_s;
         c.straightness = 0.4f;
         c.max_depth = 1;
-        c.splits_min = 40.0f * s;
-        c.splits_max = 42.0f * s;
+        c.splits_min = 40.0f * size;
+        c.splits_max = 42.0f * size;
         c.split_range_min = 0.3f;
         c.split_range_max = 1.1f;
         c.branch_len_bias = 0.7f;
@@ -499,16 +620,16 @@ TreeConfig tree_config_create(TreeType type, RngState *rng, float scale)
     case TREE_CEDAR:
         c.trunk_len = 22.0f * s;
         c.trunk_radius = 1.8f * s;
-        c.branch_child_len = 0.3f / maxf(s, 0.5f);
+        c.branch_child_len = 0.3f / size;
         c.branch_child_radius = 0.0f;
         c.branch_child_radius_lerp = false;
-        c.leaf_radius_min = 1.4f;
-        c.leaf_radius_max = 2.3f;
+        c.leaf_radius_min = 1.4f * log_s;
+        c.leaf_radius_max = 2.3f * log_s;
         c.leaf_radius_scaled = 0.35f * log_s;
         c.straightness = 0.35f;
         c.max_depth = 1;
-        c.splits_min = 24.0f * s;
-        c.splits_max = 26.0f * s;
+        c.splits_min = 24.0f * size;
+        c.splits_max = 26.0f * size;
         c.split_range_min = 0.15f;
         c.split_range_max = 1.15f;
         c.branch_len_bias = 0.7f;

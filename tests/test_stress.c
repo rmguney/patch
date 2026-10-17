@@ -1,17 +1,48 @@
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L /* sysconf */
+#endif
 #include "engine/core/types.h"
 #include "engine/core/math.h"
 #include "engine/core/rng.h"
-#include "engine/core/profile.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
 #include "engine/sim/detach.h"
+#include "engine/sim/env_particles.h"
+#include "engine/sim/ui.h"
 #include "engine/physics/particles.h"
 #include "engine/platform/platform.h"
+#include "content/materials.h"
 #include "test_common.h"
-#include <string.h>
-#include <stdlib.h>
+#include "test_fixtures.h"
 
-static bool g_verbose = false;
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
+#else
+#include <unistd.h>
+#endif
+
+/* Bytes of this process in physical memory (0 where it cannot be read) */
+static size_t resident_bytes(void)
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+        return 0;
+    return counters.WorkingSetSize;
+#else
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (!f)
+        return 0;
+    long size_pages = 0, resident_pages = 0;
+    int read = fscanf(f, "%ld %ld", &size_pages, &resident_pages);
+    fclose(f);
+    return read == 2 ? (size_t)resident_pages * (size_t)sysconf(_SC_PAGESIZE) : 0;
+#endif
+}
 
 #define FRAME_BUDGET_MS 16.667f
 #define TICK_COUNT 10
@@ -42,7 +73,7 @@ TEST(voxel_objects_max_capacity)
         float z = rng_range_f32(&rng, bounds.min_z * 0.8f, bounds.max_z * 0.8f);
         float radius = rng_range_f32(&rng, 0.2f, 0.4f);
 
-        int32_t idx = voxel_object_world_add_sphere(world, vec3_create(x, y, z), radius, 1);
+        int32_t idx = fixture_add_box(world, vec3_create(x, y, z), vec3_create(radius, radius, radius), 1);
         if (idx >= 0)
             spawned++;
     }
@@ -85,10 +116,8 @@ TEST(particles_max_capacity)
             rng_range_f32(&rng, -5.0f, 5.0f));
         Vec3 color = vec3_create(rng_float(&rng), rng_float(&rng), rng_float(&rng));
 
-        if (particle_system_add(sys, &rng, pos, vel, color, 0.03f) >= 0)
-            spawned++;
-        else
-            break;
+        particle_system_add(sys, pos, vel, color, 0.03f);
+        spawned++;
     }
 
     PlatformTime t1 = platform_time_now();
@@ -139,7 +168,7 @@ TEST(destruction_burst)
         float x = rng_range_f32(&rng, bounds.min_x * 0.7f, bounds.max_x * 0.7f);
         float y = rng_range_f32(&rng, 0.5f, bounds.max_y * 0.7f);
         float z = rng_range_f32(&rng, bounds.min_z * 0.7f, bounds.max_z * 0.7f);
-        voxel_object_world_add_sphere(world, vec3_create(x, y, z), 0.4f, 1);
+        fixture_add_box(world, vec3_create(x, y, z), vec3_create(0.4f, 0.4f, 0.4f), 1);
     }
 
     printf("\n    Simulating destruction burst on %d objects...\n", num_objects);
@@ -155,8 +184,7 @@ TEST(destruction_burst)
     {
         if (tick % 3 == 0)
         {
-            VoxelObjectHit hit;
-            hit.hit = false;
+            VoxelObjectHit hit = {0};
 
             for (int32_t i = 0; i < world->object_count && !hit.hit; i++)
             {
@@ -165,7 +193,6 @@ TEST(destruction_burst)
                     hit.hit = true;
                     hit.object_index = i;
                     hit.impact_point = world->objects[i].position;
-                    hit.impact_normal = vec3_create(0, 1, 0);
                 }
             }
 
@@ -187,7 +214,7 @@ TEST(destruction_burst)
                 {
                     Vec3 vel = vec3_scale(vec3_sub(destroyed_pos[i], hit.impact_point), 5.0f);
                     vel.y += 3.0f;
-                    particle_system_add(particles, &rng, destroyed_pos[i], vel,
+                    particle_system_add(particles, destroyed_pos[i], vel,
                                         vec3_create(1, 0.5f, 0.2f), 0.02f);
                 }
             }
@@ -208,24 +235,36 @@ TEST(destruction_burst)
     return 1;
 }
 
-TEST(memory_footprint)
+TEST(scene_volume_commits_memory_on_write)
 {
-    size_t vobj_world_size = sizeof(VoxelObjectWorld);
-    size_t particle_sys_size = sizeof(ParticleSystem);
+    /* The scene's 48x12x48-chunk volume holds 865 MB of voxels. Creating it ran
+     * chunk_init over every chunk after calloc, which made all of it resident before a
+     * single voxel was generated (156 ms). Zeroed memory is a valid empty chunk now, so
+     * the pages stay untouched until something is written to them. */
+    size_t before = resident_bytes();
+    PlatformTime t0 = platform_time_now();
+    VoxelVolume *vol = volume_create_dims(48, 12, 48, vec3_create(-76.8f, 0.0f, -76.8f), 0.1f);
+    float create_ms = platform_time_delta_seconds(t0, platform_time_now()) * 1000.0f;
+    ASSERT(vol != NULL);
+    size_t after = resident_bytes();
+    size_t chunk_bytes = (size_t)vol->total_chunks * sizeof(Chunk);
+    double grown_mb = ((double)after - (double)before) / (1024.0 * 1024.0);
+    printf("(%.0f MB of chunks: resident %+.1f MB, %.2f ms) ", (double)chunk_bytes / (1024.0 * 1024.0), grown_mb,
+           create_ms);
 
-    size_t vobj_per_object = sizeof(VoxelObject);
-    size_t particle_per = sizeof(Particle);
+    /* Writing one voxel makes one page resident, not the volume */
+    volume_set_at(vol, vec3_create(0.05f, 0.05f, 0.05f), MAT_STONE);
+    ASSERT(volume_get_at(vol, vec3_create(0.05f, 0.05f, 0.05f)) == MAT_STONE);
 
-    printf("\n");
-    printf("    VoxelObjectWorld: %.2f MB (%d objects x %zu bytes)\n",
-           vobj_world_size / (1024.0f * 1024.0f), VOBJ_MAX_OBJECTS, vobj_per_object);
-    printf("    ParticleSystem:   %.2f MB (%d particles x %zu bytes)\n",
-           particle_sys_size / (1024.0f * 1024.0f), PARTICLE_MAX_COUNT, particle_per);
+    /* Not measurable where the allocator itself writes the memory: the MSVC debug heap
+     * fills every block, sanitizer allocators keep shadow memory */
+#if !defined(PATCH_SANITIZERS_ENABLED) && !(defined(_WIN32) && defined(_DEBUG))
+    if (before > 0 && after > 0)
+        ASSERT(grown_mb < (double)chunk_bytes / (16.0 * 1024.0 * 1024.0));
+    ASSERT_PERF(create_ms < 20.0f);
+#endif
 
-    size_t total = vobj_world_size + particle_sys_size;
-    printf("    Total static:     %.2f MB\n", total / (1024.0f * 1024.0f));
-
-    ASSERT(total < 512 * 1024 * 1024);
+    volume_destroy(vol);
     return 1;
 }
 
@@ -238,7 +277,7 @@ TEST(bulk_edit_deduplication)
     /* Fill volume with solid voxels */
     Vec3 min_corner = vec3_create(0.1f, 0.1f, 0.1f);
     Vec3 max_corner = vec3_create(6.3f, 3.1f, 6.3f);
-    volume_fill_box(vol, min_corner, max_corner, 1);
+    fixture_fill_box(vol, min_corner, max_corner, 1);
 
     RngState rng;
     rng_seed(&rng, 0x55AA55AA);
@@ -255,7 +294,7 @@ TEST(bulk_edit_deduplication)
     for (int32_t iter = 0; iter < NUM_ITERATIONS; iter++)
     {
         /* Refill for each iteration */
-        volume_fill_box(vol, min_corner, max_corner, 1);
+        fixture_fill_box(vol, min_corner, max_corner, 1);
 
         PlatformTime t0 = platform_time_now();
 
@@ -267,7 +306,7 @@ TEST(bulk_edit_deduplication)
                 rng_range_f32(&rng, 0.5f, 2.5f),
                 rng_range_f32(&rng, 0.5f, 6.0f));
             /* Small radius = edits concentrated in same chunks */
-            int32_t edited = volume_fill_sphere(vol, center, 0.15f, 0);
+            int32_t edited = fixture_fill_sphere(vol, center, 0.15f, 0);
             total_voxels_edited += edited;
         }
         volume_edit_end(vol);
@@ -288,7 +327,7 @@ TEST(bulk_edit_deduplication)
      * Threshold is intentionally loose to avoid flakiness on busy CI machines.
      * Without bitmap (O(n²)), this would take 50-100ms+.
      */
-    ASSERT(avg_ms < 12.0f);
+    ASSERT_PERF(avg_ms < 12.0f);
     return 1;
 }
 
@@ -303,36 +342,17 @@ TEST(dirty_ring_overflow_recovery)
     printf("\n    Volume: %d chunks, dirty ring size: %d\n",
            vol->total_chunks, VOLUME_DIRTY_RING_SIZE);
 
-    /* Fill all chunks with solid voxels */
-    for (int32_t cz = 0; cz < vol->chunks_z; cz++)
-    {
-        for (int32_t cy = 0; cy < vol->chunks_y; cy++)
-        {
-            for (int32_t cx = 0; cx < vol->chunks_x; cx++)
-            {
-                Chunk *chunk = volume_get_chunk(vol, cx, cy, cz);
-                if (chunk)
-                {
-                    chunk_fill(chunk, 1);
-                    chunk->state = CHUNK_STATE_ACTIVE;
-                }
-            }
-        }
-    }
-
-    /* Dirty ALL chunks in a single frame (forces ring overflow) */
+    /* Edit one voxel in every chunk in a single batch (forces ring overflow) */
     printf("    Dirtying all %d chunks to force ring overflow...\n", vol->total_chunks);
 
-    PlatformTime t0 = platform_time_now();
-
-    for (int32_t i = 0; i < vol->total_chunks; i++)
-    {
-        volume_mark_chunk_dirty(vol, i);
-    }
-
-    PlatformTime t1 = platform_time_now();
-    float dirty_ms = (float)(platform_time_delta_seconds(t0, t1) * 1000.0);
-    (void)dirty_ms;
+    float chunk_size = vol->voxel_size * CHUNK_SIZE;
+    volume_edit_begin(vol);
+    for (int32_t cz = 0; cz < vol->chunks_z; cz++)
+        for (int32_t cy = 0; cy < vol->chunks_y; cy++)
+            for (int32_t cx = 0; cx < vol->chunks_x; cx++)
+                volume_edit_set(vol, vec3_create(((float)cx + 0.5f) * chunk_size, ((float)cy + 0.5f) * chunk_size,
+                                                 ((float)cz + 0.5f) * chunk_size), 1);
+    volume_edit_end(vol);
 
     ASSERT(vol->dirty_ring_overflow == true);
     printf("    Ring overflow triggered: %s\n", vol->dirty_ring_overflow ? "yes" : "no");
@@ -369,20 +389,72 @@ TEST(dirty_ring_overflow_recovery)
     int32_t expected_chunks = vol->total_chunks;
     volume_destroy(vol);
 
-    ASSERT(total_dirty_processed >= expected_chunks - 10);
-    ASSERT(total_recovery_ms / frames_to_recover < 1.0f);
+    ASSERT(total_dirty_processed == expected_chunks);
+    ASSERT_PERF(total_recovery_ms / frames_to_recover < 1.0f);
     return 1;
 }
 
-int main(int argc, char **argv)
+TEST(env_particles_all_expire)
+{
+    /* Fill the pool well past 8192 live particles. A per-tick update budget used
+     * to stop at the first 8192, so the rest never aged and hung in the air. */
+    EnvParticleSystem *sys = env_particles_create(7);
+    ASSERT(sys != NULL);
+    RngState rng;
+    rng_seed(&rng, 7);
+    for (int32_t i = 0; i < 12000; i++)
+    {
+        Vec3 pos = vec3_create(rng_range_f32(&rng, -10.0f, 10.0f), 10.0f, rng_range_f32(&rng, -10.0f, 10.0f));
+        env_particles_spawn(sys, ENV_PARTICLE_SNOW, pos, env_particles_steady_velocity(sys, ENV_PARTICLE_SNOW), &rng);
+    }
+    printf("(%d spawned) ", sys->count);
+    ASSERT(sys->count > 8192);
+
+    /* Snow lives at most 24 s (no ground here to end it sooner) */
+    double time = 0.0;
+    for (int32_t step = 0; step < 300; step++)
+    {
+        time += 0.1;
+        env_particles_update(sys, NULL, 1.0f, 0.1f, time);
+    }
+
+    int32_t still_active = 0;
+    for (int32_t i = 0; i < sys->count; i++)
+        if (sys->particles[i].active)
+            still_active++;
+    printf("(%d still active) ", still_active);
+
+    env_particles_destroy(sys);
+    ASSERT(still_active == 0);
+    return 1;
+}
+
+TEST(menu_slider_click_stays_in_range)
+{
+    /* Clicking a slider maps the click position onto [slider_min, slider_max] */
+    static const char *const labels[] = {"OFF", "LOW", "MEDIUM", "HIGH"};
+    UIContext ctx;
+    ui_context_init(&ctx);
+    UIMenu menu;
+    ui_menu_clear(&menu, "TEST");
+    ui_menu_add_slider_labeled(&menu, "QUALITY", 7, 2, 1, 3, labels, 4);
+
+    /* 1920x1080: the single item is 480 px wide at x 720..1200, y 594..630 */
+    const float click_x[3] = {721.0f, 960.0f, 1199.0f};
+    const int32_t expected[3] = {1, 2, 3};
+    for (int32_t i = 0; i < 3; i++)
+    {
+        ui_context_update(&ctx, 0.016f, click_x[i], 600.0f, false);
+        ui_context_update(&ctx, 0.016f, click_x[i], 600.0f, true);
+        ASSERT(ui_menu_update(&ctx, &menu, 1920, 1080) == 7);
+        ASSERT(menu.items[0].slider_value == expected[i]);
+    }
+    return 1;
+}
+
+int main(void)
 {
     platform_time_init();
-
-    for (int i = 1; i < argc; i++)
-    {
-        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0)
-            g_verbose = true;
-    }
 
     printf("=== Pre-RT Stress Tests ===\n");
     printf("Limits: VOBJ_MAX=%d, PARTICLE_MAX=%d\n\n",
@@ -396,11 +468,17 @@ int main(int argc, char **argv)
     RUN_TEST(destruction_burst);
 
     printf("\n--- Memory Tests ---\n");
-    RUN_TEST(memory_footprint);
+    RUN_TEST(scene_volume_commits_memory_on_write);
 
     printf("\n--- Bitmap Optimization Tests ---\n");
     RUN_TEST(bulk_edit_deduplication);
     RUN_TEST(dirty_ring_overflow_recovery);
+
+    printf("\n--- Environment Particle Tests ---\n");
+    RUN_TEST(env_particles_all_expire);
+
+    printf("\n--- Menu Input ---\n");
+    RUN_TEST(menu_slider_click_stays_in_range);
 
     printf("\nResults: %d/%d passed\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;

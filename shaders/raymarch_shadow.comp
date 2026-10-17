@@ -1,84 +1,34 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/*
+ * raymarch_shadow.comp - sun shadows for every G-buffer pixel: soft shadow rays through the
+ * terrain shadow volume (occupancy mips up to a texel per chunk) and, via the object BVH, voxel
+ * objects.
+ */
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-/* Push constants */
-layout(push_constant) uniform Constants {
-    mat4 inv_view;
-    mat4 inv_projection;
-    vec3 bounds_min;
-    float voxel_size;
-    vec3 bounds_max;
-    float chunk_size;
-    vec3 camera_pos;
-    int history_valid;
-    ivec3 grid_size;
-    int total_chunks;
-    ivec3 chunks_dim;
-    int frame_count;
-    int object_shadow_quality;
-    int debug_mode;
-    int is_orthographic;
-    int max_steps;
-    float near_plane;
-    float far_plane;
-    int object_count;
-    int shadow_quality;
-    int shadow_contact;
-    int ao_quality;
-    int lod_quality;
-    int taa_quality;
-} pc;
-
+#include "include/voxel_push_constants.glsl"
 #include "include/gbuffer_sample.glsl"
 
-/* Global parameters required by data_terrain.glsl */
-ivec3 pc_grid_size;
-ivec3 pc_chunks_dim;
-int pc_total_chunks;
+/* Terrain shadow volume (set 0, binding 0), see shadow_volume.glsl */
+layout(set = 0, binding = 0) uniform usampler3D shadow_volume_tex;
 
-/* Terrain data for HDDA (set 0) */
-layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
-    uint voxel_data[];
-};
-
-layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
-    uvec4 chunk_headers[];
-};
-
-/* Shadow volume texture (set 0, binding 2) - R8_UINT with 3 mip levels */
-layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
-
-/* Material palette (set 0, binding 3) - needed for data_voxobj.glsl material functions */
-layout(std140, SET_BINDING(0, 3)) uniform MaterialPalette {
+/* Material palette (set 0, binding 1) - voxel object colors (materials.glsl) */
+layout(std140, set = 0, binding = 1) uniform MaterialPalette {
     vec4 materials[512];
 };
 
 #include "include/materials.glsl"
-#include "include/data_terrain.glsl"
+#include "include/hdda_core.glsl"
+#include "include/shadow_volume.glsl"
 
 /* Voxel object data bindings (set 3) - direct object tracing for accurate rotated shadows */
-struct VoxelObjectGPU {
-    mat4 world_to_local;
-    mat4 local_to_world;
-    vec4 bounds_min;    /* xyz: min, w: voxel_size */
-    vec4 bounds_max;    /* xyz: max, w: grid_size */
-    vec4 position;      /* xyz: world pos, w: active flag */
-    uint atlas_slice;
-    uint material_base;
-    uint flags;
-    uint occupancy_mask;
-};
+#include "include/voxobj_types.glsl"
 
-layout(SET_BINDING(3, 0)) uniform usampler3D vobj_atlas;
+layout(set = 3, binding = 0) uniform usampler3D vobj_atlas;
 
-layout(std430, SET_BINDING(3, 1)) readonly buffer ObjectMetadata {
+layout(std430, set = 3, binding = 1) readonly buffer ObjectMetadata {
     VoxelObjectGPU objects[];
 };
 
@@ -93,13 +43,12 @@ layout(std430, SET_BINDING(3, 1)) readonly buffer ObjectMetadata {
 #include "include/scene_lighting.glsl"
 
 /* G-buffer inputs (set 1) */
-layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
-layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
-layout(SET_BINDING(1, 2)) uniform sampler2D gbuffer_world_pos;
-layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_depth;
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;
+layout(set = 1, binding = 2) uniform sampler2D blue_noise_tex;
 
 /* Shadow output (set 2) */
-layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_shadow;
+layout(r8, set = 2, binding = 0) writeonly uniform image2D out_shadow;
 
 /* Constants (CHUNK_SIZE, REGION_SIZE, CHUNK_UINT_COUNT from hdda_types.glsl) */
 const int BASE_SHADOW_STEPS = 128;  /* Base step count for far surfaces */
@@ -108,72 +57,11 @@ const float SHADOW_DIST_VERY_FAR = 100.0;
 const float SHADOW_DIST_FAR = 60.0;
 const int SHADOW_STEPS_VERY_FAR = 64;
 const int SHADOW_STEPS_FAR = 96;
-const float SHADOW_SAMPLE_DIST_FAR = 80.0;
-const float SHADOW_SAMPLE_DIST_MID = 40.0;
 
 #define SUN_DIR (lighting.sun_dir.xyz)
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
-}
-
-/* Shadow volume dimensions computed from grid_size (avoids per-sample textureSize calls) */
-ivec3 shadow_dim0;  /* terrain mip0: half-res */
-ivec3 shadow_dim1;  /* terrain mip1: quarter-res */
-ivec3 shadow_dim2;  /* terrain mip2: eighth-res */
-
-/* Sample shadow volume occupancy at voxel position
-   Shadow volume is half-resolution: 2x2x2 voxels packed per texel
-   Returns true if occupied */
-bool sample_shadow_volume(ivec3 voxel_pos) {
-    /* Shadow volume texel coords (half res) */
-    ivec3 shadow_pos = voxel_pos >> 1;
-
-    if (shadow_pos.x < 0 || shadow_pos.x >= shadow_dim0.x ||
-        shadow_pos.y < 0 || shadow_pos.y >= shadow_dim0.y ||
-        shadow_pos.z < 0 || shadow_pos.z >= shadow_dim0.z) {
-        return false;
-    }
-
-    /* Fetch packed occupancy byte */
-    uint packed = texelFetch(shadow_volume_tex, shadow_pos, 0).r;
-
-    /* Compute bit index within 2x2x2 */
-    int bit_idx = (voxel_pos.x & 1) + ((voxel_pos.y & 1) << 1) + ((voxel_pos.z & 1) << 2);
-
-    return (packed & (1u << bit_idx)) != 0u;
-}
-
-/* Sample shadow volume mip1 (4x4x4 voxels per texel) */
-bool sample_shadow_mip1(ivec3 voxel_pos) {
-    ivec3 mip1_pos = voxel_pos >> 2;  /* Divide by 4 */
-
-    if (mip1_pos.x < 0 || mip1_pos.x >= shadow_dim1.x ||
-        mip1_pos.y < 0 || mip1_pos.y >= shadow_dim1.y ||
-        mip1_pos.z < 0 || mip1_pos.z >= shadow_dim1.z) {
-        return false;
-    }
-
-    return texelFetch(shadow_volume_tex, mip1_pos, 1).r != 0u;
-}
-
-/* Sample shadow volume mip2 (8x8x8 voxels per texel) */
-bool sample_shadow_mip2(ivec3 voxel_pos) {
-    ivec3 mip2_pos = voxel_pos >> 3;  /* Divide by 8 */
-
-    if (mip2_pos.x < 0 || mip2_pos.x >= shadow_dim2.x ||
-        mip2_pos.y < 0 || mip2_pos.y >= shadow_dim2.y ||
-        mip2_pos.z < 0 || mip2_pos.z >= shadow_dim2.z) {
-        return false;
-    }
-
-    return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
-}
-
-/* Direct object shadow tracing - traces actual object voxels for accurate rotated shadows.
-   Uses BVH traversal for O(log n) performance instead of iterating all objects. */
-float trace_object_shadow(vec3 origin, vec3 dir, float max_t) {
-    return bvh_trace_object_shadow(origin, dir, max_t);
 }
 
 /* Trace shadow ray through terrain volume, returns hit distance (max_dist if no hit) */
@@ -199,11 +87,8 @@ float trace_terrain_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_st
     ivec3 step_dir = ivec3(sign(rd));
     vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
 
-    ivec3 last_mip2_pos = ivec3(-1000);
-    ivec3 last_mip1_pos = ivec3(-1000);
-    bool mip2_empty = false;
-    bool mip1_empty = false;
-
+    /* i counts the voxel cells crossed, jumps included: the reach is the same whichever blocks
+     * the empty space is crossed in */
     for (int i = 0; i < max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
             map_pos.y < 0 || map_pos.y >= pc.grid_size.y ||
@@ -211,59 +96,19 @@ float trace_terrain_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_st
             return max_dist;
         }
 
-        /* Level 2: mip2 occupancy (8x8x8 voxels) - terrain only */
-        ivec3 current_mip2 = map_pos >> 3;
-        if (current_mip2 != last_mip2_pos) {
-            last_mip2_pos = current_mip2;
-            mip2_empty = !sample_shadow_mip2(map_pos);
-            last_mip1_pos = ivec3(-1000);
-        }
-
-        if (mip2_empty) {
-            /* Skip to mip2 boundary along the DDA exit axis */
-            ivec3 mip2_min = current_mip2 << 3;
-            ivec3 mip2_max = mip2_min + 7;
-            ivec3 cells_to_exit;
-            cells_to_exit.x = (step_dir.x > 0) ? (mip2_max.x - map_pos.x + 1) : (map_pos.x - mip2_min.x + 1);
-            cells_to_exit.y = (step_dir.y > 0) ? (mip2_max.y - map_pos.y + 1) : (map_pos.y - mip2_min.y + 1);
-            cells_to_exit.z = (step_dir.z > 0) ? (mip2_max.z - map_pos.z + 1) : (map_pos.z - mip2_min.z + 1);
-            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
-            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
-            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
-            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
-            map_pos += ivec3(mask) * step_dir * cells_to_exit;
-            side_dist += vec3(skip_per_axis) * delta_dist;
+        /* Jump the coarsest empty block around map_pos: a chunk in the open air above the
+         * terrain, down to 2x2x2 voxels next to it */
+        uint occ0;
+        int level = shadow_volume_empty_level(map_pos, occ0);
+        if (level >= 0) {
+            ivec3 block_min = (map_pos >> (level + 1)) << (level + 1);
+            bvec3 exit_mask;
+            int skip = hdda_skip_block(map_pos, side_dist, step_dir, delta_dist, block_min, block_min + ((2 << level) - 1), exit_mask);
             i += max(skip - 1, 0);
             continue;
         }
 
-        /* Level 1: mip1 occupancy (4x4x4 voxels) - terrain only */
-        ivec3 current_mip1 = map_pos >> 2;
-        if (current_mip1 != last_mip1_pos) {
-            last_mip1_pos = current_mip1;
-            mip1_empty = !sample_shadow_mip1(map_pos);
-        }
-
-        if (mip1_empty) {
-            /* Skip to mip1 boundary along the DDA exit axis */
-            ivec3 mip1_min = current_mip1 << 2;
-            ivec3 mip1_max = mip1_min + 3;
-            ivec3 cells_to_exit;
-            cells_to_exit.x = (step_dir.x > 0) ? (mip1_max.x - map_pos.x + 1) : (map_pos.x - mip1_min.x + 1);
-            cells_to_exit.y = (step_dir.y > 0) ? (mip1_max.y - map_pos.y + 1) : (map_pos.y - mip1_min.y + 1);
-            cells_to_exit.z = (step_dir.z > 0) ? (mip1_max.z - map_pos.z + 1) : (map_pos.z - mip1_min.z + 1);
-            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
-            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
-            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
-            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
-            map_pos += ivec3(mask) * step_dir * cells_to_exit;
-            side_dist += vec3(skip_per_axis) * delta_dist;
-            i += max(skip - 1, 0);
-            continue;
-        }
-
-        /* Level 0: Per-voxel check - terrain shadow volume only */
-        if (sample_shadow_volume(map_pos)) {
+        if (shadow_volume_opaque(occ0, map_pos)) {
             /* Compute actual world distance to hit voxel center */
             vec3 hit_grid = vec3(map_pos) + 0.5;
             vec3 hit_world = pc.bounds_min + hit_grid * pc.voxel_size;
@@ -284,31 +129,16 @@ float trace_shadow_hdda_dist(vec3 origin, vec3 rd, float max_dist, int max_steps
     /* Trace terrain shadow volume (fast hierarchical skip) */
     float terrain_t = trace_terrain_shadow_hdda(origin, rd, max_dist, max_steps);
 
-    /* Trace objects directly via vobj_march_object (accurate rotated geometry) */
-    if (pc.object_count > 0) {
-        float object_t = trace_object_shadow(origin, rd, terrain_t);
-        return min(terrain_t, object_t);
-    }
-
-    return terrain_t;
+    /* Voxel objects through the BVH, traced voxel by voxel (rotated geometry) */
+    return bvh_trace_object_shadow(origin, rd, terrain_t, pc.object_count);
 }
 
-/* Original interface for compatibility */
+/* 1 = lit, 0 = occluded */
 float trace_shadow_hdda(vec3 origin, vec3 rd, float max_dist, int max_steps) {
     return trace_shadow_hdda_dist(origin, rd, max_dist, max_steps) < max_dist ? 0.0 : 1.0;
 }
 
 void main() {
-    /* Initialize globals for data_terrain.glsl */
-    pc_grid_size = pc.grid_size;
-    pc_chunks_dim = pc.chunks_dim;
-    pc_total_chunks = pc.total_chunks;
-
-    /* Cache shadow volume dimensions (computed from grid_size, avoids textureSize calls) */
-    shadow_dim0 = (pc.grid_size + 1) >> 1;  /* terrain mip0: half-res */
-    shadow_dim1 = (pc.grid_size + 3) >> 2;  /* terrain mip1: quarter-res */
-    shadow_dim2 = (pc.grid_size + 7) >> 3;  /* terrain mip2: eighth-res */
-
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screen_size = imageSize(out_shadow);
 
@@ -316,10 +146,7 @@ void main() {
         return;
     }
 
-    GBufferSample g = sample_gbuffer_shadow(
-        pixel,
-        gbuffer_depth, gbuffer_normal, gbuffer_world_pos
-    );
+    GBufferSample g = sample_gbuffer_shadow(pixel, gbuffer_depth, gbuffer_normal);
 
     if (g.is_sky) {
         imageStore(out_shadow, pixel, vec4(1.0));
@@ -331,13 +158,7 @@ void main() {
     /* Distance-based step reduction for FAR surfaces only.
        Close surfaces keep full steps for shadow accuracy.
        Far surfaces can use fewer steps - artifacts less visible at distance. */
-    float surface_dist;
-    if (pc.is_orthographic != 0) {
-        vec3 cam_fwd = -normalize(vec3(pc.inv_view[0][2], pc.inv_view[1][2], pc.inv_view[2][2]));
-        surface_dist = abs(dot(g.world_pos - pc.camera_pos, cam_fwd));
-    } else {
-        surface_dist = length(g.world_pos - pc.camera_pos);
-    }
+    float surface_dist = length(g.world_pos - pc.camera_pos);
     int shadow_steps;
     if (surface_dist > SHADOW_DIST_VERY_FAR) {
         shadow_steps = SHADOW_STEPS_VERY_FAR;   /* >100m: half steps */
@@ -349,76 +170,51 @@ void main() {
 
     float effective_max_dist = SHADOW_MAX_DIST;
 
-    float shadow = 1.0;
+    vec3 tangent = normalize(cross(SUN_DIR, vec3(0.0, 1.0, 0.01)));
+    vec3 bitangent = cross(SUN_DIR, tangent);
 
-    if (pc.shadow_quality > 0) {
-        vec2 noise_uv = vec2(pixel) / 128.0;
-        float frame_offset = float(pc.frame_count) * 0.6180339887;
+    /* Bias along light direction instead of normal - ensures shadow ray starts
+       outside occluders regardless of surface orientation */
+    float light_bias = pc.voxel_size * 1.0;
+    /* Normal bias grows as the sun gets more grazing (1 / N.L, capped at 5x) */
+    float angle_factor = max(0.2, dot(SUN_DIR, normal));
+    float normal_bias = pc.voxel_size * 0.3 / angle_factor;
+    vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
 
-        vec3 tangent = normalize(cross(SUN_DIR, vec3(0.0, 1.0, 0.01)));
-        vec3 bitangent = cross(SUN_DIR, tangent);
+    /* Contact hardening only when enabled, otherwise use constant penumbra */
+    float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
+    float penumbra = base_penumbra;
 
-        /* Bias along light direction instead of normal - ensures shadow ray starts
-           outside occluders regardless of surface orientation */
-        float light_bias = pc.voxel_size * 1.0;
-        /* Angle-dependent normal bias: steeper angles need less bias */
-        float angle_factor = max(0.2, dot(-SUN_DIR, normal));
-        float normal_bias = pc.voxel_size * 0.3 / angle_factor;
-        vec3 shadow_origin = g.world_pos + SUN_DIR * light_bias + normal * normal_bias;
+    if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
+        /* Contact hardening: trace center ray to find occluder distance */
+        float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, effective_max_dist, shadow_steps);
 
-        /* Sample count: quality-based with distance scaling.
-           Far surfaces reduce — artifacts less visible at distance. */
-        int base_samples = 3 + pc.shadow_quality;
-        int num_samples = base_samples;
-        if (surface_dist > SHADOW_SAMPLE_DIST_FAR) {
-            num_samples = max(2, base_samples - 2);  /* Far: fewer samples */
-        } else if (surface_dist > SHADOW_SAMPLE_DIST_MID) {
-            num_samples = max(3, base_samples - 1);  /* Mid: slight reduction */
+        /* Scale penumbra: near occluder = sharper, far = softer
+           If center ray misses, use full penumbra (jittered rays may still hit) */
+        if (occluder_dist < effective_max_dist) {
+            float contact_factor = smoothstep(0.0, 8.0, occluder_dist) * 0.7 + 0.3;
+            penumbra = base_penumbra * contact_factor;
         }
-        float shadow_sum = 0.0;
-
-        /* Contact hardening only when enabled, otherwise use constant penumbra */
-        float base_penumbra = 0.04 + 0.02 * float(pc.shadow_quality);
-        float penumbra = base_penumbra;
-
-        if (pc.shadow_contact != 0 && pc.shadow_quality >= 2) {
-            /* Contact hardening: trace center ray to find occluder distance */
-            float occluder_dist = trace_shadow_hdda_dist(shadow_origin, SUN_DIR, effective_max_dist, shadow_steps);
-
-            /* Scale penumbra: near occluder = sharper, far = softer
-               If center ray misses, use full penumbra (jittered rays may still hit) */
-            if (occluder_dist < effective_max_dist) {
-                float contact_factor = smoothstep(0.0, 8.0, occluder_dist) * 0.7 + 0.3;
-                penumbra = base_penumbra * contact_factor;
-            }
-        }
-
-        for (int s = 0; s < num_samples; s++) {
-            /* R2 sequence for 2D low-discrepancy sample offsets (avoids linear patterns) */
-            const float a1 = 0.7548776662466927;  /* 1/plastic constant */
-            const float a2 = 0.5698402909980532;  /* 1/plastic^2 */
-            vec2 r2_offset = fract(vec2(float(s) * a1, float(s) * a2));
-            vec2 temporal_offset = fract(vec2(frame_offset, frame_offset * a1));
-            float sample_noise = texture(blue_noise_tex, noise_uv + r2_offset + temporal_offset).r;
-
-            /* Golden angle + independent temporal offset for angular distribution */
-            float golden_angle = 2.399963229; /* 137.5 degrees in radians */
-            float angle = float(s) * golden_angle + sample_noise * 6.28318;
-
-            /* Stratified radius with independent jitter for better coverage */
-            float radius_base = sqrt((float(s) + sample_noise) / float(num_samples));
-            float radius = radius_base * penumbra;
-
-            vec3 jitter = tangent * cos(angle) * radius + bitangent * sin(angle) * radius;
-            vec3 jittered_light = normalize(SUN_DIR + jitter);
-
-            shadow_sum += trace_shadow_hdda(shadow_origin, jittered_light, effective_max_dist, shadow_steps);
-        }
-
-        shadow = shadow_sum / float(num_samples);
-        /* Remap shadow: 0.05 minimum prevents pure black while maintaining contrast */
-        shadow = mix(0.05, 1.0, shadow);
     }
+
+    /*
+     * One ray per pixel and frame toward a point of the sun's disk; temporal_shadow.comp
+     * accumulates them into the penumbra. The point is the pixel's blue noise (two decorrelated
+     * values of the interleaved gradient noise texture) rotated by this frame's element of the
+     * R2 sequence: every pixel walks a low-discrepancy sequence over the frames while its
+     * neighbours, which the resolve also blurs in, sit at other points of it.
+     */
+    const vec2 R2 = vec2(0.7548776662466927, 0.5698402909980532); /* 1 / plastic number, its square */
+    vec2 noise = vec2(texture(blue_noise_tex, vec2(pixel) / 128.0).r,
+                      texture(blue_noise_tex, (vec2(pixel) + vec2(64.0, 37.0)) / 128.0).r);
+    vec2 u = fract(noise + R2 * float(pc.frame_count));
+    float radius = sqrt(u.x) * penumbra; /* uniform over the disk */
+    float angle = u.y * 6.28318531;
+    vec3 jittered_light = normalize(SUN_DIR + (tangent * cos(angle) + bitangent * sin(angle)) * radius);
+
+    float shadow = trace_shadow_hdda(shadow_origin, jittered_light, effective_max_dist, shadow_steps);
+    /* Remap shadow: 0.05 minimum prevents pure black while maintaining contrast */
+    shadow = mix(0.05, 1.0, shadow);
 
     imageStore(out_shadow, pixel, vec4(shadow, 0.0, 0.0, 0.0));
 }

@@ -1,39 +1,41 @@
 #include "renderer.h"
-#include "renderer_internal.h"
-#include "voxel_push_constants.h"
+#include "engine/core/profile.h"
 #include "engine/platform/platform.h"
+#include "engine/platform/thread.h"
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 
 namespace patch
 {
 
-    Renderer::Renderer(Window &window)
-        : window_(window), instance_(VK_NULL_HANDLE), physical_device_(VK_NULL_HANDLE), device_(VK_NULL_HANDLE), graphics_queue_(VK_NULL_HANDLE), present_queue_(VK_NULL_HANDLE), graphics_family_(UINT32_MAX), present_family_(UINT32_MAX), surface_(VK_NULL_HANDLE), swapchain_(VK_NULL_HANDLE), swapchain_format_(VK_FORMAT_UNDEFINED), swapchain_extent_{}, render_pass_(VK_NULL_HANDLE), pipeline_layout_(VK_NULL_HANDLE), ui_pipeline_(VK_NULL_HANDLE), camera_target_(vec3_zero()), prev_camera_target_(vec3_zero()), camera_initialized_(false), command_pool_(VK_NULL_HANDLE), current_frame_(0), depth_image_(VK_NULL_HANDLE), depth_image_memory_(VK_NULL_HANDLE), depth_image_view_(VK_NULL_HANDLE), depth_sampler_(VK_NULL_HANDLE), view_matrix_(mat4_identity()), projection_matrix_(mat4_identity()), prev_view_matrix_(mat4_identity()), prev_projection_matrix_(mat4_identity()), ortho_base_width_(0.0f), ortho_base_height_(0.0f), ortho_base_depth_(0.0f), ortho_half_width_(0.0f), ortho_half_height_(0.0f), projection_mode_(ProjectionMode::Orthographic), perspective_fov_y_degrees_(60.0f), perspective_near_(0.1f), perspective_far_(200.0f), camera_position_(vec3_zero()), init_error_(nullptr), material_count_(0), voxel_descriptor_layout_(VK_NULL_HANDLE), voxel_descriptor_pool_(VK_NULL_HANDLE), voxel_data_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_headers_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_material_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE}, voxel_total_chunks_(0), voxel_resources_initialized_(false), rt_supported_(false), temporal_compute_pipeline_(VK_NULL_HANDLE), temporal_compute_layout_(VK_NULL_HANDLE), temporal_shadow_input_layout_(VK_NULL_HANDLE), temporal_shadow_output_layout_(VK_NULL_HANDLE), temporal_shadow_descriptor_pool_(VK_NULL_HANDLE), history_images_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_memory_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_image_views_{VK_NULL_HANDLE, VK_NULL_HANDLE}, history_write_index_(0), last_bound_pipeline_(VK_NULL_HANDLE), last_bound_descriptor_set_(VK_NULL_HANDLE), gbuffer_sampler_(VK_NULL_HANDLE), gbuffer_render_pass_(VK_NULL_HANDLE), gbuffer_framebuffer_(VK_NULL_HANDLE), gbuffer_descriptor_layout_(VK_NULL_HANDLE), gbuffer_descriptor_pool_(VK_NULL_HANDLE), gbuffer_pipeline_(VK_NULL_HANDLE), gbuffer_pipeline_layout_(VK_NULL_HANDLE), deferred_lighting_pipeline_(VK_NULL_HANDLE), deferred_lighting_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_layout_(VK_NULL_HANDLE), deferred_lighting_descriptor_pool_(VK_NULL_HANDLE), shadow_volume_image_(VK_NULL_HANDLE), shadow_volume_memory_(VK_NULL_HANDLE), shadow_volume_view_(VK_NULL_HANDLE), shadow_volume_sampler_(VK_NULL_HANDLE), blue_noise_image_(VK_NULL_HANDLE), blue_noise_memory_(VK_NULL_HANDLE), blue_noise_view_(VK_NULL_HANDLE), blue_noise_sampler_(VK_NULL_HANDLE), motion_vector_image_(VK_NULL_HANDLE), motion_vector_memory_(VK_NULL_HANDLE), motion_vector_view_(VK_NULL_HANDLE), gbuffer_initialized_(false), timestamp_query_pool_(VK_NULL_HANDLE), timestamp_period_ns_(0.0f), timestamps_supported_(false)
+    static float ticks_to_ms(int64_t start, int64_t end)
     {
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        const int64_t freq = platform_get_frequency();
+        return freq > 0 ? (float)(end - start) * 1000.0f / (float)freq : 0.0f;
+    }
+
+    /* Frames of the TAA jitter's cycle: its Halton (2, 3) points cover a pixel evenly within
+     * the history's reach (taa_resolve.frag) */
+    static constexpr uint32_t TAA_JITTER_PHASES = 8;
+
+    /* Element index (from 1) of the Halton sequence of base, in [0, 1) */
+    static float halton(uint32_t index, uint32_t base)
+    {
+        float scale = 1.0f;
+        float result = 0.0f;
+        for (; index > 0; index /= base)
         {
-            lighting_ubo_[i].buffer = VK_NULL_HANDLE;
-            lighting_ubo_[i].allocation = VK_NULL_HANDLE;
-            voxel_descriptor_sets_[i] = VK_NULL_HANDLE;
-            voxel_temporal_ubo_[i].buffer = VK_NULL_HANDLE;
-            voxel_temporal_ubo_[i].allocation = VK_NULL_HANDLE;
-            gbuffer_descriptor_sets_[i] = VK_NULL_HANDLE;
-            deferred_lighting_descriptor_sets_[i] = VK_NULL_HANDLE;
-            temporal_shadow_input_sets_[i] = VK_NULL_HANDLE;
-            temporal_shadow_output_sets_[i] = VK_NULL_HANDLE;
+            scale /= static_cast<float>(base);
+            result += scale * static_cast<float>(index % base);
         }
-        for (uint32_t i = 0; i < GBUFFER_COUNT; i++)
-        {
-            gbuffer_images_[i] = VK_NULL_HANDLE;
-            gbuffer_memory_[i] = VK_NULL_HANDLE;
-            gbuffer_views_[i] = VK_NULL_HANDLE;
-        }
-        shadow_volume_dims_[0] = shadow_volume_dims_[1] = shadow_volume_dims_[2] = 0;
-        shadow_volume_last_frame_ = 0;
-        memset(material_palette_, 0, sizeof(material_palette_));
-        memset(material_entries_, 0, sizeof(material_entries_));
-        use_full_materials_ = false;
+        return result;
+    }
+
+    /* All members carry default initializers in renderer.h */
+    Renderer::Renderer(Window &window)
+        : window_(window)
+    {
     }
 
     Renderer::~Renderer()
@@ -41,72 +43,298 @@ namespace patch
         cleanup();
     }
 
+    bool Renderer::init()
+    {
+        if (!ctx_.create(window_, &init_error_))
+            return false;
+
+        if (!swapchain_.create(ctx_, window_))
+        {
+            init_error_ = "Failed to create swapchain";
+            return false;
+        }
+
+        if (!frames_.create(ctx_))
+        {
+            init_error_ = "Failed to create frame resources";
+            return false;
+        }
+
+        {
+            SceneLighting defaults = scene_lighting_default();
+            set_scene_lighting(&defaults);
+        }
+
+        timer_.create(ctx_);
+
+        if (!ui_.create(ctx_, swapchain_.format()))
+        {
+            init_error_ = "Failed to create UI pipeline";
+            return false;
+        }
+
+        printf("Initializing deferred rendering pipeline...\n");
+        if (!targets_.create(ctx_, swapchain_.extent(), swapchain_.format()) ||
+            !gbuffer_.create(ctx_) ||
+            !shadow_ao_.create(ctx_, frames_) ||
+            !lighting_.create(ctx_, frames_, swapchain_.format()) ||
+            !post_.create(ctx_, swapchain_.format()) ||
+            !objects_.create(ctx_) ||
+            !particles_.create(ctx_, frames_) ||
+            !terrain_.create(ctx_))
+        {
+            init_error_ = "Failed to initialize deferred rendering pipeline";
+            return false;
+        }
+        bind_targets();
+        printf("  Deferred pipeline initialized: %ux%u\n", targets_.extent.width, targets_.extent.height);
+        return true;
+    }
+
+    /* Also runs after a failed init(): every subsystem checks the handles it releases */
+    void Renderer::cleanup()
+    {
+        abandon_scene_load();
+        if (ctx_.device() != VK_NULL_HANDLE)
+        {
+            vkDeviceWaitIdle(ctx_.device());
+
+            objects_.destroy();
+            terrain_.destroy();
+            particles_.destroy();
+            post_.destroy();
+            lighting_.destroy();
+            shadow_ao_.destroy();
+            gbuffer_.destroy();
+            targets_.destroy(ctx_);
+            ui_.destroy();
+            timer_.destroy();
+            frames_.destroy(ctx_);
+            swapchain_.destroy();
+        }
+        ctx_.destroy();
+    }
+
+    void Renderer::bind_targets()
+    {
+        gbuffer_.bind_targets(targets_);
+        shadow_ao_.bind_targets(targets_);
+        lighting_.bind_targets(targets_);
+        post_.bind_targets(targets_);
+    }
+
+    /* Releases every scene-dependent resource; the next scene starts from a clean slate.
+     * Each destroy_scene() checks handles, so this is also safe on partially created state. */
     void Renderer::prepare_for_scene_switch()
     {
-        vkDeviceWaitIdle(device_);
+        abandon_scene_load();
+        vkDeviceWaitIdle(ctx_.device());
 
-        destroy_voxel_object_resources();
-        destroy_compute_raymarching_resources();
-        destroy_shadow_volume_resources();
-
-        destroy_buffer(&voxel_data_buffer_);
-        destroy_buffer(&voxel_headers_buffer_);
-        destroy_buffer(&voxel_material_buffer_);
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-        {
-            if (voxel_temporal_ubo_mapped_[i])
-            {
-                gpu_allocator_.unmap(voxel_temporal_ubo_[i].allocation);
-                voxel_temporal_ubo_mapped_[i] = nullptr;
-            }
-            destroy_buffer(&voxel_temporal_ubo_[i]);
-        }
-
-        if (staging_voxels_mapped_)
-        {
-            gpu_allocator_.unmap(staging_voxels_buffer_.allocation);
-            staging_voxels_mapped_ = nullptr;
-        }
-        if (staging_headers_mapped_)
-        {
-            gpu_allocator_.unmap(staging_headers_buffer_.allocation);
-            staging_headers_mapped_ = nullptr;
-        }
-        destroy_buffer(&staging_voxels_buffer_);
-        destroy_buffer(&staging_headers_buffer_);
+        objects_.destroy_scene();
+        shadow_ao_.unbind_objects();
+        terrain_.destroy_scene();
 
         reset_scene_state();
-        voxel_resources_initialized_ = false;
     }
 
-    void Renderer::set_material_palette(const Vec3 *colors, int32_t count)
+    /* Runs between scenes, when no frame in flight uses the lighting sets it rewrites */
+    void Renderer::reset_scene_state()
     {
-        material_count_ = count < VOXEL_MATERIAL_MAX ? count : VOXEL_MATERIAL_MAX;
-        memcpy(material_palette_, colors, material_count_ * sizeof(Vec3));
-        use_full_materials_ = false;
+        /* The lighting samples the raw shadow / AO outputs until the first resolves */
+        reset_temporal_history();
+        lighting_.bind_targets(targets_);
+        objects_.reset_tracking();
+        recent_frame_ms_ = 0.0f;
+        particle_time_valid_ = false;
     }
 
-    void Renderer::set_material_palette_full(const MaterialEntry *materials, int32_t count)
+    /* History from another scene or another resolution must not be reprojected into the next
+     * frame: the resolves and TAA start over, and its motion vectors see no camera motion */
+    void Renderer::reset_temporal_history()
     {
-        material_count_ = count < VOXEL_MATERIAL_MAX ? count : VOXEL_MATERIAL_MAX;
-        memcpy(material_entries_, materials, material_count_ * sizeof(MaterialEntry));
-        for (int32_t i = 0; i < material_count_; i++)
+        shadow_ao_.reset_history();
+        post_.reset_history();
+        prev_view_matrix_ = view_matrix_;
+        prev_projection_matrix_ = projection_matrix_;
+    }
+
+    /*
+     * Every rebuild happens here, between frames: wait for the frames in flight, retire the
+     * swapchain into one at the surface's size and, when that size changed, rebuild everything
+     * sized to it. Pipelines, layouts and descriptor sets stay; the descriptor writes that
+     * reference a target are redone, and the temporal history starts over at the new size.
+     */
+    bool Renderer::rebuild_swapchain()
+    {
+        const int64_t start = platform_get_ticks();
+        vkDeviceWaitIdle(ctx_.device());
+        const int64_t idle = platform_get_ticks();
+
+        if (!swapchain_.rebuild())
         {
-            material_palette_[i].x = materials[i].r;
-            material_palette_[i].y = materials[i].g;
-            material_palette_[i].z = materials[i].b;
+            if (swapchain_.failed())
+                quit_requested_ = true;
+            return false;
         }
-        use_full_materials_ = true;
+        const int64_t rebuilt = platform_get_ticks();
+
+        const VkExtent2D extent = swapchain_.extent();
+        const bool resized = extent.width != targets_.extent.width || extent.height != targets_.extent.height;
+        if (resized)
+        {
+            targets_.destroy(ctx_);
+            if (!targets_.create(ctx_, extent, swapchain_.format()))
+            {
+                fprintf(stderr, "Renderer: creating the %ux%u render targets failed, shutting down\n",
+                        extent.width, extent.height);
+                quit_requested_ = true;
+                return false;
+            }
+            bind_targets();
+            update_perspective_projection();
+            reset_temporal_history();
+        }
+
+        printf("  Swapchain rebuilt: %ux%u, %u images (GPU idle %.2f ms, swapchain %.2f ms, render targets %.2f ms)\n",
+               extent.width, extent.height, swapchain_.image_count(), ticks_to_ms(start, idle),
+               ticks_to_ms(idle, rebuilt), resized ? ticks_to_ms(rebuilt, platform_get_ticks()) : 0.0f);
+        return true;
+    }
+
+    /* The terrain's CPU stages, on the load's thread. The weights are about their milliseconds
+     * on a 32-thread machine. */
+    static const LoadingStage TERRAIN_LOAD_STAGES[] = {
+        {"Packing the shadow volume", 60.0f},
+        {"Staging the terrain", 30.0f},
+    };
+    static constexpr int32_t TERRAIN_LOAD_STAGE_COUNT = static_cast<int32_t>(sizeof(TERRAIN_LOAD_STAGES) / sizeof(TERRAIN_LOAD_STAGES[0]));
+    static_assert(TERRAIN_LOAD_STAGE_COUNT == Renderer::SCENE_LOAD_STAGES, "Renderer::SCENE_LOAD_STAGES counts the stages");
+
+    void Renderer::run_scene_load_stage(void *renderer, int32_t stage)
+    {
+        Renderer *self = static_cast<Renderer *>(renderer);
+        if (stage == 0)
+            self->terrain_.pack_shadow_volume(self->scene_load_jobs_);
+        else
+            self->terrain_.stage_chunks(self->scene_load_jobs_);
+    }
+
+    void Renderer::begin_scene_load(VoxelVolume *vol, uint32_t max_objects, LoadingState *state)
+    {
+        /* Whatever the last scene left, a loaded scene or one abandoned half way */
+        prepare_for_scene_switch();
+        loading_state_init(state, TERRAIN_LOAD_STAGE_COUNT);
+
+        PROFILE_BEGIN(PROFILE_VOLUME_INIT);
+        const bool begun = terrain_.begin_scene(vol);
+        PROFILE_END(PROFILE_VOLUME_INIT);
+        if (!begun)
+        {
+            fprintf(stderr, "Renderer: creating the scene's GPU resources failed, shutting down\n");
+            quit_requested_ = true;
+            return;
+        }
+
+        /* Behind the loading screen too, not at the scene's first frame */
+        if (!objects_.create_scene(max_objects, terrain_, frames_))
+        {
+            fprintf(stderr, "Renderer: creating the voxel object resources failed, shutting down\n");
+            quit_requested_ = true;
+            return;
+        }
+        shadow_ao_.bind_objects(objects_);
+        printf("  Voxel object resources initialized: %u max objects\n", objects_.capacity());
+
+        /* Every hardware thread but the presenting one; without a thread to load on, the
+         * stages run here and the screen stands still meanwhile */
+        const int32_t hardware = platform_thread_hardware_count();
+        scene_load_jobs_ = job_system_create(hardware > 1 ? hardware - 1 : 1);
+        scene_load_ = loading_start(TERRAIN_LOAD_STAGES, TERRAIN_LOAD_STAGE_COUNT, run_scene_load_stage, this);
+        if (!scene_load_)
+        {
+            for (int32_t stage = 0; stage < TERRAIN_LOAD_STAGE_COUNT; stage++)
+            {
+                loading_state_advance(state, TERRAIN_LOAD_STAGES[stage].name);
+                loading_log_stage(stage, TERRAIN_LOAD_STAGE_COUNT, TERRAIN_LOAD_STAGES[stage].name);
+                run_scene_load_stage(this, stage);
+            }
+        }
+    }
+
+    bool Renderer::poll_scene_load(LoadingState *state)
+    {
+        if (quit_requested_)
+            return true;
+
+        if (!scene_uploading_)
+        {
+            if (scene_load_)
+            {
+                /* A loading screen frame every 16 ms while the stages run */
+                if (!loading_poll(scene_load_, state, 16))
+                    return false;
+                loading_finish(scene_load_);
+                scene_load_ = nullptr;
+            }
+            job_system_destroy(scene_load_jobs_);
+            scene_load_jobs_ = nullptr;
+
+            state->stage_name = "Uploading the terrain";
+            state->progress = 1.0f;
+            scene_uploading_ = true;
+        }
+
+        switch (terrain_.poll_scene())
+        {
+        case TerrainVolume::SceneUpload::Pending:
+            return false;
+        case TerrainVolume::SceneUpload::Failed:
+            quit_requested_ = true;
+            return true;
+        case TerrainVolume::SceneUpload::Done:
+            break;
+        }
+        scene_uploading_ = false;
+        loading_state_complete(state);
+        gbuffer_.bind_scene(terrain_, frames_);
+        shadow_ao_.bind_scene(terrain_);
+        lighting_.bind_scene(terrain_);
+        return true;
+    }
+
+    void Renderer::abandon_scene_load()
+    {
+        loading_finish(scene_load_);
+        scene_load_ = nullptr;
+        job_system_destroy(scene_load_jobs_);
+        scene_load_jobs_ = nullptr;
+        scene_uploading_ = false;
+    }
+
+    void Renderer::set_material_palette(const MaterialEntry *materials, int32_t count)
+    {
+        terrain_.set_material_palette(materials, count);
+    }
+
+    /* A failed submit (device lost) ends the app, like a failed frame submit */
+    int32_t Renderer::upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices)
+    {
+        const int32_t uploaded = terrain_.upload_dirty_chunks(vol, out_indices, max_indices, current_frame_);
+        if (uploaded >= 0)
+            return uploaded;
+        quit_requested_ = true;
+        return 0;
+    }
+
+    void Renderer::update_shadow_volume(VoxelVolume *vol)
+    {
+        if (!terrain_.update_shadow_volume(vol))
+            quit_requested_ = true;
     }
 
     void Renderer::set_shadow_quality(int level)
     {
         shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
-    }
-
-    void Renderer::set_object_shadow_quality(int level)
-    {
-        object_shadow_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
     void Renderer::set_shadow_contact_hardening(bool enabled)
@@ -119,9 +347,24 @@ namespace patch
         ao_quality_ = level < 0 ? 0 : (level > 3 ? 3 : level);
     }
 
-    void Renderer::set_lod_quality(int level)
+    void Renderer::set_denoise_quality(int level)
     {
-        lod_quality_ = level < 0 ? 0 : (level > 2 ? 2 : level);
+        denoise_quality_ = level < 0 ? 0 : (level > 1 ? 1 : level);
+    }
+
+    void Renderer::set_taa_quality(int level)
+    {
+        taa_quality_ = level < 0 ? 0 : (level > 1 ? 1 : level);
+    }
+
+    void Renderer::set_interp_alpha(float alpha, int64_t sim_ticks)
+    {
+        /* How far the drawn state moved since the last frame, in steps: the particles' motion */
+        const double drawn_time = static_cast<double>(sim_ticks) + static_cast<double>(alpha);
+        particle_frame_ticks_ = particle_time_valid_ ? static_cast<float>(drawn_time - particle_drawn_time_) : 0.0f;
+        particle_drawn_time_ = drawn_time;
+        particle_time_valid_ = true;
+        interp_alpha_ = alpha;
     }
 
     void Renderer::set_adaptive_quality(bool enabled)
@@ -154,15 +397,13 @@ namespace patch
         if (preset < 0 || preset > QUALITY_PRESET_HIGH)
             return;
         shadow_quality_ = QUALITY_PRESETS[preset].shadow;
-        object_shadow_quality_ = QUALITY_PRESETS[preset].shadow;
         shadow_contact_hardening_ = QUALITY_PRESETS[preset].shadow_contact != 0;
         ao_quality_ = QUALITY_PRESETS[preset].ao;
-        lod_quality_ = QUALITY_PRESETS[preset].lod;
         denoise_quality_ = QUALITY_PRESETS[preset].denoise;
         taa_quality_ = QUALITY_PRESETS[preset].taa;
     }
 
-    void Renderer::update_adaptive_quality(float frame_time_ms)
+    void Renderer::update_adaptive_quality()
     {
         if (!adaptive_quality_)
             return;
@@ -171,606 +412,462 @@ namespace patch
             adaptive_cooldown_--;
             return;
         }
+        if (recent_frame_ms_ <= 0.0f)
+            return;
 
         constexpr float TARGET_MS = 16.67f;         /* 60 FPS target */
         constexpr float HIGH_MS = TARGET_MS + 2.0f; /* 18.67ms - decrease quality */
         constexpr float LOW_MS = TARGET_MS - 4.0f;  /* 12.67ms - increase quality */
 
-        if (frame_time_ms > HIGH_MS && adaptive_preset_ > QUALITY_PRESET_DEFAULT)
-        {
+        const int preset = adaptive_preset_;
+        if (recent_frame_ms_ > HIGH_MS && adaptive_preset_ > QUALITY_PRESET_DEFAULT)
             adaptive_preset_--;
-            apply_preset(adaptive_preset_);
-            adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
-        }
-        else if (frame_time_ms < LOW_MS && adaptive_preset_ < target_preset_)
-        {
+        else if (recent_frame_ms_ < LOW_MS && adaptive_preset_ < target_preset_)
             adaptive_preset_++;
+        if (adaptive_preset_ != preset)
+        {
             apply_preset(adaptive_preset_);
             adaptive_cooldown_ = ADAPTIVE_COOLDOWN_FRAMES;
+            /* The frames before the change say nothing about the new preset */
+            recent_frame_ms_ = 0.0f;
         }
     }
 
-    bool Renderer::init()
+    bool Renderer::begin_frame(uint32_t *image_index)
     {
-        gpu_name_[0] = '\0';
+        frame_started_ = false;
+        swapchain_rendering_ = false;
+        /* Only a frame that reaches end_frame continues the run of presents */
+        present_interval_start_ = last_present_ticks_;
+        last_present_ticks_ = 0;
 
-        if (!create_instance())
-        {
-            init_error_ = "Failed to create Vulkan instance";
-            return false;
-        }
-
-        surface_ = window_.create_surface(instance_);
-        if (surface_ == VK_NULL_HANDLE)
-        {
-            init_error_ = "Failed to create Vulkan surface";
-            return false;
-        }
-
-        if (!select_physical_device())
-        {
-            init_error_ = "Failed to select physical device";
-            return false;
-        }
-
-        if (!find_queue_families())
-        {
-            init_error_ = "Failed to find queue families";
-            return false;
-        }
-
-        if (!create_logical_device())
-        {
-            init_error_ = "Failed to create logical device";
-            return false;
-        }
-
-        if (!gpu_allocator_.init(instance_, physical_device_, device_, VK_API_VERSION_1_3))
-        {
-            init_error_ = "Failed to initialize GPU memory allocator";
-            return false;
-        }
-
-        if (!create_swapchain())
-        {
-            init_error_ = "Failed to create swapchain";
-            return false;
-        }
-
-        if (!create_render_pass())
-        {
-            init_error_ = "Failed to create render pass";
-            return false;
-        }
-
-        if (!create_depth_resources())
-        {
-            init_error_ = "Failed to create depth resources";
-            return false;
-        }
-
-        if (!create_pipeline_cache())
-        {
-            init_error_ = "Failed to create pipeline cache";
-            return false;
-        }
-
-        if (!create_pipelines())
-        {
-            init_error_ = "Failed to create pipelines";
-            return false;
-        }
-
-        VkDeviceSize ubo_size = sizeof(SceneLightingUBO);
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-        {
-            create_buffer(ubo_size,
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          &lighting_ubo_[i]);
-            lighting_ubo_mapped_[i] = gpu_allocator_.map(lighting_ubo_[i].allocation);
-        }
-
-        {
-            SceneLighting defaults = scene_lighting_default();
-            set_scene_lighting(&defaults);
-        }
-
-        if (!create_voxel_descriptor_layout())
-        {
-            init_error_ = "Failed to create voxel descriptor layout";
-            return false;
-        }
-
-        if (!create_framebuffers())
-        {
-            init_error_ = "Failed to create framebuffers";
-            return false;
-        }
-
-        if (!create_command_pool())
-        {
-            init_error_ = "Failed to create command pool";
-            return false;
-        }
-
-        if (!create_sync_objects())
-        {
-            init_error_ = "Failed to create sync objects";
-            return false;
-        }
-
-        if (!create_timestamp_query_pool())
-        {
-            init_error_ = "Failed to create timestamp query pool";
-            return false;
-        }
-
-        create_quad_mesh();
-        create_ui_buffers();
-        total_frame_count_ = 0;
-
-        if (!init_deferred_pipeline())
-        {
-            init_error_ = "Failed to initialize deferred rendering pipeline";
-            return false;
-        }
-
-        float iso_distance = 30.0f;
-        float iso_yaw = 45.0f * K_DEG_TO_RAD;
-        float iso_pitch = 35.26f * K_DEG_TO_RAD;
-
-        Vec3 eye = vec3_create(
-            iso_distance * sinf(iso_yaw) * cosf(iso_pitch),
-            iso_distance * sinf(iso_pitch),
-            iso_distance * cosf(iso_yaw) * cosf(iso_pitch));
-
-        view_matrix_ = mat4_look_at(eye, vec3_zero(), vec3_create(0.0f, 1.0f, 0.0f));
-
-        float aspect = window_.aspect_ratio();
-        float ortho_size = 10.0f;
-        projection_matrix_ = mat4_ortho(-ortho_size * aspect, ortho_size * aspect, -ortho_size, ortho_size, 0.1f, 100.0f);
-        ortho_half_width_ = ortho_size * aspect;
-        ortho_half_height_ = ortho_size;
-
-        return true;
-    }
-
-    static const char *PIPELINE_CACHE_PATH = "pipeline_cache.bin";
-
-    bool Renderer::create_pipeline_cache()
-    {
-        VkPipelineCacheCreateInfo create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-        create_info.initialDataSize = 0;
-        create_info.pInitialData = nullptr;
-
-        FILE *cache_file = fopen(PIPELINE_CACHE_PATH, "rb");
-        std::vector<uint8_t> cache_data;
-
-        if (cache_file)
-        {
-            fseek(cache_file, 0, SEEK_END);
-            long size = ftell(cache_file);
-            fseek(cache_file, 0, SEEK_SET);
-
-            if (size > 0)
-            {
-                cache_data.resize(static_cast<size_t>(size));
-                size_t read = fread(cache_data.data(), 1, cache_data.size(), cache_file);
-                if (read == cache_data.size())
-                {
-                    create_info.initialDataSize = cache_data.size();
-                    create_info.pInitialData = cache_data.data();
-                }
-            }
-            fclose(cache_file);
-        }
-
-        VkResult result = vkCreatePipelineCache(device_, &create_info, nullptr, &pipeline_cache_);
-        if (result != VK_SUCCESS)
-        {
-            fprintf(stderr, "Warning: Failed to create pipeline cache\n");
-            pipeline_cache_ = VK_NULL_HANDLE;
-        }
-
-        return true;
-    }
-
-    void Renderer::save_pipeline_cache()
-    {
-        if (pipeline_cache_ == VK_NULL_HANDLE)
-            return;
-
-        size_t cache_size = 0;
-        VkResult result = vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, nullptr);
-        if (result != VK_SUCCESS || cache_size == 0)
-            return;
-
-        std::vector<uint8_t> cache_data(cache_size);
-        result = vkGetPipelineCacheData(device_, pipeline_cache_, &cache_size, cache_data.data());
-        if (result != VK_SUCCESS)
-            return;
-
-        FILE *cache_file = fopen(PIPELINE_CACHE_PATH, "wb");
-        if (cache_file)
-        {
-            fwrite(cache_data.data(), 1, cache_size, cache_file);
-            fclose(cache_file);
-        }
-    }
-
-    void Renderer::destroy_pipeline_cache()
-    {
-        if (pipeline_cache_ != VK_NULL_HANDLE)
-        {
-            vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
-            pipeline_cache_ = VK_NULL_HANDLE;
-        }
-    }
-
-    void Renderer::cleanup()
-    {
-        if (device_ != VK_NULL_HANDLE)
-        {
-            vkDeviceWaitIdle(device_);
-
-            save_pipeline_cache();
-            destroy_pipeline_cache();
-
-            destroy_buffer(&quad_mesh_.vertex);
-            destroy_buffer(&quad_mesh_.index);
-
-            if (ui_vertex_mapped_)
-            {
-                gpu_allocator_.unmap(ui_vertex_buffer_.allocation);
-                ui_vertex_mapped_ = nullptr;
-            }
-            if (ui_index_mapped_)
-            {
-                gpu_allocator_.unmap(ui_index_buffer_.allocation);
-                ui_index_mapped_ = nullptr;
-            }
-            destroy_buffer(&ui_vertex_buffer_);
-            destroy_buffer(&ui_index_buffer_);
-
-            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-            {
-                if (lighting_ubo_mapped_[i])
-                {
-                    gpu_allocator_.unmap(lighting_ubo_[i].allocation);
-                    lighting_ubo_mapped_[i] = nullptr;
-                }
-                destroy_buffer(&lighting_ubo_[i]);
-            }
-
-            destroy_buffer(&voxel_data_buffer_);
-            destroy_buffer(&voxel_headers_buffer_);
-            destroy_buffer(&voxel_material_buffer_);
-            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-            {
-                if (voxel_temporal_ubo_mapped_[i])
-                {
-                    gpu_allocator_.unmap(voxel_temporal_ubo_[i].allocation);
-                    voxel_temporal_ubo_mapped_[i] = nullptr;
-                }
-                destroy_buffer(&voxel_temporal_ubo_[i]);
-            }
-
-            /* Unmap and destroy staging buffers */
-            if (staging_voxels_mapped_)
-            {
-                gpu_allocator_.unmap(staging_voxels_buffer_.allocation);
-                staging_voxels_mapped_ = nullptr;
-            }
-            if (staging_headers_mapped_)
-            {
-                gpu_allocator_.unmap(staging_headers_buffer_.allocation);
-                staging_headers_mapped_ = nullptr;
-            }
-            destroy_buffer(&staging_voxels_buffer_);
-            destroy_buffer(&staging_headers_buffer_);
-
-            if (voxel_descriptor_pool_)
-                vkDestroyDescriptorPool(device_, voxel_descriptor_pool_, nullptr);
-            if (voxel_descriptor_layout_)
-                vkDestroyDescriptorSetLayout(device_, voxel_descriptor_layout_, nullptr);
-
-            if (temporal_compute_pipeline_)
-                vkDestroyPipeline(device_, temporal_compute_pipeline_, nullptr);
-            if (temporal_compute_layout_)
-                vkDestroyPipelineLayout(device_, temporal_compute_layout_, nullptr);
-            if (temporal_shadow_descriptor_pool_)
-                vkDestroyDescriptorPool(device_, temporal_shadow_descriptor_pool_, nullptr);
-            if (temporal_shadow_input_layout_)
-                vkDestroyDescriptorSetLayout(device_, temporal_shadow_input_layout_, nullptr);
-            if (temporal_shadow_output_layout_)
-                vkDestroyDescriptorSetLayout(device_, temporal_shadow_output_layout_, nullptr);
-
-            destroy_timestamp_query_pool();
-            destroy_voxel_object_resources();
-            destroy_compute_raymarching_resources();
-            destroy_gbuffer_resources();
-            destroy_shadow_volume_resources();
-            destroy_blue_noise_texture();
-            destroy_motion_vector_resources();
-            destroy_particle_resources();
-
-            for (int i = 0; i < 2; i++)
-            {
-                if (history_image_views_[i])
-                    vkDestroyImageView(device_, history_image_views_[i], nullptr);
-                if (history_images_[i])
-                {
-                    gpu_allocator_.destroy_image(history_images_[i], history_image_memory_[i]);
-                    history_images_[i] = VK_NULL_HANDLE;
-                    history_image_memory_[i] = VK_NULL_HANDLE;
-                }
-            }
-
-            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-            {
-                if (image_available_semaphores_[i])
-                    vkDestroySemaphore(device_, image_available_semaphores_[i], nullptr);
-                if (render_finished_semaphores_[i])
-                    vkDestroySemaphore(device_, render_finished_semaphores_[i], nullptr);
-                if (in_flight_fences_[i])
-                    vkDestroyFence(device_, in_flight_fences_[i], nullptr);
-            }
-
-            if (upload_timeline_semaphore_)
-                vkDestroySemaphore(device_, upload_timeline_semaphore_, nullptr);
-            for (uint32_t i = 0; i < pending_destroy_count_; i++)
-            {
-                destroy_buffer(&pending_destroys_[i].buffer);
-            }
-            pending_destroy_count_ = 0;
-
-            if (command_pool_)
-                vkDestroyCommandPool(device_, command_pool_, nullptr);
-
-            for (auto fb : framebuffers_)
-            {
-                vkDestroyFramebuffer(device_, fb, nullptr);
-            }
-
-            if (depth_image_view_)
-                vkDestroyImageView(device_, depth_image_view_, nullptr);
-            if (depth_image_)
-            {
-                gpu_allocator_.destroy_image(depth_image_, depth_image_memory_);
-                depth_image_ = VK_NULL_HANDLE;
-                depth_image_memory_ = VK_NULL_HANDLE;
-            }
-            if (depth_sampler_)
-                vkDestroySampler(device_, depth_sampler_, nullptr);
-
-            if (ui_pipeline_)
-                vkDestroyPipeline(device_, ui_pipeline_, nullptr);
-
-            if (pipeline_layout_)
-                vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
-            if (render_pass_)
-                vkDestroyRenderPass(device_, render_pass_, nullptr);
-
-            for (auto view : swapchain_image_views_)
-            {
-                vkDestroyImageView(device_, view, nullptr);
-            }
-
-            if (swapchain_)
-                vkDestroySwapchainKHR(device_, swapchain_, nullptr);
-
-            gpu_allocator_.destroy();
-            vkDestroyDevice(device_, nullptr);
-        }
-
-        if (surface_ && instance_)
-            vkDestroySurfaceKHR(instance_, surface_, nullptr);
-        if (instance_)
-            vkDestroyInstance(instance_, nullptr);
-    }
-
-    void Renderer::begin_frame(uint32_t *image_index)
-    {
-        total_frame_count_++;
-        terrain_draw_count_ = 0;
-
-        Mat4 view_proj = mat4_multiply(projection_matrix_, view_matrix_);
-        frustum_ = frustum_from_view_proj(view_proj);
         camera_forward_ = vec3_create(-view_matrix_.m[2], -view_matrix_.m[6], -view_matrix_.m[10]);
 
-        /* Wait for fence FIRST - ensures GPU is done with this frame slot before we write to it */
-        int64_t wait_start = platform_get_ticks();
-        VkResult fence_status = vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, 0);
-        if (fence_status == VK_TIMEOUT)
-        {
-            vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
-        }
-        int64_t wait_end = platform_get_ticks();
-        int64_t freq = platform_get_frequency();
-        if (freq > 0)
-            last_wait_fence_ms_ = (float)(wait_end - wait_start) * 1000.0f / (float)freq;
-        vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
+        if (quit_requested_ || ctx_.device() == VK_NULL_HANDLE)
+            return false;
 
-        /* Now safe to write to UBOs - GPU done with this frame slot */
-        if (voxel_temporal_ubo_mapped_[current_frame_])
+        /* Minimized (0x0 client area): there is nothing to present to */
+        if (window_.width() <= 0 || window_.height() <= 0)
+            return false;
+
+        switch (swapchain_.prepare())
         {
-            VoxelTemporalUBO ubo{};
-            ubo.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
-            ubo.view_proj = view_proj;
-            memcpy(voxel_temporal_ubo_mapped_[current_frame_], &ubo, sizeof(VoxelTemporalUBO));
+        case Swapchain::Status::Ready:
+            break;
+        case Swapchain::Status::Rebuild:
+            if (!rebuild_swapchain())
+                return false;
+            break;
+        case Swapchain::Status::Skip:
+            if (swapchain_.failed())
+                quit_requested_ = true;
+            return false;
         }
-        if (lighting_ubo_mapped_[current_frame_])
+
+        /* Wait for this frame slot's previous submission before touching its resources */
+        int64_t wait_start = platform_get_ticks();
+        VkResult fence_status = vkWaitForFences(ctx_.device(), 1, &frames_.in_flight[current_frame_], VK_TRUE, UINT64_MAX);
+        last_wait_fence_ms_ = ticks_to_ms(wait_start, platform_get_ticks());
+        if (fence_status != VK_SUCCESS)
         {
-            memcpy(lighting_ubo_mapped_[current_frame_], &scene_lighting_ubo_data_, sizeof(SceneLightingUBO));
+            fprintf(stderr, "vkWaitForFences failed: %s (%d)\n", vk_result_name(fence_status), fence_status);
+            quit_requested_ = true;
+            return false;
         }
+
+        /* The slot's timestamp queries are complete now */
+        timer_.collect(current_frame_);
 
         int64_t acquire_start = platform_get_ticks();
-        vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, image_available_semaphores_[current_frame_], VK_NULL_HANDLE, image_index);
-        int64_t acquire_end = platform_get_ticks();
-        if (freq > 0)
-            last_acquire_ms_ = (float)(acquire_end - acquire_start) * 1000.0f / (float)freq;
-        vkResetCommandBuffer(command_buffers_[current_frame_], 0);
+        const bool acquired = swapchain_.acquire(frames_.image_available[current_frame_], image_index);
+        last_acquire_ms_ = ticks_to_ms(acquire_start, platform_get_ticks());
+        if (!acquired)
+        {
+            if (swapchain_.failed())
+                quit_requested_ = true;
+            return false;
+        }
+
+        /* Reset only now: a submit that signals this fence is guaranteed to follow */
+        vkResetFences(ctx_.device(), 1, &frames_.in_flight[current_frame_]);
+
+        image_index_ = *image_index;
+        total_frame_count_++;
+        terrain_draw_count_ = 0;
+        ui_.begin_frame();
+
+        /* Safe to write this slot's host-visible UBOs */
+        VoxelTemporalUBO temporal{};
+        temporal.prev_view_proj = mat4_multiply(prev_projection_matrix_, prev_view_matrix_);
+        const Mat4 prev_camera = mat4_inverse_rigid(prev_view_matrix_);
+        temporal.prev_camera_pos = {prev_camera.m[12], prev_camera.m[13], prev_camera.m[14], 1.0f};
+        const VkExtent2D extent = swapchain_.extent();
+        temporal.inv_render_size[0] = 1.0f / static_cast<float>(extent.width);
+        temporal.inv_render_size[1] = 1.0f / static_cast<float>(extent.height);
+        memcpy(frames_.temporal_ubo[current_frame_].mapped, &temporal, sizeof(VoxelTemporalUBO));
+        memcpy(frames_.lighting_ubo[current_frame_].mapped, &scene_lighting_ubo_data_, sizeof(SceneLightingUBO));
+
+        VkCommandBuffer cmd = frames_.cmd[current_frame_];
+        vkResetCommandBuffer(cmd, 0);
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        vkBeginCommandBuffer(command_buffers_[current_frame_], &begin_info);
-        reset_bind_state();
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &begin_info);
 
-        if (timestamps_supported_)
-        {
-            uint32_t query_offset = current_frame_ * GPU_TIMESTAMP_COUNT;
-            vkCmdResetQueryPool(command_buffers_[current_frame_], timestamp_query_pool_,
-                                query_offset, GPU_TIMESTAMP_COUNT);
-        }
+        timer_.reset(cmd, current_frame_);
+
+        frame_started_ = true;
+        return true;
     }
 
-    void Renderer::reset_bind_state()
+    VkClearColorValue Renderer::sky_clear_color() const
     {
-        last_bound_pipeline_ = VK_NULL_HANDLE;
-        last_bound_descriptor_set_ = VK_NULL_HANDLE;
+        return {{scene_lighting_ubo_data_.sky_color.x, scene_lighting_ubo_data_.sky_color.y,
+                 scene_lighting_ubo_data_.sky_color.z, 1.0f}};
     }
 
-    void Renderer::bind_pipeline(VkPipeline pipeline)
+    void Renderer::begin_swapchain_rendering(uint32_t image_index, VkAttachmentLoadOp load_op)
     {
-        if (pipeline != last_bound_pipeline_)
-        {
-            vkCmdBindPipeline(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-            last_bound_pipeline_ = pipeline;
-        }
-    }
+        VkCommandBuffer cmd = frames_.cmd[current_frame_];
 
-    void Renderer::bind_descriptor_set(VkDescriptorSet set)
-    {
-        if (set != last_bound_descriptor_set_)
-        {
-            vkCmdBindDescriptorSets(command_buffers_[current_frame_], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline_layout_, 0, 1, &set, 0, nullptr);
-            last_bound_descriptor_set_ = set;
-        }
+        /* Blended UI reads the attachment; LOAD keeps the blitted lighting result */
+        BarrierBatch barriers(cmd);
+        if (load_op == VK_ATTACHMENT_LOAD_OP_LOAD)
+            barriers.transition(swapchain_.image(image_index), image_use::color_attachment);
+        else
+            barriers.discard(swapchain_.image(image_index), image_use::color_attachment);
+        barriers.record();
+
+        VkRenderingAttachmentInfo color{};
+        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color.imageView = swapchain_.view(image_index);
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = load_op;
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color.clearValue.color = sky_clear_color();
+
+        VkRenderingInfo rendering{};
+        rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rendering.renderArea.extent = swapchain_.extent();
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments = &color;
+
+        vkCmdBeginRendering(cmd, &rendering);
+        cmd_set_viewport_scissor(cmd, swapchain_.extent());
+        swapchain_rendering_ = true;
     }
 
     void Renderer::begin_main_pass(uint32_t image_index)
     {
-        if (timestamps_supported_)
-        {
-            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
-            vkCmdWriteTimestamp(command_buffers_[current_frame_],
-                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                timestamp_query_pool_, qo + 10);
-        }
-
-        VkClearValue clear_values[2];
-        clear_values[0].color = {{scene_lighting_ubo_data_.sky_color.x,
-                                  scene_lighting_ubo_data_.sky_color.y,
-                                  scene_lighting_ubo_data_.sky_color.z, 1.0f}};
-        clear_values[1].depthStencil = {1.0f, 0};
-
-        VkRenderPassBeginInfo render_pass_info{};
-        render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        render_pass_info.renderPass = render_pass_;
-        render_pass_info.framebuffer = framebuffers_[image_index];
-        render_pass_info.renderArea.offset = {0, 0};
-        render_pass_info.renderArea.extent = swapchain_extent_;
-        render_pass_info.clearValueCount = 2;
-        render_pass_info.pClearValues = clear_values;
-
-        vkCmdBeginRenderPass(command_buffers_[current_frame_], &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
-        cmd_set_viewport_scissor(command_buffers_[current_frame_], swapchain_extent_);
-        reset_bind_state();
+        frame_context().timestamp(GpuTimestamp::RENDER_BEGIN, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        begin_swapchain_rendering(image_index, VK_ATTACHMENT_LOAD_OP_CLEAR);
     }
 
     void Renderer::end_frame(uint32_t image_index)
     {
-        vkCmdEndRenderPass(command_buffers_[current_frame_]);
+        if (!frame_started_)
+            return;
+        frame_started_ = false;
 
-        if (timestamps_supported_)
+        VkCommandBuffer cmd = frames_.cmd[current_frame_];
+
+        /* The acquired image must reach PRESENT_SRC even if no pass targeted it */
+        if (!swapchain_rendering_)
+            begin_swapchain_rendering(image_index, VK_ATTACHMENT_LOAD_OP_CLEAR);
+        vkCmdEndRendering(cmd);
+        swapchain_rendering_ = false;
+
+        BarrierBatch barriers(cmd);
+        barriers.transition(swapchain_.image(image_index), image_use::present);
+        barriers.record();
+
+        frame_context().timestamp(GpuTimestamp::RENDER_END, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+        VkResult result = vkEndCommandBuffer(cmd);
+        if (result != VK_SUCCESS)
         {
-            uint32_t qo = current_frame_ * GPU_TIMESTAMP_COUNT;
-            vkCmdWriteTimestamp(command_buffers_[current_frame_],
-                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                timestamp_query_pool_, qo + 11);
+            fprintf(stderr, "vkEndCommandBuffer failed: %s (%d)\n", vk_result_name(result), result);
+            quit_requested_ = true;
+            return;
         }
 
-        vkEndCommandBuffer(command_buffers_[current_frame_]);
-
-        VkSemaphore wait_semaphores[] = {image_available_semaphores_[current_frame_]};
-        VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        VkSemaphore signal_semaphores[] = {render_finished_semaphores_[current_frame_]};
+        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        const VkSemaphore render_finished = swapchain_.render_finished(image_index);
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.waitSemaphoreCount = 1;
-        submit_info.pWaitSemaphores = wait_semaphores;
-        submit_info.pWaitDstStageMask = wait_stages;
+        submit_info.pWaitSemaphores = &frames_.image_available[current_frame_];
+        submit_info.pWaitDstStageMask = &wait_stage;
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &command_buffers_[current_frame_];
+        submit_info.pCommandBuffers = &cmd;
         submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores = signal_semaphores;
+        submit_info.pSignalSemaphores = &render_finished;
 
-        vkQueueSubmit(graphics_queue_, 1, &submit_info, in_flight_fences_[current_frame_]);
-
-        VkSwapchainKHR swapchains[] = {swapchain_};
-
-        VkPresentInfoKHR present_info{};
-        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = signal_semaphores;
-        present_info.swapchainCount = 1;
-        present_info.pSwapchains = swapchains;
-        present_info.pImageIndices = &image_index;
+        result = vkQueueSubmit(ctx_.graphics_queue(), 1, &submit_info, frames_.in_flight[current_frame_]);
+        if (result != VK_SUCCESS)
+        {
+            /* The fence will never signal: stop rendering instead of hanging in the next wait */
+            fprintf(stderr, "vkQueueSubmit failed: %s (%d)\n", vk_result_name(result), result);
+            quit_requested_ = true;
+            return;
+        }
+        timer_.mark_submitted(current_frame_);
 
         int64_t present_start = platform_get_ticks();
-        vkQueuePresentKHR(present_queue_, &present_info);
-        int64_t present_end = platform_get_ticks();
-        int64_t freq = platform_get_frequency();
-        if (freq > 0)
-            last_present_ms_ = (float)(present_end - present_start) * 1000.0f / (float)freq;
+        swapchain_.present(image_index);
+        const int64_t presented = platform_get_ticks();
+        last_present_ms_ = ticks_to_ms(present_start, presented);
+        if (swapchain_.failed())
+            quit_requested_ = true;
+
+        if (present_interval_start_ != 0)
+        {
+            const float interval_ms = ticks_to_ms(present_interval_start_, presented);
+            const float weight = 1.0f - expf(-interval_ms / RECENT_FRAME_TIME_WINDOW_MS);
+            recent_frame_ms_ = recent_frame_ms_ > 0.0f ? recent_frame_ms_ + (interval_ms - recent_frame_ms_) * weight : interval_ms;
+        }
+        last_present_ticks_ = presented;
 
         /* Save current matrices for next frame's temporal reprojection */
         prev_view_matrix_ = view_matrix_;
         prev_projection_matrix_ = projection_matrix_;
 
         current_frame_ = (current_frame_ + 1) % MAX_FRAMES_IN_FLIGHT;
-
-        if (timestamps_supported_)
-        {
-            GPUTimings timings;
-            if (get_gpu_timings(&timings))
-            {
-                last_gpu_timings_ = timings;
-                last_gpu_timings_valid_ = true;
-            }
-        }
     }
 
-    void Renderer::set_orthographic(float width, float height, float depth, float near_plane)
+    void Renderer::update_jitter()
     {
-        projection_mode_ = ProjectionMode::Orthographic;
-        ortho_base_width_ = width;
-        ortho_base_height_ = height;
-        ortho_base_depth_ = depth;
-        ortho_near_plane_ = near_plane;
-        float aspect = window_.aspect_ratio();
-        float half_width = width * aspect * 0.5f;
-        float half_height = height * 0.5f;
-        projection_matrix_ = mat4_ortho(-half_width, half_width, -half_height, half_height, ortho_near_plane_, depth);
-        ortho_half_width_ = half_width;
-        ortho_half_height_ = half_height;
+        jitter_px_[0] = 0.0f;
+        jitter_px_[1] = 0.0f;
+        if (taa_quality_ > 0)
+        {
+            const uint32_t phase = static_cast<uint32_t>(total_frame_count_ % TAA_JITTER_PHASES) + 1;
+            jitter_px_[0] = halton(phase, 2) - 0.5f;
+            jitter_px_[1] = halton(phase, 3) - 0.5f;
+        }
+
+        /* The UBO was written in begin_frame(), before the frame's quality settings */
+        const VkExtent2D extent = swapchain_.extent();
+        const float jitter_uv[2] = {jitter_px_[0] / static_cast<float>(extent.width),
+                                    jitter_px_[1] / static_cast<float>(extent.height)};
+        memcpy(static_cast<uint8_t *>(frames_.temporal_ubo[current_frame_].mapped) + offsetof(VoxelTemporalUBO, jitter_uv),
+               jitter_uv, sizeof(jitter_uv));
+    }
+
+    Mat4 Renderer::jittered_projection() const
+    {
+        /* A clip-space offset of w * 2 * jitter / size moves every point by jitter pixels */
+        const VkExtent2D extent = swapchain_.extent();
+        const float ndc_x = 2.0f * jitter_px_[0] / static_cast<float>(extent.width);
+        const float ndc_y = 2.0f * jitter_px_[1] / static_cast<float>(extent.height);
+        Mat4 jittered = projection_matrix_;
+        for (int column = 0; column < 4; column++)
+        {
+            jittered.m[column * 4 + 0] += ndc_x * jittered.m[column * 4 + 3];
+            jittered.m[column * 4 + 1] += ndc_y * jittered.m[column * 4 + 3];
+        }
+        return jittered;
+    }
+
+    void Renderer::prepare_gbuffer_compute()
+    {
+        if (!terrain_.ready())
+            return;
+        update_jitter();
+
+        /* Terrain into the G-buffer */
+        terrain_draw_count_++;
+        gbuffer_.trace_terrain(frame_context(), targets_, make_voxel_push_constants());
+        terrain_traced_ = true;
+    }
+
+    void Renderer::begin_gbuffer_pass()
+    {
+        frame_context().timestamp(GpuTimestamp::RENDER_BEGIN, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    }
+
+    void Renderer::open_gbuffer_raster()
+    {
+        if (raster_open_)
+            return;
+        gbuffer_.begin_raster(frame_context(), targets_, perspective_near_, perspective_far_);
+        raster_open_ = true;
+    }
+
+    /* Objects and particles are drawn over this frame's terrain trace: without one there is
+     * nothing to light */
+    void Renderer::render_voxel_objects_raymarched(const VoxelObjectWorld *world)
+    {
+        if (!objects_.ready() || !terrain_traced_)
+            return;
+
+        VoxelObjectPushConstants pc{};
+        pc.view_proj = mat4_multiply(jittered_projection(), view_matrix_);
+        pc.camera_pos[0] = camera_position_.x;
+        pc.camera_pos[1] = camera_position_.y;
+        pc.camera_pos[2] = camera_position_.z;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
+        pc.debug_mode = terrain_debug_mode_;
+        pc.near_clip_radius = near_clip_radius_;
+
+        const FrameContext frame = frame_context();
+        if (!objects_.update(frame, world, interp_alpha_, pc))
+        {
+            quit_requested_ = true;
+            return;
+        }
+        if (objects_.gpu_object_count() == 0)
+            return;
+        open_gbuffer_raster();
+        objects_.draw(frame, pc);
+    }
+
+    void Renderer::render_particles_raymarched(const ParticleSystem *sys, const EnvParticleSystem *env_sys)
+    {
+        if (!terrain_traced_)
+            return;
+
+        const FrameContext frame = frame_context();
+        if (particles_.prepare(frame, sys, env_sys, interp_alpha_, particle_frame_ticks_, camera_position_,
+                               near_clip_radius_) == 0)
+            return;
+
+        ParticlePushConstants pc{};
+        pc.view_proj = mat4_multiply(jittered_projection(), view_matrix_);
+        pc.camera_pos[0] = camera_position_.x;
+        pc.camera_pos[1] = camera_position_.y;
+        pc.camera_pos[2] = camera_position_.z;
+        pc.near_plane = perspective_near_;
+        pc.far_plane = perspective_far_;
+        open_gbuffer_raster();
+        particles_.draw(frame, pc);
+    }
+
+    void Renderer::end_gbuffer_pass()
+    {
+        if (!terrain_traced_)
+            return;
+
+        const FrameContext frame = frame_context();
+        gbuffer_.finish(frame, targets_, raster_open_);
+        const VoxelPushConstants pc = make_voxel_push_constants();
+
+        /* A pass that is off leaves the lighting a white input: lit everywhere, no occlusion */
+        PROFILE_BEGIN(PROFILE_RENDER_SHADOW);
+        if (shadow_quality_ >= 1 && shadow_ao_.trace_shadows(frame, targets_, pc, frames_.lighting_sets[current_frame_]))
+            lighting_.set_shadow_input(current_frame_, shadow_ao_.resolve_shadows(frame, targets_, pc));
+        else
+            lighting_.set_shadow_input(current_frame_, lighting_.white_input());
+        PROFILE_END(PROFILE_RENDER_SHADOW);
+
+        if (ao_quality_ >= 1)
+        {
+            PROFILE_BEGIN(PROFILE_RENDER_AO);
+            shadow_ao_.trace_ao(frame, targets_, pc);
+            lighting_.set_ao_input(current_frame_, shadow_ao_.resolve_ao(frame, targets_, pc));
+            PROFILE_END(PROFILE_RENDER_AO);
+        }
+        else
+        {
+            lighting_.set_ao_input(current_frame_, lighting_.white_input());
+        }
+
+        terrain_traced_ = false;
+        raster_open_ = false;
+    }
+
+    void Renderer::render_deferred_lighting(uint32_t image_index)
+    {
+        if (!terrain_.ready())
+            return;
+
+        const FrameContext frame = frame_context();
+        const VoxelPushConstants pc = make_voxel_push_constants();
+        const VkDescriptorSet lighting_set = frames_.lighting_sets[current_frame_];
+
+        if (denoise_quality_ < 1 && taa_quality_ < 1)
+        {
+            /* Straight into the swapchain image; the UI draws on top in the same scope */
+            begin_swapchain_rendering(image_index, VK_ATTACHMENT_LOAD_OP_CLEAR);
+            lighting_.draw(frame, lighting_set, pc);
+            return;
+        }
+
+        lighting_.draw_to_lit_color(frame, targets_, lighting_set, pc, sky_clear_color());
+
+        if (taa_quality_ < 1)
+        {
+            /* The denoise covers every pixel of the swapchain image; the UI draws on top in the same scope */
+            begin_swapchain_rendering(image_index, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+            PROFILE_BEGIN(PROFILE_RENDER_DENOISE);
+            post_.denoise(frame, pc);
+            PROFILE_END(PROFILE_RENDER_DENOISE);
+            return;
+        }
+
+        /* The denoise works on the jittered frame, whose depth and normals it compares; the TAA
+         * then resolves the jitter */
+        const GpuImage *taa_input = &targets_.lit_color;
+        if (denoise_quality_ >= 1)
+        {
+            PROFILE_BEGIN(PROFILE_RENDER_DENOISE);
+            post_.denoise_for_taa(frame, targets_, pc);
+            PROFILE_END(PROFILE_RENDER_DENOISE);
+            taa_input = &targets_.denoised;
+        }
+        post_.resolve_taa(frame, targets_, *taa_input, swapchain_.image(image_index), swapchain_.view(image_index), pc);
+
+        /* The UI draws on top of the resolved frame */
+        begin_swapchain_rendering(image_index, VK_ATTACHMENT_LOAD_OP_LOAD);
+    }
+
+    void Renderer::begin_ui()
+    {
+        if (!swapchain_rendering_)
+            begin_swapchain_rendering(image_index_, VK_ATTACHMENT_LOAD_OP_CLEAR);
+        ui_.begin(frames_.cmd[current_frame_]);
+    }
+
+    void Renderer::end_ui()
+    {
+        ui_.end(frames_.cmd[current_frame_], current_frame_);
+    }
+
+    void Renderer::draw_ui_quad_px(float x_px, float y_px, float w_px, float h_px, Vec3 color, float alpha)
+    {
+        ui_.quad_px(swapchain_.extent(), x_px, y_px, w_px, h_px, color, alpha);
+    }
+
+    void Renderer::draw_ui_text_px(float x_px, float y_px, float text_h_px, Vec3 color, float alpha, const char *text)
+    {
+        ui_.text_px(swapchain_.extent(), x_px, y_px, text_h_px, color, alpha, text);
+    }
+
+    /* The aspect of the images being rendered; a swapchain is never 0x0 */
+    float Renderer::render_aspect() const
+    {
+        const VkExtent2D extent = swapchain_.extent();
+        return static_cast<float>(extent.width) / static_cast<float>(extent.height);
     }
 
     void Renderer::update_perspective_projection()
     {
-        float aspect = window_.aspect_ratio();
-        if (aspect < 0.01f)
-            aspect = 1.0f;
-        projection_matrix_ = mat4_perspective(perspective_fov_y_degrees_ * K_DEG_TO_RAD, aspect, perspective_near_, perspective_far_);
+        const float aspect = render_aspect();
+        projection_matrix_ = mat4_perspective(perspective_fov_y_degrees_ * K_DEG_TO_RAD, aspect,
+                                              perspective_near_, perspective_far_);
+
+        /* The farthest point of the near plane's visible rectangle: anything the near plane
+         * clips away from the view lies closer to the camera than this */
+        const float tan_half_y = tanf(perspective_fov_y_degrees_ * K_DEG_TO_RAD * 0.5f);
+        near_clip_radius_ = perspective_near_ * sqrtf(1.0f + tan_half_y * tan_half_y * (1.0f + aspect * aspect));
     }
 
     void Renderer::set_perspective(float fov_y_degrees, float near_val, float far_val)
     {
-        projection_mode_ = ProjectionMode::Perspective;
         perspective_fov_y_degrees_ = fov_y_degrees;
         perspective_near_ = near_val;
         perspective_far_ = far_val;
@@ -779,180 +876,33 @@ namespace patch
 
     void Renderer::on_resize()
     {
-        recreate_swapchain();
-        if (ortho_base_width_ > 0.0f && ortho_base_height_ > 0.0f && ortho_base_depth_ > 0.0f)
-        {
-            set_orthographic(ortho_base_width_, ortho_base_height_, ortho_base_depth_, ortho_near_plane_);
-        }
-        if (projection_mode_ == ProjectionMode::Perspective)
-        {
-            update_perspective_projection();
-        }
-    }
-
-    void Renderer::set_view_angle(float yaw_degrees, float distance)
-    {
-        float yaw = yaw_degrees * K_DEG_TO_RAD;
-        float tilt = 35.26f * K_DEG_TO_RAD;
-
-        float cos_yaw = cosf(yaw);
-        float sin_yaw = sinf(yaw);
-        float cos_tilt = cosf(tilt);
-        float sin_tilt = sinf(tilt);
-
-        camera_position_ = vec3_create(
-            distance * sin_yaw * cos_tilt,
-            distance * sin_tilt,
-            distance * cos_yaw * cos_tilt);
-
-        camera_target_ = vec3_zero();
-        camera_initialized_ = true;
-        view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
-    }
-
-    void Renderer::set_view_angle_at(float yaw_degrees, float distance, Vec3 target)
-    {
-        float yaw = yaw_degrees * K_DEG_TO_RAD;
-        float tilt = 35.26f * K_DEG_TO_RAD;
-
-        float cos_yaw = cosf(yaw);
-        float sin_yaw = sinf(yaw);
-        float cos_tilt = cosf(tilt);
-        float sin_tilt = sinf(tilt);
-
-        Vec3 offset = vec3_create(
-            distance * sin_yaw * cos_tilt,
-            distance * sin_tilt,
-            distance * cos_yaw * cos_tilt);
-
-        camera_position_ = vec3_add(target, offset);
-        camera_target_ = target;
-        camera_initialized_ = true;
-        view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
-    }
-
-    void Renderer::set_view_angle_at(float yaw_degrees, float distance, Vec3 target, float dt)
-    {
-        float yaw = yaw_degrees * K_DEG_TO_RAD;
-        float tilt = 35.26f * K_DEG_TO_RAD;
-
-        float cos_yaw = cosf(yaw);
-        float sin_yaw = sinf(yaw);
-        float cos_tilt = cosf(tilt);
-        float sin_tilt = sinf(tilt);
-
-        Vec3 offset = vec3_create(
-            distance * sin_yaw * cos_tilt,
-            distance * sin_tilt,
-            distance * cos_yaw * cos_tilt);
-
-        Vec3 desired_position = vec3_add(target, offset);
-        Vec3 desired_target = target;
-
-        if (!camera_initialized_ || dt <= 0.0f || dt > 0.25f)
-        {
-            camera_position_ = desired_position;
-            camera_target_ = desired_target;
-            camera_initialized_ = true;
-            view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
-            return;
-        }
-
-        constexpr float smooth_time = 0.08f;
-        float alpha = 1.0f - expf(-dt / smooth_time);
-        alpha = clampf(alpha, 0.0f, 1.0f);
-
-        Vec3 pos_delta = vec3_sub(desired_position, camera_position_);
-        Vec3 tgt_delta = vec3_sub(desired_target, camera_target_);
-        camera_position_ = vec3_add(camera_position_, vec3_scale(pos_delta, alpha));
-        camera_target_ = vec3_add(camera_target_, vec3_scale(tgt_delta, alpha));
-
-        view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
+        /* Settled in begin_frame(): a restore or the initial ShowWindow reports the same size
+         * and rebuilds nothing; a new size rebuilds the swapchain and every target, and only
+         * then changes the projection, so the frame on screen and its camera always agree */
+        swapchain_.request_resize_check();
     }
 
     void Renderer::set_look_at(Vec3 eye, Vec3 target)
     {
         camera_position_ = eye;
-        camera_target_ = target;
-        camera_initialized_ = true;
-        view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
+        view_matrix_ = mat4_look_at(eye, target, vec3_create(0.0f, 1.0f, 0.0f));
     }
 
-    void Renderer::set_look_at(Vec3 eye, Vec3 target, float dt)
-    {
-        if (!camera_initialized_ || dt <= 0.0f || dt > 0.25f)
-        {
-            set_look_at(eye, target);
-            return;
-        }
-
-        constexpr float smooth_time = 0.10f;
-        float alpha = 1.0f - expf(-dt / smooth_time);
-        alpha = clampf(alpha, 0.0f, 1.0f);
-
-        Vec3 pos_delta = vec3_sub(eye, camera_position_);
-        Vec3 tgt_delta = vec3_sub(target, camera_target_);
-        camera_position_ = vec3_add(camera_position_, vec3_scale(pos_delta, alpha));
-        camera_target_ = vec3_add(camera_target_, vec3_scale(tgt_delta, alpha));
-
-        view_matrix_ = mat4_look_at(camera_position_, camera_target_, vec3_create(0.0f, 1.0f, 0.0f));
-    }
-
-    bool Renderer::screen_to_world_floor(float screen_x, float screen_y, float floor_y, Vec3 *out_world) const
-    {
-        if (!out_world)
-            return false;
-
-        Vec3 origin_world, dir_world;
-        screen_to_ray(screen_x, screen_y, &origin_world, &dir_world);
-
-        float denom = dir_world.y;
-        if (fabsf(denom) < 1e-5f)
-        {
-            return false;
-        }
-
-        float t = (floor_y - origin_world.y) / denom;
-        *out_world = vec3_add(origin_world, vec3_scale(dir_world, t));
-        return true;
-    }
-
+    /* Window pixels map onto the rendered image, whose size and projection follow the window */
     void Renderer::screen_to_ray(float screen_x, float screen_y, Vec3 *out_origin, Vec3 *out_dir) const
     {
-        float w = static_cast<float>(window_.width());
-        float h = static_cast<float>(window_.height());
-        if (w < 1.0f)
-            w = 1.0f;
-        if (h < 1.0f)
-            h = 1.0f;
-
-        float nx = (2.0f * screen_x / w) - 1.0f;
-        float ny = 1.0f - (2.0f * screen_y / h);
+        const VkExtent2D extent = swapchain_.extent();
+        float nx = (2.0f * screen_x / static_cast<float>(extent.width)) - 1.0f;
+        float ny = 1.0f - (2.0f * screen_y / static_cast<float>(extent.height));
 
         Mat4 inv_view = mat4_inverse_rigid(view_matrix_);
 
-        if (projection_mode_ == ProjectionMode::Perspective)
-        {
-            float aspect = window_.aspect_ratio();
-            if (aspect < 0.01f)
-                aspect = 1.0f;
-            float tan_half = tanf((perspective_fov_y_degrees_ * K_DEG_TO_RAD) * 0.5f);
+        float tan_half = tanf((perspective_fov_y_degrees_ * K_DEG_TO_RAD) * 0.5f);
 
-            Vec3 dir_view = vec3_create(nx * aspect * tan_half, ny * tan_half, -1.0f);
-            dir_view = vec3_normalize(dir_view);
-
-            if (out_origin)
-                *out_origin = camera_position_;
-            if (out_dir)
-                *out_dir = vec3_normalize(mat4_transform_direction(inv_view, dir_view));
-            return;
-        }
-
-        Vec3 origin_view = vec3_create(nx * ortho_half_width_, ny * ortho_half_height_, 0.0f);
-        Vec3 dir_view = vec3_create(0.0f, 0.0f, -1.0f);
+        Vec3 dir_view = vec3_create(nx * render_aspect() * tan_half, ny * tan_half, -1.0f);
 
         if (out_origin)
-            *out_origin = mat4_transform_point(inv_view, origin_view);
+            *out_origin = camera_position_;
         if (out_dir)
             *out_dir = vec3_normalize(mat4_transform_direction(inv_view, dir_view));
     }
@@ -977,6 +927,39 @@ namespace patch
                                                    lighting->ground_ambient_color.z, lighting->emissive_multiplier};
         scene_lighting_ubo_data_.sky_color = {lighting->sky_color.x, lighting->sky_color.y,
                                               lighting->sky_color.z, lighting->shadow_max_dist};
+    }
+
+    /* Push constants shared by the G-buffer, shadow, AO, temporal, TAA, denoise and
+     * lighting passes (each shader reads the subset it needs). */
+    VoxelPushConstants Renderer::make_voxel_push_constants() const
+    {
+        const VolumeParams &volume = terrain_.params();
+        VoxelPushConstants pc{};
+        pc.inv_view = mat4_inverse_rigid(view_matrix_);
+        pc.inv_projection = mat4_inverse(jittered_projection());
+        for (int i = 0; i < 3; i++)
+        {
+            pc.bounds_min[i] = volume.bounds_min[i];
+            pc.bounds_max[i] = volume.bounds_max[i];
+            pc.grid_size[i] = volume.grid_size[i];
+            pc.chunks_dim[i] = volume.chunks_dim[i];
+        }
+        pc.voxel_size = volume.voxel_size;
+        pc.max_steps = terrain_.raymarch_max_steps();
+        pc.camera_pos[0] = camera_position_.x;
+        pc.camera_pos[1] = camera_position_.y;
+        pc.camera_pos[2] = camera_position_.z;
+        pc.history_valid = 0;
+        pc.total_chunks = volume.total_chunks;
+        /* Wrapped so that float(frame_count) * k keeps its fraction in the shaders */
+        pc.frame_count = static_cast<int32_t>(total_frame_count_ & 0xFFFFu);
+        pc.debug_mode = terrain_debug_mode_;
+        pc.far_plane = perspective_far_;
+        pc.object_count = objects_.gpu_object_count();
+        pc.shadow_quality = shadow_quality_;
+        pc.shadow_contact = shadow_contact_hardening_ ? 1 : 0;
+        pc.ao_quality = ao_quality_;
+        return pc;
     }
 
 }

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned: a new SDK would change the headers under the build without a commit
+  VULKAN_SDK_VERSION: 1.4.363.0
+
+jobs:
+  windows:
+    name: windows-${{ matrix.name }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        # Release with everything on; Debug (asserts on) with the profiler compiled out
+        include:
+          - { name: release,          build_type: Release, profiling: ON }
+          - { name: debug-noprofile,  build_type: Debug,   profiling: OFF }
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Cache the Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-windows-${{ env.VULKAN_SDK_VERSION }}
+      - name: Install the Vulkan SDK
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $v = $env:VULKAN_SDK_VERSION
+          curl.exe -fsSL -o vulkan-sdk.exe "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+          $p = Start-Process -FilePath .\vulkan-sdk.exe -Wait -PassThru -ArgumentList '--root', "C:\VulkanSDK\$v", '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer exited with $($p.ExitCode)" }
+      - name: Point CMake at the SDK
+        shell: pwsh
+        run: |
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path "$root\Include\vulkan\vulkan.h")) { throw "Vulkan SDK not found in $root" }
+          "VULKAN_SDK=$root" >> $env:GITHUB_ENV
+          "$root\Bin" >> $env:GITHUB_PATH
+      # The runner image also has LLVM on PATH; pin MSVC so CMake does not pick clang
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          -DPATCH_USE_PREBUILT_SHADERS=ON -DPATCH_ENABLE_PROFILING=${{ matrix.profiling }}
+          -DPATCH_WARNINGS_AS_ERRORS=ON
+      - run: cmake --build build
+      # launch and render_perf start the app and need a GPU, which the runner does not have
+      - run: ctest --test-dir build --output-on-failure --timeout 1800 -E "launch|render_perf"

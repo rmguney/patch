@@ -14,6 +14,11 @@ endif()
 
 set(RUN_ALL $ENV{PATCH_RUN_ALL_TESTS})
 
+# Local post-build runs keep wall-clock budgets strict (ASSERT_PERF fails instead of warning).
+if(NOT DEFINED ENV{PATCH_STRICT_PERF})
+    set(ENV{PATCH_STRICT_PERF} 1)
+endif()
+
 set(REPORT_FILE "${BUILD_DIR}/build_report.txt")
 
 string(TIMESTAMP TIMESTAMP "%Y-%m-%d %H:%M:%S")

@@ -5,6 +5,9 @@
 #include "engine/voxel/voxel_object.h"
 #include "engine/physics/particles.h"
 
+/* Debug views cycled with F4 / F5 (shaders/include/debug_views.glsl) */
+static constexpr int TERRAIN_DEBUG_MODE_COUNT = 16;
+
 struct DebugInfo
 {
     /* Scene identification */
@@ -31,11 +34,6 @@ struct DebugInfo
     float bounds_max[3];
 
     /* Renderer state */
-    bool gbuffer_init;
-    bool gbuffer_pipeline_valid;
-    bool gbuffer_descriptors_valid;
-    bool voxel_res_init;
-    bool vobj_res_init;
     int terrain_debug_mode;
     int terrain_draw_count;
 
@@ -45,6 +43,8 @@ struct DebugInfo
 
     /* GPU info */
     const char *gpu_name;
+    uint32_t render_width; /* every timing below depends on it */
+    uint32_t render_height;
     float gpu_shadow_ms;
     float gpu_main_ms;
     float gpu_total_ms;
@@ -68,8 +68,6 @@ struct DebugInfo
     float frame_ms_current;
     float frame_ms_avg;
     float frame_ms_max;
-    float frame_ms_p50;
-    float frame_ms_p95;
     float frame_ms_p99;
     float budget_pct;
     int32_t budget_overruns;
@@ -79,7 +77,7 @@ struct DebugInfo
     float sim_tick_ms;
     float sim_physics_ms;
     float sim_particles_ms;
-    float sim_collision_ms;
+    float poll_events_ms;
 
     /* Render timing */
     float render_total_ms;
@@ -127,12 +125,17 @@ struct DebugOverlayActions
 {
     bool export_clicked;
     int time_preset;    /* -1=none, 0=dawn, 1=noon, 2=dusk, 3=night */
-    int weather_preset; /* -1=none, 0=clear, 1=cloudy, 2=rain, 3=snow */
+    int weather_preset; /* -1=none, 0=clear, 1=cloudy, 2=storm */
 };
 
+/* mouse_clicked: a left click (press and release) that began on one of the overlay's buttons */
 void draw_debug_overlay(patch::Renderer &renderer,
                         int32_t window_width, int32_t window_height,
                         const DebugInfo *info,
                         float mouse_x, float mouse_y, bool mouse_clicked,
                         const DebugExportFeedback *feedback,
                         DebugOverlayActions *out_actions);
+
+/* Whether (x, y) is on a button of the overlay that draw_debug_overlay() draws for this info
+ * and window size: a press there is the overlay's, not the scene's */
+bool debug_overlay_hit(int32_t window_width, int32_t window_height, const DebugInfo *info, float x, float y);

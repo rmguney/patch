@@ -1,4 +1,6 @@
 ---
+# bugprone-invalid-enum-default-initialization is off: Vulkan create-info structs are
+# value-initialised ({}) by design, and zero is the API's "no flags"
 Checks: >
   clang-diagnostic-*,
   clang-analyzer-*,
@@ -6,6 +8,9 @@ Checks: >
   -bugprone-easily-swappable-parameters,
   -bugprone-narrowing-conversions,
   -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-signed-bitwise,
+  -bugprone-invalid-enum-default-initialization,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   performance-*,
   portability-*,
   misc-unused-parameters,
@@ -20,5 +25,6 @@ WarningsAsErrors: >
   bugprone-use-after-move,
   clang-analyzer-core.NullDereference
 
-HeaderFilterRegex: '^.*/engine/.*\.h$'
+# Either path separator: Windows paths come with backslashes
+HeaderFilterRegex: '.*[/\\]engine[/\\].*\.h$'
 ...

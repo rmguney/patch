@@ -13,9 +13,12 @@ extern "C"
 
 #define BVH_MAX_OBJECTS 512
 #define BVH_MAX_NODES 1023
-#define BVH_INVALID_INDEX (-1)
 #define BVH_LEAF_MAX_OBJECTS 4
 #define BVH_SAH_BINS 8
+/* Deepest leaf. A depth-first traversal holds at most depth + 1 nodes, so this keeps
+ * every query within the 16-entry stack of the GPU traversal (shaders/include/bvh.glsl). */
+#define BVH_MAX_DEPTH 15
+#define BVH_QUERY_MAX_RESULTS 64
 
     /*
      * BVH node structure - 32 bytes, GPU cache-line aligned.
@@ -61,14 +64,7 @@ extern "C"
 
     typedef struct
     {
-        bool hit;
-        int32_t object_index;
-        float t;
-    } BVHRayHit;
-
-    typedef struct
-    {
-        int32_t indices[64];
+        int32_t indices[BVH_QUERY_MAX_RESULTS];
         int32_t count;
     } BVHQueryResult;
 
@@ -77,14 +73,15 @@ extern "C"
     BVH *bvh_create(void);
     void bvh_destroy(BVH *bvh);
 
-    void bvh_build(BVH *bvh, const struct VoxelObjectWorld *world);
-    void bvh_refit(BVH *bvh, const struct VoxelObjectWorld *world);
+    /* positions: each object's position by world index, the centre of its bounding sphere
+     * (the renderer's BVH bounds the poses objects are drawn at); NULL: the objects' own */
+    void bvh_build(BVH *bvh, const struct VoxelObjectWorld *world, const Vec3 *positions);
+    void bvh_refit(BVH *bvh, const struct VoxelObjectWorld *world, const Vec3 *positions);
     bool bvh_needs_rebuild(const BVH *bvh, const struct VoxelObjectWorld *world);
 
     int32_t bvh_query_ray_candidates(const BVH *bvh, Vec3 origin, Vec3 dir, float max_dist,
                                      int32_t *out_indices, int32_t max_results);
     BVHQueryResult bvh_query_sphere(const BVH *bvh, Vec3 center, float radius);
-    BVHQueryResult bvh_query_aabb(const BVH *bvh, Vec3 query_min, Vec3 query_max);
 
 #ifdef __cplusplus
 }

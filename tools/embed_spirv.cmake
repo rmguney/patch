@@ -9,6 +9,7 @@ set(HEADER_CONTENT "/* Auto-generated embedded SPIR-V shaders - do not edit */
 #ifndef PATCH_SHADERS_EMBEDDED_H
 #define PATCH_SHADERS_EMBEDDED_H
 
+#include <cstddef>
 #include <cstdint>
 
 namespace patch {
@@ -28,35 +29,17 @@ foreach(SPV_FILE ${SHADERS})
     string(APPEND HEADER_CONTENT "/* ${SPV_NAME} (${BYTE_COUNT} bytes) */\n")
     string(APPEND HEADER_CONTENT "static constexpr uint32_t ${C_NAME}[] = {\n")
 
-    set(POS 0)
-    set(WORD_COUNT 0)
-    while(POS LESS HEX_LEN)
-        string(SUBSTRING "${SPV_HEX}" ${POS} 8 WORD_HEX)
-        string(SUBSTRING "${WORD_HEX}" 0 2 B0)
-        string(SUBSTRING "${WORD_HEX}" 2 2 B1)
-        string(SUBSTRING "${WORD_HEX}" 4 2 B2)
-        string(SUBSTRING "${WORD_HEX}" 6 2 B3)
-        set(WORD_LE "0x${B3}${B2}${B1}${B0}")
-
-        math(EXPR COL "${WORD_COUNT} % 8")
-        if(COL EQUAL 0)
-            string(APPEND HEADER_CONTENT "    ")
-        endif()
-        string(APPEND HEADER_CONTENT "${WORD_LE},")
-        math(EXPR COL_NEXT "(${WORD_COUNT} + 1) % 8")
-        if(COL_NEXT EQUAL 0)
+    # Whole-string regexes keep this linear in the shader size: little-endian byte
+    # quadruples become words, then every 8 words end a line
+    string(REGEX REPLACE "(..)(..)(..)(..)" "0x\\4\\3\\2\\1, " WORDS "${SPV_HEX}")
+    string(REGEX REPLACE "((0x[0-9a-f]+, )(0x[0-9a-f]+, )(0x[0-9a-f]+, )(0x[0-9a-f]+, )(0x[0-9a-f]+, )(0x[0-9a-f]+, )(0x[0-9a-f]+, )0x[0-9a-f]+), "
+           "\\1,\n" WORDS "${WORDS}")
+    string(REGEX REPLACE "\n(0x)" "\n    \\1" WORDS "${WORDS}")
+    if(NOT WORDS STREQUAL "")
+        string(APPEND HEADER_CONTENT "    ${WORDS}")
+        if(NOT WORDS MATCHES "\n$")
             string(APPEND HEADER_CONTENT "\n")
-        else()
-            string(APPEND HEADER_CONTENT " ")
         endif()
-
-        math(EXPR POS "${POS} + 8")
-        math(EXPR WORD_COUNT "${WORD_COUNT} + 1")
-    endwhile()
-
-    math(EXPR COL "${WORD_COUNT} % 8")
-    if(NOT COL EQUAL 0)
-        string(APPEND HEADER_CONTENT "\n")
     endif()
 
     string(APPEND HEADER_CONTENT "};\n")

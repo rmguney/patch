@@ -1,23 +1,26 @@
 #include "convex_hull.h"
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define QH_MAX_FACES 512
+#define QH_MAX_HORIZON 256
 #define QH_EPSILON 1e-6f
 
+/* Triangle wound counter-clockwise seen from outside: normal = (v1 - v0) x (v2 - v0) */
 typedef struct
 {
     int32_t v[3];
     Vec3 normal;
-    float dist;
-    bool active;
 } QHFace;
+
+typedef struct
+{
+    int32_t v0, v1;
+} QHEdge;
 
 static Vec3 qh_compute_normal(Vec3 a, Vec3 b, Vec3 c)
 {
-    Vec3 ab = vec3_sub(b, a);
-    Vec3 ac = vec3_sub(c, a);
-    Vec3 n = vec3_cross(ab, ac);
+    Vec3 n = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
     float len = vec3_length(n);
     if (len > QH_EPSILON)
         return vec3_scale(n, 1.0f / len);
@@ -45,31 +48,25 @@ static int32_t qh_find_extreme_point(const Vec3 *points, int32_t count, Vec3 dir
     return best;
 }
 
-static bool qh_build_initial_tetrahedron(const Vec3 *points, int32_t count,
-                                          int32_t *out_indices, Vec3 *out_verts)
+static bool qh_build_initial_tetrahedron(const Vec3 *points, int32_t count, int32_t out_indices[4])
 {
-    if (count < 4)
-        return false;
-
-    int32_t idx0 = qh_find_extreme_point(points, count, vec3_create(1, 0, 0));
-    int32_t idx1 = qh_find_extreme_point(points, count, vec3_create(-1, 0, 0));
-
+    int32_t idx0 = qh_find_extreme_point(points, count, vec3_create(1.0f, 0.0f, 0.0f));
+    int32_t idx1 = qh_find_extreme_point(points, count, vec3_create(-1.0f, 0.0f, 0.0f));
     if (idx0 == idx1)
-    {
-        idx1 = qh_find_extreme_point(points, count, vec3_create(0, 1, 0));
-    }
+        idx1 = qh_find_extreme_point(points, count, vec3_create(0.0f, 1.0f, 0.0f));
 
-    Vec3 line_dir = vec3_normalize(vec3_sub(points[idx1], points[idx0]));
+    Vec3 line = vec3_sub(points[idx1], points[idx0]);
+    float line_len = vec3_length(line);
+    if (line_len < QH_EPSILON)
+        return false;
+    Vec3 line_dir = vec3_scale(line, 1.0f / line_len);
+
     int32_t idx2 = -1;
-    float max_dist = 0.0f;
-
+    float max_dist = QH_EPSILON;
     for (int32_t i = 0; i < count; i++)
     {
-        if (i == idx0 || i == idx1)
-            continue;
         Vec3 to_p = vec3_sub(points[i], points[idx0]);
-        Vec3 proj = vec3_scale(line_dir, vec3_dot(to_p, line_dir));
-        Vec3 perp = vec3_sub(to_p, proj);
+        Vec3 perp = vec3_sub(to_p, vec3_scale(line_dir, vec3_dot(to_p, line_dir)));
         float dist = vec3_length(perp);
         if (dist > max_dist)
         {
@@ -77,18 +74,14 @@ static bool qh_build_initial_tetrahedron(const Vec3 *points, int32_t count,
             idx2 = i;
         }
     }
-
-    if (idx2 < 0 || max_dist < QH_EPSILON)
+    if (idx2 < 0)
         return false;
 
     Vec3 plane_normal = qh_compute_normal(points[idx0], points[idx1], points[idx2]);
     int32_t idx3 = -1;
-    max_dist = 0.0f;
-
+    max_dist = QH_EPSILON;
     for (int32_t i = 0; i < count; i++)
     {
-        if (i == idx0 || i == idx1 || i == idx2)
-            continue;
         float dist = fabsf(qh_signed_distance(points[i], points[idx0], plane_normal));
         if (dist > max_dist)
         {
@@ -96,333 +89,205 @@ static bool qh_build_initial_tetrahedron(const Vec3 *points, int32_t count,
             idx3 = i;
         }
     }
-
-    if (idx3 < 0 || max_dist < QH_EPSILON)
+    if (idx3 < 0)
         return false;
 
     out_indices[0] = idx0;
     out_indices[1] = idx1;
     out_indices[2] = idx2;
     out_indices[3] = idx3;
-    out_verts[0] = points[idx0];
-    out_verts[1] = points[idx1];
-    out_verts[2] = points[idx2];
-    out_verts[3] = points[idx3];
-
     return true;
+}
+
+static void hull_copy_points(const Vec3 *points, int32_t count, ConvexHull *out)
+{
+    out->vertex_count = count < HULL_MAX_VERTICES ? count : HULL_MAX_VERTICES;
+    for (int32_t i = 0; i < out->vertex_count; i++)
+        out->vertices[i] = points[i];
+}
+
+static bool qh_edge_shared(const QHFace *f, int32_t a, int32_t b)
+{
+    for (int32_t e = 0; e < 3; e++)
+    {
+        int32_t v0 = f->v[e];
+        int32_t v1 = f->v[(e + 1) % 3];
+        if ((v0 == a && v1 == b) || (v0 == b && v1 == a))
+            return true;
+    }
+    return false;
 }
 
 void convex_hull_build(const Vec3 *points, int32_t count, ConvexHull *out)
 {
     memset(out, 0, sizeof(ConvexHull));
 
-    if (count < 4)
+    int32_t initial[4];
+    if (count < 4 || !qh_build_initial_tetrahedron(points, count, initial))
     {
-        for (int32_t i = 0; i < count && i < HULL_MAX_VERTICES; i++)
-        {
-            out->vertices[i] = points[i];
-        }
-        out->vertex_count = count < HULL_MAX_VERTICES ? count : HULL_MAX_VERTICES;
-        return;
-    }
-
-    int32_t initial_idx[4];
-    Vec3 initial_verts[4];
-    if (!qh_build_initial_tetrahedron(points, count, initial_idx, initial_verts))
-    {
-        for (int32_t i = 0; i < count && i < HULL_MAX_VERTICES; i++)
-        {
-            out->vertices[i] = points[i];
-        }
-        out->vertex_count = count < HULL_MAX_VERTICES ? count : HULL_MAX_VERTICES;
+        hull_copy_points(points, count, out);
         return;
     }
 
     for (int32_t i = 0; i < 4; i++)
-    {
-        out->vertices[i] = initial_verts[i];
-    }
+        out->vertices[i] = points[initial[i]];
     out->vertex_count = 4;
 
     QHFace faces[QH_MAX_FACES];
     int32_t face_count = 0;
 
-    Vec3 center = vec3_scale(vec3_add(vec3_add(initial_verts[0], initial_verts[1]),
-                                       vec3_add(initial_verts[2], initial_verts[3])),
+    /* Orient the tetrahedron's faces away from its centroid */
+    Vec3 center = vec3_scale(vec3_add(vec3_add(out->vertices[0], out->vertices[1]),
+                                      vec3_add(out->vertices[2], out->vertices[3])),
                              0.25f);
-
-    int32_t tet_faces[4][3] = {
-        {0, 1, 2},
-        {0, 3, 1},
-        {1, 3, 2},
-        {2, 3, 0}};
-
+    static const int32_t tet_faces[4][3] = {{0, 1, 2}, {0, 3, 1}, {1, 3, 2}, {2, 3, 0}};
     for (int32_t i = 0; i < 4; i++)
     {
-        QHFace *f = &faces[face_count];
+        QHFace *f = &faces[face_count++];
         f->v[0] = tet_faces[i][0];
         f->v[1] = tet_faces[i][1];
         f->v[2] = tet_faces[i][2];
-        f->normal = qh_compute_normal(out->vertices[f->v[0]],
-                                       out->vertices[f->v[1]],
-                                       out->vertices[f->v[2]]);
-        f->dist = vec3_dot(f->normal, out->vertices[f->v[0]]);
-        f->active = true;
-
-        Vec3 face_center = vec3_scale(vec3_add(vec3_add(out->vertices[f->v[0]],
-                                                         out->vertices[f->v[1]]),
-                                                out->vertices[f->v[2]]),
-                                       1.0f / 3.0f);
-        Vec3 to_center = vec3_sub(center, face_center);
-        if (vec3_dot(f->normal, to_center) > 0.0f)
+        f->normal = qh_compute_normal(out->vertices[f->v[0]], out->vertices[f->v[1]], out->vertices[f->v[2]]);
+        if (qh_signed_distance(center, out->vertices[f->v[0]], f->normal) > 0.0f)
         {
             f->normal = vec3_neg(f->normal);
-            f->dist = -f->dist;
             int32_t tmp = f->v[1];
             f->v[1] = f->v[2];
             f->v[2] = tmp;
         }
-
-        face_count++;
     }
 
-    bool *used = (bool *)calloc(count, sizeof(bool));
+    /* done[i]: point i is a hull vertex, or inside the hull. The hull only grows, so a
+     * point once inside stays inside and is never looked at again. */
+    bool *done = (bool *)calloc((size_t)count, sizeof(bool));
+    if (!done)
+        return; /* keeps the tetrahedron, a valid if smaller hull */
     for (int32_t i = 0; i < 4; i++)
-    {
-        used[initial_idx[i]] = true;
-    }
+        done[initial[i]] = true;
 
-    for (int32_t iter = 0; iter < count && out->vertex_count < HULL_MAX_VERTICES; iter++)
+    while (out->vertex_count < HULL_MAX_VERTICES)
     {
+        /* Furthest point outside any face */
         int32_t best_point = -1;
         float best_dist = QH_EPSILON;
-
-        for (int32_t fi = 0; fi < face_count; fi++)
+        for (int32_t pi = 0; pi < count; pi++)
         {
-            if (!faces[fi].active)
+            if (done[pi])
                 continue;
 
-            QHFace *f = &faces[fi];
-            for (int32_t pi = 0; pi < count; pi++)
+            float max_d = 0.0f;
+            for (int32_t fi = 0; fi < face_count; fi++)
             {
-                if (used[pi])
-                    continue;
+                float d = qh_signed_distance(points[pi], out->vertices[faces[fi].v[0]], faces[fi].normal);
+                if (d > max_d)
+                    max_d = d;
+            }
 
-                float d = qh_signed_distance(points[pi], out->vertices[f->v[0]], f->normal);
-                if (d > best_dist)
-                {
-                    best_dist = d;
-                    best_point = pi;
-                }
+            if (max_d <= QH_EPSILON)
+                done[pi] = true;
+            else if (max_d > best_dist)
+            {
+                best_dist = max_d;
+                best_point = pi;
             }
         }
 
         if (best_point < 0)
             break;
 
-        used[best_point] = true;
-
+        done[best_point] = true;
         int32_t new_vert = out->vertex_count++;
-        out->vertices[new_vert] = points[best_point];
+        Vec3 p = points[best_point];
+        out->vertices[new_vert] = p;
 
-        bool visible[QH_MAX_FACES] = {false};
+        bool visible[QH_MAX_FACES];
         for (int32_t fi = 0; fi < face_count; fi++)
-        {
-            if (!faces[fi].active)
-                continue;
-            QHFace *f = &faces[fi];
-            float d = qh_signed_distance(points[best_point], out->vertices[f->v[0]], f->normal);
-            if (d > QH_EPSILON)
-            {
-                visible[fi] = true;
-            }
-        }
+            visible[fi] = qh_signed_distance(p, out->vertices[faces[fi].v[0]], faces[fi].normal) > QH_EPSILON;
 
-        typedef struct
-        {
-            int32_t v0, v1;
-            int32_t face;
-        } HorizonEdge;
-        HorizonEdge horizon[256];
+        /* Horizon: edges of visible faces that a hidden face shares, kept in the visible
+         * face's winding so the new faces come out wound the same way */
+        QHEdge horizon[QH_MAX_HORIZON];
         int32_t horizon_count = 0;
-
-        for (int32_t fi = 0; fi < face_count && horizon_count < 256; fi++)
+        for (int32_t fi = 0; fi < face_count; fi++)
         {
-            if (!faces[fi].active || !visible[fi])
+            if (!visible[fi])
                 continue;
 
-            QHFace *f = &faces[fi];
-            int32_t edges[3][2] = {{f->v[0], f->v[1]}, {f->v[1], f->v[2]}, {f->v[2], f->v[0]}};
-
-            for (int32_t e = 0; e < 3; e++)
+            for (int32_t e = 0; e < 3 && horizon_count < QH_MAX_HORIZON; e++)
             {
-                int32_t ev0 = edges[e][0];
-                int32_t ev1 = edges[e][1];
-
-                bool edge_shared_with_invisible = false;
-                for (int32_t fi2 = 0; fi2 < face_count; fi2++)
+                int32_t a = faces[fi].v[e];
+                int32_t b = faces[fi].v[(e + 1) % 3];
+                for (int32_t fj = 0; fj < face_count; fj++)
                 {
-                    if (fi2 == fi || !faces[fi2].active || visible[fi2])
-                        continue;
-
-                    QHFace *f2 = &faces[fi2];
-                    for (int32_t e2 = 0; e2 < 3; e2++)
+                    if (!visible[fj] && qh_edge_shared(&faces[fj], a, b))
                     {
-                        int32_t e2v0 = f2->v[e2];
-                        int32_t e2v1 = f2->v[(e2 + 1) % 3];
-                        if ((e2v0 == ev0 && e2v1 == ev1) || (e2v0 == ev1 && e2v1 == ev0))
-                        {
-                            edge_shared_with_invisible = true;
-                            break;
-                        }
-                    }
-                    if (edge_shared_with_invisible)
+                        horizon[horizon_count++] = (QHEdge){a, b};
                         break;
-                }
-
-                if (edge_shared_with_invisible && horizon_count < 256)
-                {
-                    horizon[horizon_count].v0 = ev0;
-                    horizon[horizon_count].v1 = ev1;
-                    horizon[horizon_count].face = fi;
-                    horizon_count++;
+                    }
                 }
             }
         }
 
+        /* Drop the visible faces and compact, so retired faces do not use up
+         * QH_MAX_FACES and silently stop new faces from being added */
+        int32_t write_idx = 0;
         for (int32_t fi = 0; fi < face_count; fi++)
         {
-            if (visible[fi])
-                faces[fi].active = false;
+            if (!visible[fi])
+                faces[write_idx++] = faces[fi];
         }
+        face_count = write_idx;
 
         for (int32_t hi = 0; hi < horizon_count && face_count < QH_MAX_FACES; hi++)
         {
-            int32_t new_fi = face_count++;
-            QHFace *nf = &faces[new_fi];
-            nf->v[0] = horizon[hi].v1;
-            nf->v[1] = horizon[hi].v0;
+            QHFace *nf = &faces[face_count++];
+            nf->v[0] = horizon[hi].v0;
+            nf->v[1] = horizon[hi].v1;
             nf->v[2] = new_vert;
-            nf->normal = qh_compute_normal(out->vertices[nf->v[0]],
-                                            out->vertices[nf->v[1]],
-                                            out->vertices[nf->v[2]]);
-            nf->dist = vec3_dot(nf->normal, out->vertices[nf->v[0]]);
-            nf->active = true;
-
-            Vec3 face_center = vec3_scale(vec3_add(vec3_add(out->vertices[nf->v[0]],
-                                                             out->vertices[nf->v[1]]),
-                                                    out->vertices[nf->v[2]]),
-                                           1.0f / 3.0f);
-            Vec3 to_center = vec3_sub(center, face_center);
-            if (vec3_dot(nf->normal, to_center) > 0.0f)
-            {
-                nf->normal = vec3_neg(nf->normal);
-                nf->dist = -nf->dist;
-                int32_t tmp = nf->v[1];
-                nf->v[1] = nf->v[2];
-                nf->v[2] = tmp;
-            }
+            nf->normal = qh_compute_normal(out->vertices[nf->v[0]], out->vertices[nf->v[1]], p);
         }
     }
 
-    free(used);
-
-    for (int32_t i = 0; i < out->vertex_count; i++)
-    {
-        out->adj_count[i] = 0;
-    }
-
-    for (int32_t fi = 0; fi < face_count; fi++)
-    {
-        if (!faces[fi].active)
-            continue;
-        QHFace *f = &faces[fi];
-        for (int32_t e = 0; e < 3; e++)
-        {
-            int32_t v0 = f->v[e];
-            int32_t v1 = f->v[(e + 1) % 3];
-
-            bool found = false;
-            for (int32_t a = 0; a < out->adj_count[v0]; a++)
-            {
-                if (out->adjacency[v0][a] == v1)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found && out->adj_count[v0] < HULL_MAX_ADJACENCY)
-            {
-                out->adjacency[v0][out->adj_count[v0]++] = v1;
-            }
-
-            found = false;
-            for (int32_t a = 0; a < out->adj_count[v1]; a++)
-            {
-                if (out->adjacency[v1][a] == v0)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found && out->adj_count[v1] < HULL_MAX_ADJACENCY)
-            {
-                out->adjacency[v1][out->adj_count[v1]++] = v0;
-            }
-        }
-    }
+    free(done);
 }
 
-int32_t convex_hull_support(const ConvexHull *hull, Vec3 dir, int32_t hint)
+int32_t convex_hull_support(const ConvexHull *hull, Vec3 dir)
 {
     if (hull->vertex_count == 0)
         return -1;
 
-    if (hint < 0 || hint >= hull->vertex_count)
-        hint = 0;
-
-    int32_t best = hint;
-    float best_dot = vec3_dot(hull->vertices[best], dir);
-
-    for (int32_t iter = 0; iter < hull->vertex_count; iter++)
+    /* Linear scan over at most HULL_MAX_VERTICES points: hill-climbing over an adjacency
+     * graph stalls at local maxima on vertices with many neighbours, and degenerate
+     * (flat) inputs have no adjacency at all. */
+    int32_t best = 0;
+    float best_dot = vec3_dot(hull->vertices[0], dir);
+    for (int32_t i = 1; i < hull->vertex_count; i++)
     {
-        bool improved = false;
-        for (int32_t a = 0; a < hull->adj_count[best]; a++)
+        float d = vec3_dot(hull->vertices[i], dir);
+        if (d > best_dot)
         {
-            int32_t neighbor = hull->adjacency[best][a];
-            float d = vec3_dot(hull->vertices[neighbor], dir);
-            if (d > best_dot)
-            {
-                best_dot = d;
-                best = neighbor;
-                improved = true;
-            }
+            best_dot = d;
+            best = i;
         }
-        if (!improved)
-            break;
     }
-
     return best;
 }
 
 Vec3 convex_hull_support_point(const ConvexHull *hull, Vec3 dir, Vec3 position, Quat orientation)
 {
-    Quat inv_orient = quat_conjugate(orientation);
-    Vec3 local_dir = quat_rotate_vec3(inv_orient, dir);
+    Vec3 local_dir = quat_rotate_vec3(quat_conjugate(orientation), dir);
 
-    int32_t idx = convex_hull_support(hull, local_dir, 0);
+    int32_t idx = convex_hull_support(hull, local_dir);
     if (idx < 0)
         return position;
 
     Vec3 local_point = hull->vertices[idx];
-
     if (hull->margin > 0.0f)
     {
         float dir_len = vec3_length(local_dir);
-        if (dir_len > 1e-6f)
+        if (dir_len > QH_EPSILON)
             local_point = vec3_add(local_point, vec3_scale(local_dir, hull->margin / dir_len));
     }
 
-    Vec3 world_point = quat_rotate_vec3(orientation, local_point);
-    return vec3_add(position, world_point);
+    return vec3_add(position, quat_rotate_vec3(orientation, local_point));
 }

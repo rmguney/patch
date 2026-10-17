@@ -1,15 +1,14 @@
-#ifndef PATCH_CORE_PARTICLES_H
-#define PATCH_CORE_PARTICLES_H
+#ifndef PATCH_PHYSICS_PARTICLES_H
+#define PATCH_PHYSICS_PARTICLES_H
 
 /*
  * Visual-only particle system for debris and effects.
- * Lightweight: simple gravity, floor bounce, particle-particle collision.
- * NOT integrated with rigid body physics - purely cosmetic.
+ * Lightweight: gravity, terrain and object collision, particle-particle collision.
+ * Particles never push rigid bodies; they are purely cosmetic.
  */
 
 #include "engine/core/types.h"
 #include "engine/core/math.h"
-#include "engine/core/rng.h"
 #include "engine/core/spatial_hash.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
@@ -19,47 +18,50 @@ extern "C"
 {
 #endif
 
+/* Live particles are packed in [0, count): the moving ones first, then the settled
+ * ones, so a tick costs the moving particles plus a budget of settled checks however
+ * much debris lies around. Settled debris stays PARTICLE_SETTLED_LIFETIME seconds;
+ * at capacity a new particle replaces a settled one (the earliest settled roughly), or
+ * when every particle is moving, moving ones in turn. */
 #define PARTICLE_MAX_COUNT 65536
-#define PARTICLE_MAX_UPDATES_PER_TICK 16384
+#define PARTICLE_MAX_UPDATES_PER_TICK 16384 /* Budget for moving particles past the young age */
+#define PARTICLE_MAX_SETTLED_CHECKS_PER_TICK 4096 /* Support (wake) and lifetime checks */
 #define PARTICLE_MAX_COLLISION_PAIRS 8192
-#define PARTICLE_YOUNG_AGE_THRESHOLD 1.0f
+#define PARTICLE_YOUNG_AGE_THRESHOLD 1.0f /* Younger particles update every tick */
 #define PARTICLE_SETTLE_VELOCITY 0.15f
-/* No PARTICLE_LIFETIME_MAX - particles are removed via circular buffer when spawning at capacity */
+#define PARTICLE_SETTLED_LIFETIME 30.0f
 
     typedef struct
     {
         Vec3 position;
-        Vec3 prev_position;
+        Vec3 prev_position; /* For render interpolation */
         Vec3 velocity;
-        Vec3 rotation;
-        Vec3 prev_rotation;
-        Vec3 angular_velocity;
-        Vec3 color;
+        Vec3 color; /* Linear, ready for the G-buffer (converted on add) */
         float radius;
-        float lifetime;
-        bool active;
+        float lifetime;    /* Seconds spent moving */
+        float moved;       /* Distance moved over the last tick, contacts included */
+        float expire_time; /* Settled: ParticleSystem.time at which it is retired */
+        bool active;       /* Every particle in [0, count) is (read by the renderer) */
         bool settled;
     } Particle;
 
     typedef struct
     {
         Particle particles[PARTICLE_MAX_COUNT];
-        int32_t count;
-        int32_t next_slot;
+        int32_t count;       /* Live particles, [0, count) */
+        int32_t awake_count; /* [0, awake_count) are moving, [awake_count, count) settled */
+        int32_t replace_cursor; /* Moving particle replaced next when all of them move */
+        double time;         /* Seconds simulated */
 
-        Bounds3D bounds;
         Vec3 gravity;
-
         float damping;
         float restitution;
         float floor_friction;
 
-        bool enable_particle_collision;
         SpatialHashGrid collision_grid;
 
-        int32_t update_cursor;  /* Round-robin cursor for budgeted updates */
-        int32_t settle_cursor;  /* Round-robin cursor for settled wake-up checks */
-        int32_t active_count;   /* Tracked count to avoid O(n) scans */
+        int32_t update_cursor; /* Round-robin cursor for budgeted updates of moving particles */
+        int32_t settle_cursor; /* Round-robin cursor for settled checks */
     } ParticleSystem;
 
     ParticleSystem *particle_system_create(Bounds3D bounds);
@@ -67,21 +69,9 @@ extern "C"
     void particle_system_update(ParticleSystem *sys, float dt,
                                 const VoxelVolume *terrain,
                                 const VoxelObjectWorld *objects);
-    void particle_system_clear(ParticleSystem *sys);
 
-    int32_t particle_system_spawn_explosion(ParticleSystem *sys, RngState *rng, Vec3 center, float radius,
-                                            Vec3 color, int32_t count, float force);
-
-    int32_t particle_system_spawn_at_impact(ParticleSystem *sys, RngState *rng, Vec3 impact_point, Vec3 ball_center,
-                                            float ball_radius, Vec3 color, int32_t count, float force);
-
-    int32_t particle_system_get_settled(ParticleSystem *sys, Particle *out_settled, int32_t max_count);
-    void particle_system_remove_settled(ParticleSystem *sys);
-
-    bool particle_system_pickup_nearest(ParticleSystem *sys, Vec3 position, float max_dist, Vec3 *out_color);
-
-    int32_t particle_system_add(ParticleSystem *sys, RngState *rng, Vec3 position, Vec3 velocity, Vec3 color, float radius);
-    Particle *particle_system_add_slot(ParticleSystem *sys);
+    /* color is sRGB as authored (material_get_color); stored linear like the voxel palette */
+    void particle_system_add(ParticleSystem *sys, Vec3 position, Vec3 velocity, Vec3 color, float radius);
 
 #ifdef __cplusplus
 }

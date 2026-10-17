@@ -69,10 +69,8 @@ static const uint8_t k_cube_voxels[4 * 4 * 4] = {
 };
 
 const VoxelShape g_shape_cube = {
-    .name = "cube",
     .size_x = 4,
     .size_y = 4,
     .size_z = 4,
     .voxels = k_cube_voxels,
-    .solid_count = 64,
 };

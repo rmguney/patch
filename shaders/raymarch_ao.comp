@@ -1,115 +1,42 @@
 #version 450
 
-#if defined(PATCH_VULKAN)
-#define SET_BINDING(set_, binding_) set = set_, binding = binding_
-#else
-#define SET_BINDING(set_, binding_) binding = binding_
-#endif
+/*
+ * raymarch_ao.comp - short-range ambient occlusion: cosine-weighted hemisphere rays through
+ * the terrain shadow volume (shadow_volume.glsl), accumulated over frames by temporal_ao.
+ */
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(push_constant) uniform Constants {
-    mat4 inv_view;
-    mat4 inv_projection;
-    vec3 bounds_min;
-    float voxel_size;
-    vec3 bounds_max;
-    float chunk_size;
-    vec3 camera_pos;
-    int history_valid;
-    ivec3 grid_size;
-    int total_chunks;
-    ivec3 chunks_dim;
-    int frame_count;
-    int object_shadow_quality;
-    int debug_mode;
-    int is_orthographic;
-    int max_steps;
-    float near_plane;
-    float far_plane;
-    int object_count;
-    int shadow_quality;
-    int shadow_contact;
-    int ao_quality;
-    int lod_quality;
-    int taa_quality;
-} pc;
-
+#include "include/voxel_push_constants.glsl"
 #include "include/gbuffer_sample.glsl"
 
-ivec3 pc_grid_size;
-ivec3 pc_chunks_dim;
-int pc_total_chunks;
+/* Terrain shadow volume (set 0, binding 0), see shadow_volume.glsl */
+layout(set = 0, binding = 0) uniform usampler3D shadow_volume_tex;
 
-layout(std430, SET_BINDING(0, 0)) readonly buffer VoxelBuffer {
-    uint voxel_data[];
-};
+#include "include/hdda_core.glsl"
+#include "include/shadow_volume.glsl"
 
-layout(std430, SET_BINDING(0, 1)) readonly buffer ChunkHeaders {
-    uvec4 chunk_headers[];
-};
+layout(set = 1, binding = 0) uniform sampler2D gbuffer_depth;
+layout(set = 1, binding = 1) uniform sampler2D gbuffer_normal;
+layout(set = 1, binding = 2) uniform sampler2D blue_noise_tex;
 
-layout(SET_BINDING(0, 2)) uniform usampler3D shadow_volume_tex;
-
-#include "include/data_terrain.glsl"
-
-layout(SET_BINDING(1, 0)) uniform sampler2D gbuffer_depth;
-layout(SET_BINDING(1, 1)) uniform sampler2D gbuffer_normal;
-layout(SET_BINDING(1, 2)) uniform sampler2D gbuffer_world_pos;
-layout(SET_BINDING(1, 3)) uniform sampler2D blue_noise_tex;
-
-layout(r8, SET_BINDING(2, 0)) writeonly uniform image2D out_ao;
+layout(r8, set = 2, binding = 0) writeonly uniform image2D out_ao;
 
 const int BASE_AO_STEPS = 64;
-const float AO_MAX_DIST = 3.0;
-
-/* Shadow volume dimensions cached from grid_size (avoids per-sample textureSize calls) */
-ivec3 ao_shadow_dim0;
-ivec3 ao_shadow_dim1;
-ivec3 ao_shadow_dim2;
+const float AO_RADIUS_VOXELS = 3.0; /* occlusion search radius, in voxels */
 
 vec3 world_to_grid(vec3 world_pos) {
     return (world_pos - pc.bounds_min) / pc.voxel_size;
 }
 
-bool sample_shadow_volume(ivec3 voxel_pos) {
-    ivec3 shadow_pos = voxel_pos >> 1;
-
-    if (shadow_pos.x < 0 || shadow_pos.x >= ao_shadow_dim0.x ||
-        shadow_pos.y < 0 || shadow_pos.y >= ao_shadow_dim0.y ||
-        shadow_pos.z < 0 || shadow_pos.z >= ao_shadow_dim0.z) {
-        return false;
-    }
-
-    uint packed = texelFetch(shadow_volume_tex, shadow_pos, 0).r;
-    int bit_idx = (voxel_pos.x & 1) + ((voxel_pos.y & 1) << 1) + ((voxel_pos.z & 1) << 2);
-    return (packed & (1u << bit_idx)) != 0u;
+/* Ray distance at which a DDA that hdda_skip_block just moved past a block left it: the last
+ * boundary crossed on an exit axis (the selects keep other axes' infinities out of the math) */
+float block_exit_distance(vec3 side_dist, vec3 delta_dist, bvec3 exit_mask) {
+    vec3 crossed = mix(vec3(1e30), side_dist - delta_dist, exit_mask);
+    return min(min(crossed.x, crossed.y), crossed.z);
 }
 
-bool sample_shadow_mip1(ivec3 voxel_pos) {
-    ivec3 mip1_pos = voxel_pos >> 2;
-
-    if (mip1_pos.x < 0 || mip1_pos.x >= ao_shadow_dim1.x ||
-        mip1_pos.y < 0 || mip1_pos.y >= ao_shadow_dim1.y ||
-        mip1_pos.z < 0 || mip1_pos.z >= ao_shadow_dim1.z) {
-        return false;
-    }
-
-    return texelFetch(shadow_volume_tex, mip1_pos, 1).r != 0u;
-}
-
-bool sample_shadow_mip2(ivec3 voxel_pos) {
-    ivec3 mip2_pos = voxel_pos >> 3;
-
-    if (mip2_pos.x < 0 || mip2_pos.x >= ao_shadow_dim2.x ||
-        mip2_pos.y < 0 || mip2_pos.y >= ao_shadow_dim2.y ||
-        mip2_pos.z < 0 || mip2_pos.z >= ao_shadow_dim2.z) {
-        return false;
-    }
-
-    return texelFetch(shadow_volume_tex, mip2_pos, 2).r != 0u;
-}
-
+/* Visibility (0..1) of one AO ray: distance to where it enters the first occupied voxel / radius */
 float trace_ao_ray(vec3 origin, vec3 rd, int max_steps) {
     vec2 box_hit = hdda_intersect_aabb(origin, rd, pc.bounds_min, pc.bounds_max);
     if (box_hit.x > box_hit.y || box_hit.y < 0.0) {
@@ -117,12 +44,6 @@ float trace_ao_ray(vec3 origin, vec3 rd, int max_steps) {
     }
 
     float t_start = max(box_hit.x, 0.001);
-    float t_end = min(box_hit.y, AO_MAX_DIST);
-
-    if (t_start >= t_end) {
-        return 1.0;
-    }
-
     vec3 start_pos = origin + rd * t_start;
     vec3 grid_pos = world_to_grid(start_pos);
     grid_pos = clamp(grid_pos, vec3(0.0), vec3(pc.grid_size) - 0.001);
@@ -132,14 +53,10 @@ float trace_ao_ray(vec3 origin, vec3 rd, int max_steps) {
     ivec3 step_dir = ivec3(sign(rd));
     vec3 side_dist = (sign(rd) * (vec3(map_pos) - grid_pos) + sign(rd) * 0.5 + 0.5) * delta_dist;
 
-    ivec3 last_mip2_pos = ivec3(-1000);
-    ivec3 last_mip1_pos = ivec3(-1000);
-    bool mip2_empty = false;
-    bool mip1_empty = false;
-
-    /* Track parametric distance along ray to avoid length() per iteration.
-       t_current tracks minimum side_dist which equals ray parameter. */
-    float t_current = t_start;
+    /* Distance from the start point to where the ray entered the current cell, in voxels
+       (side_dist is in grid units), tracked through the DDA instead of a length() per step:
+       an occluder the ray starts against reads ~0 visibility */
+    float t_entry = 0.0;
 
     for (int i = 0; i < max_steps; i++) {
         if (map_pos.x < 0 || map_pos.x >= pc.grid_size.x ||
@@ -148,72 +65,31 @@ float trace_ao_ray(vec3 origin, vec3 rd, int max_steps) {
             return 1.0;
         }
 
-        /* Early exit based on parametric distance (no sqrt needed) */
-        if (t_current > AO_MAX_DIST) {
+        if (t_entry > AO_RADIUS_VOXELS) {
             return 1.0;
         }
 
-        ivec3 current_mip2 = map_pos >> 3;
-        if (current_mip2 != last_mip2_pos) {
-            last_mip2_pos = current_mip2;
-            mip2_empty = !sample_shadow_mip2(map_pos);
-            last_mip1_pos = ivec3(-1000);
-        }
-
-        if (mip2_empty) {
-            /* Skip to mip2 boundary along the DDA exit axis */
-            ivec3 mip2_min = current_mip2 << 3;
-            ivec3 mip2_max = mip2_min + 7;
-            ivec3 cells_to_exit;
-            cells_to_exit.x = (step_dir.x > 0) ? (mip2_max.x - map_pos.x + 1) : (map_pos.x - mip2_min.x + 1);
-            cells_to_exit.y = (step_dir.y > 0) ? (mip2_max.y - map_pos.y + 1) : (map_pos.y - mip2_min.y + 1);
-            cells_to_exit.z = (step_dir.z > 0) ? (mip2_max.z - map_pos.z + 1) : (map_pos.z - mip2_min.z + 1);
-            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
-            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
-            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
-            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
-            map_pos += ivec3(mask) * step_dir * cells_to_exit;
-            side_dist += vec3(skip_per_axis) * delta_dist;
-            t_current = min(min(side_dist.x, side_dist.y), side_dist.z);
+        /* Jump the coarsest empty block around map_pos, staying on the ray */
+        uint occ0;
+        int level = shadow_volume_empty_level(map_pos, occ0);
+        if (level >= 0) {
+            ivec3 block_min = (map_pos >> (level + 1)) << (level + 1);
+            bvec3 exit_mask;
+            int skip = hdda_skip_block(map_pos, side_dist, step_dir, delta_dist, block_min, block_min + ((2 << level) - 1), exit_mask);
+            t_entry = block_exit_distance(side_dist, delta_dist, exit_mask);
             i += max(skip - 1, 0);
             continue;
         }
 
-        ivec3 current_mip1 = map_pos >> 2;
-        if (current_mip1 != last_mip1_pos) {
-            last_mip1_pos = current_mip1;
-            mip1_empty = !sample_shadow_mip1(map_pos);
+        if (shadow_volume_opaque(occ0, map_pos)) {
+            return t_entry / AO_RADIUS_VOXELS;
         }
 
-        if (mip1_empty) {
-            /* Skip to mip1 boundary along the DDA exit axis */
-            ivec3 mip1_min = current_mip1 << 2;
-            ivec3 mip1_max = mip1_min + 3;
-            ivec3 cells_to_exit;
-            cells_to_exit.x = (step_dir.x > 0) ? (mip1_max.x - map_pos.x + 1) : (map_pos.x - mip1_min.x + 1);
-            cells_to_exit.y = (step_dir.y > 0) ? (mip1_max.y - map_pos.y + 1) : (map_pos.y - mip1_min.y + 1);
-            cells_to_exit.z = (step_dir.z > 0) ? (mip1_max.z - map_pos.z + 1) : (map_pos.z - mip1_min.z + 1);
-            vec3 t_exit = side_dist + vec3(cells_to_exit - 1) * delta_dist;
-            bvec3 mask = lessThanEqual(t_exit.xyz, min(t_exit.yzx, t_exit.zxy));
-            ivec3 skip_per_axis = ivec3(mask) * cells_to_exit;
-            int skip = skip_per_axis.x + skip_per_axis.y + skip_per_axis.z;
-            map_pos += ivec3(mask) * step_dir * cells_to_exit;
-            side_dist += vec3(skip_per_axis) * delta_dist;
-            t_current = min(min(side_dist.x, side_dist.y), side_dist.z);
-            i += max(skip - 1, 0);
-            continue;
-        }
-
-        if (sample_shadow_volume(map_pos)) {
-            /* Only compute exact distance on HIT */
-            float ao = t_current / AO_MAX_DIST;
-            return ao;
-        }
-
+        /* The next cell is entered where this one is left */
+        t_entry = min(min(side_dist.x, side_dist.y), side_dist.z);
         bvec3 mask = lessThanEqual(side_dist.xyz, min(side_dist.yzx, side_dist.zxy));
         side_dist += vec3(mask) * delta_dist;
         map_pos += ivec3(mask) * step_dir;
-        t_current = min(min(side_dist.x, side_dist.y), side_dist.z);
     }
 
     return 1.0;
@@ -238,15 +114,6 @@ vec3 cosine_weighted_hemisphere(vec2 xi, vec3 N) {
 }
 
 void main() {
-    pc_grid_size = pc.grid_size;
-    pc_chunks_dim = pc.chunks_dim;
-    pc_total_chunks = pc.total_chunks;
-
-    /* Cache shadow volume dimensions (computed from grid_size, avoids textureSize calls) */
-    ao_shadow_dim0 = (pc.grid_size + 1) >> 1;
-    ao_shadow_dim1 = (pc.grid_size + 3) >> 2;
-    ao_shadow_dim2 = (pc.grid_size + 7) >> 3;
-
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 screen_size = imageSize(out_ao);
 
@@ -254,10 +121,7 @@ void main() {
         return;
     }
 
-    GBufferSample g = sample_gbuffer_shadow(
-        pixel,
-        gbuffer_depth, gbuffer_normal, gbuffer_world_pos
-    );
+    GBufferSample g = sample_gbuffer_shadow(pixel, gbuffer_depth, gbuffer_normal);
 
     if (g.is_sky) {
         imageStore(out_ao, pixel, vec4(1.0));
@@ -265,12 +129,6 @@ void main() {
     }
 
     vec3 normal = normalize(g.normal);
-
-    /* Quality 0 = disabled (return full visibility) */
-    if (pc.ao_quality == 0) {
-        imageStore(out_ao, pixel, vec4(1.0));
-        return;
-    }
 
     /* Distance-based AO step scaling: close surfaces need fewer steps */
     float surface_dist = length(g.world_pos - pc.camera_pos);
@@ -288,14 +146,14 @@ void main() {
     float bias = pc.voxel_size * 0.4;
     vec3 ao_origin = g.world_pos + normal * bias;
 
-     /* Quality-scaled samples: Fair=1, Good=2, High=4 samples per pixel
-         Temporal accumulation smooths out noise over frames.
-         Close surfaces use fewer samples since temporal handles noise well. */
-     int base_samples = (pc.ao_quality <= 1) ? 1 : (pc.ao_quality == 2 ? 2 : 4);
-     int num_samples = base_samples;
-     if (surface_dist < 10.0 && base_samples > 1) {
-         num_samples = max(base_samples - 1, 1);  /* Close: reduce by 1 */
-     }
+    /* Quality-scaled samples: Fair=1, Good=2, High=4 samples per pixel.
+       Temporal accumulation smooths out noise over frames, so close surfaces
+       (where it works best) use one sample less. */
+    int base_samples = (pc.ao_quality <= 1) ? 1 : (pc.ao_quality == 2 ? 2 : 4);
+    int num_samples = base_samples;
+    if (surface_dist < 10.0 && base_samples > 1) {
+        num_samples = base_samples - 1;
+    }
     float ao_sum = 0.0;
 
     for (int s = 0; s < num_samples; s++) {

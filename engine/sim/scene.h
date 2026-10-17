@@ -20,7 +20,6 @@ extern "C"
         void (*destroy)(Scene *scene);
         void (*tick)(Scene *scene);
         void (*handle_input)(Scene *scene, float mouse_x, float mouse_y, bool left_down, bool right_down);
-        void (*render)(Scene *scene, void *renderer);
         const char *(*get_name)(Scene *scene);
     } SceneVTable;
 
@@ -49,14 +48,6 @@ extern "C"
         }
     }
 
-    static inline void scene_tick(Scene *scene)
-    {
-        if (scene && scene->vtable && scene->vtable->tick)
-        {
-            scene->vtable->tick(scene);
-        }
-    }
-
     static inline void scene_update(Scene *scene, float dt)
     {
         if (!scene || !scene->vtable || !scene->vtable->tick)
@@ -80,19 +71,23 @@ extern "C"
             scene->sim_accumulator = SIM_TIMESTEP * 2;
     }
 
+    /* How far wall time has run past the last fixed tick, as a fraction of a tick in
+     * [0, 1]: drawing blends from the previous to the current sim state by this much */
+    static inline float scene_interp_alpha(const Scene *scene)
+    {
+        float alpha = scene->sim_accumulator / SIM_TIMESTEP;
+        if (alpha < 0.0f)
+            alpha = 0.0f;
+        if (alpha > 1.0f)
+            alpha = 1.0f;
+        return alpha;
+    }
+
     static inline void scene_handle_input(Scene *scene, float mouse_x, float mouse_y, bool left_down, bool right_down)
     {
         if (scene && scene->vtable && scene->vtable->handle_input)
         {
             scene->vtable->handle_input(scene, mouse_x, mouse_y, left_down, right_down);
-        }
-    }
-
-    static inline void scene_render(Scene *scene, void *renderer)
-    {
-        if (scene && scene->vtable && scene->vtable->render)
-        {
-            scene->vtable->render(scene, renderer);
         }
     }
 

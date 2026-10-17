@@ -5,26 +5,41 @@
 #include <string.h>
 #include <math.h>
 
+/* When a type's particles are about */
+typedef enum
+{
+    ENV_ACTIVE_ALWAYS,
+    ENV_ACTIVE_DAY,
+    ENV_ACTIVE_NIGHT,
+} EnvActive;
+
 typedef struct
 {
-    float gravity;
+    float settle_speed;  /* Vertical speed against the air it settles at: below 0 falls, above 0 rises */
+    float drag;          /* Rate (1/s) at which the velocity closes in on the wind plus settle_speed */
+    float max_speed;
     float base_radius;
     float min_lifetime;
     float max_lifetime;
-    float spawn_chance;
+    float spawn_chance;  /* Per emitter roll; 0 for the weather's types */
+    uint8_t active;      /* EnvActive */
     bool emissive;
+    bool ends_on_contact; /* Ends in the first voxel it enters */
 } EnvParticleParams;
 
-/* spawn_chance: probability per emitter per heartbeat tick (0.5s period) */
+/* The ambient types settle at what their old fall (or rise) per tick and 0.98 damping per
+ * tick came to. Rain falls at a drop's terminal speed and snow at a flake's; their
+ * lifetimes only bound a fall that meets no ground (the weather spawns them some way
+ * above the viewer). */
 static const EnvParticleParams s_params[ENV_PARTICLE_TYPE_COUNT] = {
-    [ENV_PARTICLE_LEAF]    = { .gravity = -0.6f,  .base_radius = 0.04f, .min_lifetime = 6.0f,  .max_lifetime = 12.0f, .spawn_chance = 0.10f,  .emissive = false },
-    [ENV_PARTICLE_DUST]    = { .gravity = -0.03f, .base_radius = 0.02f, .min_lifetime = 5.0f,  .max_lifetime = 10.0f, .spawn_chance = 0.06f,  .emissive = false },
-    [ENV_PARTICLE_FIREFLY] = { .gravity = 0.0f,   .base_radius = 0.03f, .min_lifetime = 4.0f,  .max_lifetime = 10.0f, .spawn_chance = 0.05f,  .emissive = true  },
-    [ENV_PARTICLE_SNOW]    = { .gravity = -1.0f,  .base_radius = 0.03f, .min_lifetime = 8.0f,  .max_lifetime = 16.0f, .spawn_chance = 0.15f,  .emissive = false },
-    [ENV_PARTICLE_POLLEN]  = { .gravity = 0.08f,  .base_radius = 0.015f,.min_lifetime = 4.0f,  .max_lifetime = 8.0f,  .spawn_chance = 0.08f,  .emissive = false },
-    [ENV_PARTICLE_DRIP]    = { .gravity = -4.0f,  .base_radius = 0.02f, .min_lifetime = 1.0f,  .max_lifetime = 3.0f,  .spawn_chance = 0.04f,  .emissive = false },
-    [ENV_PARTICLE_STEAM]   = { .gravity = 0.5f,   .base_radius = 0.05f, .min_lifetime = 2.0f,  .max_lifetime = 5.0f,  .spawn_chance = 0.08f,  .emissive = false },
-    [ENV_PARTICLE_BEE]     = { .gravity = 0.0f,   .base_radius = 0.025f,.min_lifetime = 5.0f,  .max_lifetime = 15.0f, .spawn_chance = 0.03f,  .emissive = false },
+    [ENV_PARTICLE_LEAF]    = { .settle_speed = -0.5f,   .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.04f,  .min_lifetime = 6.0f,  .max_lifetime = 12.0f, .spawn_chance = 0.10f },
+    [ENV_PARTICLE_DUST]    = { .settle_speed = -0.025f, .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.02f,  .min_lifetime = 5.0f,  .max_lifetime = 10.0f, .spawn_chance = 0.06f },
+    [ENV_PARTICLE_FIREFLY] = { .settle_speed = 0.0f,    .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.03f,  .min_lifetime = 4.0f,  .max_lifetime = 10.0f, .spawn_chance = 0.05f, .active = ENV_ACTIVE_NIGHT, .emissive = true },
+    [ENV_PARTICLE_SNOW]    = { .settle_speed = -1.0f,   .drag = 1.5f, .max_speed = 4.0f,  .base_radius = 0.03f,  .min_lifetime = 16.0f, .max_lifetime = 24.0f, .ends_on_contact = true },
+    [ENV_PARTICLE_POLLEN]  = { .settle_speed = 0.065f,  .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.015f, .min_lifetime = 4.0f,  .max_lifetime = 8.0f,  .spawn_chance = 0.08f },
+    [ENV_PARTICLE_RAIN]    = { .settle_speed = -8.0f,   .drag = 2.0f, .max_speed = 12.0f, .base_radius = 0.02f,  .min_lifetime = 2.5f,  .max_lifetime = 4.0f,  .ends_on_contact = true },
+    [ENV_PARTICLE_STEAM]   = { .settle_speed = 0.4f,    .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.05f,  .min_lifetime = 2.0f,  .max_lifetime = 5.0f,  .spawn_chance = 0.08f },
+    [ENV_PARTICLE_BEE]     = { .settle_speed = 0.0f,    .drag = 1.2f, .max_speed = 3.0f,  .base_radius = 0.025f, .min_lifetime = 5.0f,  .max_lifetime = 15.0f, .spawn_chance = 0.03f, .active = ENV_ACTIVE_DAY },
 };
 
 EnvParticleSystem *env_particles_create(uint32_t seed)
@@ -34,9 +49,8 @@ EnvParticleSystem *env_particles_create(uint32_t seed)
         return NULL;
 
     rng_seed(&sys->rng, seed + 333333);
-    heartbeat_init(&sys->scheduler);
+    sys->seed = seed;
     sys->wind_velocity = vec3_create(0.3f, 0.0f, 0.1f);
-    sys->wind_turbulence = 0.5f;
 
     return sys;
 }
@@ -67,8 +81,8 @@ static Vec3 particle_color_for_type(uint8_t type, uint8_t source_mat, RngState *
         return vec3_create(0.95f, 0.95f, 1.0f);
     case ENV_PARTICLE_POLLEN:
         return vec3_create(0.9f, 0.85f, 0.3f);
-    case ENV_PARTICLE_DRIP:
-        return vec3_create(0.4f, 0.5f, 0.7f);
+    case ENV_PARTICLE_RAIN:
+        return vec3_create(0.55f, 0.65f, 0.8f);
     case ENV_PARTICLE_STEAM:
         return vec3_create(0.85f, 0.85f, 0.9f);
     case ENV_PARTICLE_BEE:
@@ -78,7 +92,8 @@ static Vec3 particle_color_for_type(uint8_t type, uint8_t source_mat, RngState *
     }
 }
 
-static int32_t spawn_particle(EnvParticleSystem *sys, Vec3 pos, uint8_t type, uint8_t source_mat)
+static void spawn_particle(EnvParticleSystem *sys, Vec3 pos, Vec3 velocity, uint8_t type, uint8_t source_mat,
+                           RngState *rng)
 {
     int32_t slot = sys->next_slot;
     EnvParticle *p = &sys->particles[slot];
@@ -86,75 +101,118 @@ static int32_t spawn_particle(EnvParticleSystem *sys, Vec3 pos, uint8_t type, ui
 
     p->position = pos;
     p->prev_position = pos;
+    p->velocity = velocity;
     p->type = type;
     p->active = true;
     p->emissive = params->emissive;
-    p->radius = params->base_radius * (0.8f + rng_float(&sys->rng) * 0.4f);
+    p->radius = params->base_radius * (0.8f + rng_float(rng) * 0.4f);
     p->lifetime = 0.0f;
-    p->max_lifetime = lerpf(params->min_lifetime, params->max_lifetime, rng_float(&sys->rng));
-    p->color = particle_color_for_type(type, source_mat, &sys->rng);
-
-    float spread = 0.5f;
-    p->velocity = vec3_create(
-        rng_range_f32(&sys->rng, -spread, spread),
-        params->gravity * 0.3f,
-        rng_range_f32(&sys->rng, -spread, spread));
+    p->max_lifetime = lerpf(params->min_lifetime, params->max_lifetime, rng_float(rng));
+    /* Authored in sRGB like the materials; the G-buffer wants linear */
+    p->color = vec3_srgb_to_linear(particle_color_for_type(type, source_mat, rng));
 
     sys->next_slot = (slot + 1) % ENV_PARTICLE_MAX;
     if (sys->count < ENV_PARTICLE_MAX)
         sys->count++;
-
-    return slot;
 }
 
-void env_particles_update(EnvParticleSystem *sys, float dt, double time)
+void env_particles_spawn(EnvParticleSystem *sys, uint8_t type, Vec3 position, Vec3 velocity, RngState *rng)
+{
+    if (!sys || type >= ENV_PARTICLE_TYPE_COUNT)
+        return;
+    spawn_particle(sys, position, velocity, type, MAT_AIR, rng);
+}
+
+Vec3 env_particles_steady_velocity(const EnvParticleSystem *sys, uint8_t type)
+{
+    return vec3_add(sys->wind_velocity, vec3_create(0.0f, s_params[type].settle_speed, 0.0f));
+}
+
+static uint8_t voxel_material(const VoxelVolume *vol, int32_t gx, int32_t gy, int32_t gz)
+{
+    return vol->chunks[volume_voxel_chunk_index(vol, gx, gy, gz)]
+        .voxels[chunk_voxel_index(gx & CHUNK_SIZE_MASK, gy & CHUNK_SIZE_MASK, gz & CHUNK_SIZE_MASK)]
+        .material;
+}
+
+/* The emitter's source voxel still holds its material with nothing on top of it */
+static bool emitter_source_intact(const VoxelVolume *vol, const EnvEmitter *e)
+{
+    if (voxel_material(vol, e->gx, e->gy, e->gz) != e->source_material)
+        return false;
+    return e->gy + 1 >= vol->chunks_y * CHUNK_SIZE || voxel_material(vol, e->gx, e->gy + 1, e->gz) == MATERIAL_EMPTY;
+}
+
+/* One roll per emitter per elapsed period. An emitter whose source is gone (dug out,
+ * carried off, snowed over) is dropped when it next fires: the check costs a voxel read
+ * on a spawn only, and depends on nothing but the volume. */
+static void spawn_from_emitters(EnvParticleSystem *sys, const VoxelVolume *vol, float daylight, float dt)
+{
+    sys->emitter_clock += dt;
+    int32_t rolls = 0;
+    while (sys->emitter_clock >= ENV_EMITTER_PERIOD)
+    {
+        sys->emitter_clock -= ENV_EMITTER_PERIOD;
+        rolls++;
+    }
+    if (rolls == 0)
+        return;
+
+    float chance[ENV_PARTICLE_TYPE_COUNT];
+    for (int32_t t = 0; t < ENV_PARTICLE_TYPE_COUNT; t++)
+    {
+        const EnvParticleParams *params = &s_params[t];
+        float activity = params->active == ENV_ACTIVE_DAY ? daylight
+                         : params->active == ENV_ACTIVE_NIGHT ? 1.0f - daylight
+                                                              : 1.0f;
+        chance[t] = params->spawn_chance * activity * (float)rolls;
+    }
+
+    for (int32_t e = 0; e < sys->emitter_count;)
+    {
+        EnvEmitter *emitter = &sys->emitters[e];
+        if (rng_float(&sys->rng) >= chance[emitter->type])
+        {
+            e++;
+            continue;
+        }
+        if (vol && !emitter_source_intact(vol, emitter))
+        {
+            *emitter = sys->emitters[--sys->emitter_count];
+            continue;
+        }
+
+        const EnvParticleParams *params = &s_params[emitter->type];
+        Vec3 offset = vec3_create(
+            rng_range_f32(&sys->rng, -0.3f, 0.3f),
+            rng_range_f32(&sys->rng, 0.0f, 0.3f),
+            rng_range_f32(&sys->rng, -0.3f, 0.3f));
+        const float spread = 0.5f;
+        Vec3 velocity = vec3_create(
+            rng_range_f32(&sys->rng, -spread, spread),
+            params->settle_speed * 0.4f,
+            rng_range_f32(&sys->rng, -spread, spread));
+        spawn_particle(sys, vec3_add(emitter->position, offset), velocity, emitter->type, emitter->source_material,
+                       &sys->rng);
+        e++;
+    }
+}
+
+void env_particles_update(EnvParticleSystem *sys, const VoxelVolume *vol, float daylight, float dt, double time)
 {
     if (!sys)
         return;
 
-    heartbeat_maintain(&sys->scheduler, time);
+    spawn_from_emitters(sys, vol, daylight, dt);
 
-    /* Spawn from emitters using a single fixed-period heartbeat */
-    uint8_t beats = heartbeat_get(&sys->scheduler, 0.5f);
-    if (beats > 0)
-    {
-        for (int32_t e = 0; e < sys->emitter_count; e++)
-        {
-            const EnvEmitter *emitter = &sys->emitters[e];
-            const EnvParticleParams *params = &s_params[emitter->type];
+    /* Share of the gap to the steady velocity each type closes this step */
+    float approach[ENV_PARTICLE_TYPE_COUNT];
+    for (int32_t t = 0; t < ENV_PARTICLE_TYPE_COUNT; t++)
+        approach[t] = 1.0f - expf(-s_params[t].drag * dt);
 
-            float chance = params->spawn_chance * (float)beats;
-            if (rng_float(&sys->rng) < chance)
-            {
-                Vec3 offset = vec3_create(
-                    rng_range_f32(&sys->rng, -0.3f, 0.3f),
-                    rng_range_f32(&sys->rng, 0.0f, 0.3f),
-                    rng_range_f32(&sys->rng, -0.3f, 0.3f));
-                Vec3 pos = vec3_add(emitter->position, offset);
-                spawn_particle(sys, pos, emitter->type, emitter->source_material);
-            }
-        }
-    }
-
-    /* Spawn weather particles from above the scene */
-    if (sys->weather_intensity > 0.05f && beats > 0)
-    {
-        int32_t spawn_count = (int32_t)(sys->weather_intensity * 40.0f * (float)beats);
-        for (int32_t i = 0; i < spawn_count; i++)
-        {
-            float x = rng_range_f32(&sys->rng, sys->spawn_bounds.min_x, sys->spawn_bounds.max_x);
-            float z = rng_range_f32(&sys->rng, sys->spawn_bounds.min_z, sys->spawn_bounds.max_z);
-            float y = sys->spawn_bounds.max_y + rng_range_f32(&sys->rng, -1.0f, 2.0f);
-            Vec3 pos = vec3_create(x, y, z);
-            spawn_particle(sys, pos, sys->weather_type, 0);
-        }
-    }
-
-    /* Update active particles */
+    /* Update every live particle; the pool size bounds the cost */
     int32_t active = 0;
-    int32_t updated = 0;
-
-    for (int32_t i = 0; i < sys->count && updated < ENV_PARTICLE_BUDGET_PER_TICK; i++)
+    for (int32_t i = 0; i < sys->count; i++)
     {
         EnvParticle *p = &sys->particles[i];
         if (!p->active)
@@ -168,16 +226,18 @@ void env_particles_update(EnvParticleSystem *sys, float dt, double time)
         }
 
         const EnvParticleParams *params = &s_params[p->type];
-
         p->prev_position = p->position;
-        p->velocity.y += params->gravity * dt;
 
-        Vec3 wind = sys->wind_velocity;
+        Vec3 air = sys->wind_velocity;
         if (p->type == ENV_PARTICLE_LEAF)
         {
-            float flutter = sinf((float)time * 3.0f + p->position.x * 2.0f) * 0.3f;
-            wind.x += flutter;
-            wind.z += cosf((float)time * 2.5f + p->position.z * 2.0f) * 0.2f;
+            air.x += sinf((float)time * 3.0f + p->position.x * 2.0f) * 0.3f;
+            air.z += cosf((float)time * 2.5f + p->position.z * 2.0f) * 0.2f;
+        }
+        else if (p->type == ENV_PARTICLE_SNOW)
+        {
+            air.x += sinf((float)time * 1.7f + p->position.z * 1.3f) * 0.25f;
+            air.z += cosf((float)time * 1.3f + p->position.x * 1.3f) * 0.25f;
         }
         else if (p->type == ENV_PARTICLE_FIREFLY)
         {
@@ -192,117 +252,309 @@ void env_particles_update(EnvParticleSystem *sys, float dt, double time)
             p->velocity.z += sinf(angle) * 1.0f * dt;
         }
 
-        p->velocity = vec3_add(p->velocity, vec3_scale(wind, dt));
+        Vec3 steady = vec3_add(air, vec3_create(0.0f, params->settle_speed, 0.0f));
+        p->velocity = vec3_add(p->velocity, vec3_scale(vec3_sub(steady, p->velocity), approach[p->type]));
 
-        float damping = 0.98f;
-        p->velocity = vec3_scale(p->velocity, damping);
-
-        float max_vel = 3.0f;
         float vel_sq = vec3_length_sq(p->velocity);
-        if (vel_sq > max_vel * max_vel)
-            p->velocity = vec3_scale(p->velocity, max_vel / sqrtf(vel_sq));
+        if (vel_sq > params->max_speed * params->max_speed)
+            p->velocity = vec3_scale(p->velocity, params->max_speed / sqrtf(vel_sq));
 
         p->position = vec3_add(p->position, vec3_scale(p->velocity, dt));
 
+        if (vol && params->ends_on_contact && volume_get_at(vol, p->position) != MATERIAL_EMPTY)
+        {
+            p->active = false;
+            continue;
+        }
+
         active++;
-        updated++;
     }
 
     sys->active_count = active;
 }
 
-void env_particles_register_emitters(EnvParticleSystem *sys,
-                                      const VoxelVolume *vol,
-                                      float voxel_size)
+/* Ambient particles of the open voxels. Snow and rain come from the weather alone. */
+const EnvEmitterRule g_env_emitter_rules[] = {
+    {MAT_OAK_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    {MAT_PINE_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    {MAT_BIRCH_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    {MAT_JUNGLE_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    {MAT_CHERRY_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    {MAT_AUTUMN_LEAF, ENV_PARTICLE_LEAF, 0.08f},
+    /* Meadows: motes by day, fireflies by night */
+    {MAT_GRASS, ENV_PARTICLE_DUST, 0.012f},
+    {MAT_GRASS, ENV_PARTICLE_FIREFLY, 0.004f},
+    /* Humid grounds of jungle, forest and swamp */
+    {MAT_JUNGLE_GRASS, ENV_PARTICLE_FIREFLY, 0.01f},
+    {MAT_MOSS, ENV_PARTICLE_FIREFLY, 0.008f},
+    {MAT_MUD, ENV_PARTICLE_FIREFLY, 0.006f},
+    {MAT_GLOWING_MUSHROOM, ENV_PARTICLE_FIREFLY, 0.2f},
+    /* Dry and bare grounds blow dust */
+    {MAT_DRY_GRASS, ENV_PARTICLE_DUST, 0.02f},
+    {MAT_SAND, ENV_PARTICLE_DUST, 0.015f},
+    {MAT_PODZOL, ENV_PARTICLE_DUST, 0.006f},
+    {MAT_DIRT, ENV_PARTICLE_DUST, 0.005f},
+    {MAT_GRAVEL, ENV_PARTICLE_DUST, 0.005f},
+    {MAT_SANDSTONE, ENV_PARTICLE_DUST, 0.005f},
+    /* Flowers: pollen, and bees working them */
+    {MAT_FLOWER_RED, ENV_PARTICLE_POLLEN, 0.15f},
+    {MAT_FLOWER_RED, ENV_PARTICLE_BEE, 0.03f},
+    {MAT_FLOWER_BLUE, ENV_PARTICLE_POLLEN, 0.15f},
+    {MAT_FLOWER_BLUE, ENV_PARTICLE_BEE, 0.03f},
+    {MAT_FLOWER_YELLOW, ENV_PARTICLE_POLLEN, 0.15f},
+    {MAT_FLOWER_YELLOW, ENV_PARTICLE_BEE, 0.03f},
+    /* Mist rising off open water */
+    {MAT_WATER, ENV_PARTICLE_STEAM, 0.002f},
+    {MAT_SWAMP_WATER, ENV_PARTICLE_STEAM, 0.002f},
+};
+const int32_t g_env_emitter_rule_count = (int32_t)(sizeof(g_env_emitter_rules) / sizeof(g_env_emitter_rules[0]));
+
+/* Each type's share of the emitters */
+#define EMITTER_BUDGET_LEAF 1280
+#define EMITTER_BUDGET_DUST 896
+#define EMITTER_BUDGET_FIREFLY 896
+#define EMITTER_BUDGET_POLLEN 512
+#define EMITTER_BUDGET_BEE 256
+#define EMITTER_BUDGET_STEAM 256
+STATIC_ASSERT(EMITTER_BUDGET_LEAF + EMITTER_BUDGET_DUST + EMITTER_BUDGET_FIREFLY + EMITTER_BUDGET_POLLEN +
+                      EMITTER_BUDGET_BEE + EMITTER_BUDGET_STEAM <= ENV_EMITTER_MAX,
+              "Emitter budgets exceed the emitter array");
+static const int32_t s_emitter_budget[ENV_PARTICLE_TYPE_COUNT] = {
+    [ENV_PARTICLE_LEAF] = EMITTER_BUDGET_LEAF,       [ENV_PARTICLE_DUST] = EMITTER_BUDGET_DUST,
+    [ENV_PARTICLE_FIREFLY] = EMITTER_BUDGET_FIREFLY, [ENV_PARTICLE_POLLEN] = EMITTER_BUDGET_POLLEN,
+    [ENV_PARTICLE_BEE] = EMITTER_BUDGET_BEE,         [ENV_PARTICLE_STEAM] = EMITTER_BUDGET_STEAM,
+};
+
+#define EMITTER_SEED 54321u
+/* Draws of the ground under a canopy, apart from those of the column's top voxel */
+#define EMITTER_GROUND_SEED 98765u
+
+/* An open voxel that emits: rank orders the candidates of a type for the sample */
+typedef struct
 {
-    if (!sys || !vol)
+    uint32_t rank;
+    int32_t gx, gz;
+    int16_t gy;
+    uint8_t type;
+    uint8_t material;
+} EmitterCandidate;
+
+/* Candidates of one column: its top voxel and the ground under a canopy */
+#define EMITTER_SURFACES_PER_COLUMN 2
+
+typedef struct
+{
+    const VoxelVolume *vol;
+    uint32_t seed;
+    /* Rules by material: rule_index[rule_start[m]..rule_start[m + 1]) in table order */
+    int32_t rule_start[257];
+    int32_t rule_index[64];
+    /* Materials whose particles are leaves: the scan looks through them for the ground */
+    bool canopy[256];
+    EmitterCandidate **found; /* Per chunk column, NULL when none */
+    int32_t *found_count;
+} EmitterScan;
+
+STATIC_ASSERT(sizeof(g_env_emitter_rules) / sizeof(g_env_emitter_rules[0]) <= 64, "Emitter rule index too small");
+
+/* Two independent 32-bit draws of a column (splitmix64): one picks its rule, the other
+ * ranks it among its type, so the rank is uniform whichever rule fired */
+static uint64_t column_hash(uint32_t seed, int32_t gx, int32_t gz)
+{
+    uint64_t h = ((uint64_t)seed << 32) ^ ((uint64_t)(uint32_t)gx * 0x9E3779B97F4A7C15ull) ^
+                 ((uint64_t)(uint32_t)gz * 0xC2B2AE3D27D4EB4Full);
+    h ^= h >> 30;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 27;
+    h *= 0x94D049BB133111EBull;
+    h ^= h >> 31;
+    return h;
+}
+
+/* Adds the candidate of open voxel (gx, gy, gz) of material mat if one of its rules fires */
+static void add_candidate(const EmitterScan *scan, uint32_t seed, int32_t gx, int32_t gy, int32_t gz, uint8_t mat,
+                          EmitterCandidate *out, int32_t *count)
+{
+    if (scan->rule_start[mat] == scan->rule_start[mat + 1])
         return;
-
-    sys->spawn_bounds = vol->bounds;
-    sys->emitter_count = 0;
-    RngState scan_rng;
-    rng_seed(&scan_rng, 54321);
-
-    int32_t total_x = vol->chunks_x * CHUNK_SIZE;
-    int32_t total_z = vol->chunks_z * CHUNK_SIZE;
-    int32_t total_y = vol->chunks_y * CHUNK_SIZE;
-
-    for (int32_t gx = 0; gx < total_x; gx++)
+    uint64_t h = column_hash(seed, gx, gz);
+    float roll = (float)(uint32_t)(h & 0xFFFFFFu) * (1.0f / 16777216.0f);
+    for (int32_t k = scan->rule_start[mat]; k < scan->rule_start[mat + 1]; k++)
     {
-        int32_t cx = gx >> CHUNK_SIZE_BITS;
-        int32_t lx = gx & CHUNK_SIZE_MASK;
-        float x = vol->bounds.min_x + gx * voxel_size;
-
-        for (int32_t gz = 0; gz < total_z; gz++)
+        const EnvEmitterRule *rule = &g_env_emitter_rules[scan->rule_index[k]];
+        if (roll < rule->density)
         {
-            int32_t cz = gz >> CHUNK_SIZE_BITS;
-            int32_t lz = gz & CHUNK_SIZE_MASK;
+            EmitterCandidate *c = &out[(*count)++];
+            c->rank = (uint32_t)(h >> 32);
+            c->gx = gx;
+            c->gz = gz;
+            c->gy = (int16_t)gy;
+            c->type = rule->type;
+            c->material = mat;
+            return;
+        }
+        roll -= rule->density;
+    }
+}
 
-            if (sys->emitter_count >= ENV_EMITTER_MAX)
-                return;
+/* Finds the emitting voxels of whole chunk columns; reads only, and writes only its own
+ * chunk column's list */
+static void scan_emitter_chunk_columns(void *ctx, int32_t begin, int32_t end)
+{
+    const EmitterScan *scan = (const EmitterScan *)ctx;
+    const VoxelVolume *vol = scan->vol;
+    const int32_t total_y = vol->chunks_y * CHUNK_SIZE;
+    EmitterCandidate local[CHUNK_SIZE * CHUNK_SIZE * EMITTER_SURFACES_PER_COLUMN];
 
-            for (int32_t gy = total_y - 1; gy > 0; gy--)
+    for (int32_t cc = begin; cc < end; cc++)
+    {
+        const int32_t cx = cc % vol->chunks_x;
+        const int32_t cz = cc / vol->chunks_x;
+        int32_t count = 0;
+        for (int32_t lz = 0; lz < CHUNK_SIZE; lz++)
+        {
+            for (int32_t lx = 0; lx < CHUNK_SIZE; lx++)
             {
-                int32_t cy = gy >> CHUNK_SIZE_BITS;
-                int32_t ly = gy & CHUNK_SIZE_MASK;
-                int32_t idx = cx + cy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-                uint8_t mat = chunk_get(&vol->chunks[idx], lx, ly, lz);
-                if (mat == 0)
+                const int32_t gx = (cx << CHUNK_SIZE_BITS) + lx;
+                const int32_t gz = (cz << CHUNK_SIZE_BITS) + lz;
+                uint8_t mat = MAT_AIR;
+                int32_t gy = volume_column_top(vol, gx, gz, &mat);
+                if (gy < 0 || gy + 1 >= total_y)
+                    continue;
+                add_candidate(scan, scan->seed, gx, gy, gz, mat, local, &count);
+                if (!scan->canopy[mat])
                     continue;
 
-                int32_t ay = gy + 1;
-                if (ay >= total_y)
-                    break;
-                int32_t acy = ay >> CHUNK_SIZE_BITS;
-                int32_t aly = ay & CHUNK_SIZE_MASK;
-                int32_t aidx = cx + acy * vol->chunks_x + cz * vol->chunks_x * vol->chunks_y;
-                if (chunk_get(&vol->chunks[aidx], lx, aly, lz) != 0)
-                    break;
-
-                uint8_t emitter_type = 255;
-                uint8_t source_mat = mat;
-
-                if (mat >= MAT_OAK_LEAF && mat <= MAT_AUTUMN_LEAF)
+                /* Down through the canopy to the first voxel that is not part of one: the
+                 * ground, which emits when open to the air (not under a trunk or a bough) */
+                for (;;)
                 {
-                    if (rng_float(&scan_rng) < 0.08f)
-                        emitter_type = ENV_PARTICLE_LEAF;
-                }
-                else if (mat == MAT_GRASS)
-                {
-                    if (rng_float(&scan_rng) < 0.015f)
+                    uint8_t below = MAT_AIR;
+                    int32_t by = volume_column_highest(vol, gx, gz, gy - 1, &below);
+                    if (by < 0)
+                        break;
+                    if (!scan->canopy[below])
                     {
-                        emitter_type = rng_float(&scan_rng) < 0.2f
-                            ? ENV_PARTICLE_FIREFLY
-                            : ENV_PARTICLE_DUST;
+                        if (by < gy - 1)
+                            add_candidate(scan, scan->seed + EMITTER_GROUND_SEED, gx, by, gz, below, local, &count);
+                        break;
                     }
+                    gy = by;
                 }
-                else if (mat >= MAT_FLOWER_RED && mat <= MAT_FLOWER_YELLOW)
-                {
-                    if (rng_float(&scan_rng) < 0.15f)
-                        emitter_type = ENV_PARTICLE_POLLEN;
-                }
+            }
+        }
 
-                if (emitter_type != 255)
-                {
-                    float above_y = vol->bounds.min_y + (float)ay * voxel_size;
-                    EnvEmitter *e = &sys->emitters[sys->emitter_count++];
-                    e->position = vec3_create(x, above_y, vol->bounds.min_z + gz * voxel_size);
-                    e->type = emitter_type;
-                    e->source_material = source_mat;
-                }
-
-                break;
+        scan->found[cc] = NULL;
+        scan->found_count[cc] = 0;
+        if (count > 0)
+        {
+            scan->found[cc] = (EmitterCandidate *)malloc((size_t)count * sizeof(EmitterCandidate));
+            if (scan->found[cc])
+            {
+                memcpy(scan->found[cc], local, (size_t)count * sizeof(EmitterCandidate));
+                scan->found_count[cc] = count;
             }
         }
     }
 }
 
-void env_particles_set_weather(EnvParticleSystem *sys, uint8_t type, float intensity)
+/* Type, then rank, then position: a total order, so the sample is the same however the
+ * candidates were found */
+static int compare_candidates(const void *a, const void *b)
 {
-    if (!sys)
+    const EmitterCandidate *x = (const EmitterCandidate *)a;
+    const EmitterCandidate *y = (const EmitterCandidate *)b;
+    if (x->type != y->type)
+        return x->type < y->type ? -1 : 1;
+    if (x->rank != y->rank)
+        return x->rank < y->rank ? -1 : 1;
+    if (x->gz != y->gz)
+        return x->gz < y->gz ? -1 : 1;
+    if (x->gx != y->gx)
+        return x->gx < y->gx ? -1 : 1;
+    return (x->gy > y->gy) - (x->gy < y->gy);
+}
+
+void env_particles_register_emitters(EnvParticleSystem *sys,
+                                      const VoxelVolume *vol,
+                                      float voxel_size,
+                                      JobSystem *jobs)
+{
+    if (!sys || !vol)
         return;
-    sys->weather_type = type;
-    sys->weather_intensity = intensity;
+
+    sys->emitter_count = 0;
+
+    const int32_t column_count = vol->chunks_x * vol->chunks_z;
+    EmitterScan scan;
+    scan.vol = vol;
+    scan.seed = sys->seed + EMITTER_SEED;
+    memset(scan.rule_start, 0, sizeof(scan.rule_start));
+    memset(scan.canopy, 0, sizeof(scan.canopy));
+    for (int32_t r = 0; r < g_env_emitter_rule_count; r++)
+    {
+        scan.rule_start[g_env_emitter_rules[r].material + 1]++;
+        if (g_env_emitter_rules[r].type == ENV_PARTICLE_LEAF)
+            scan.canopy[g_env_emitter_rules[r].material] = true;
+    }
+    for (int32_t m = 0; m < 256; m++)
+        scan.rule_start[m + 1] += scan.rule_start[m];
+    int32_t cursor[256];
+    memcpy(cursor, scan.rule_start, sizeof(cursor));
+    for (int32_t r = 0; r < g_env_emitter_rule_count; r++)
+        scan.rule_index[cursor[g_env_emitter_rules[r].material]++] = r;
+
+    scan.found = (EmitterCandidate **)calloc((size_t)column_count, sizeof(EmitterCandidate *));
+    scan.found_count = (int32_t *)calloc((size_t)column_count, sizeof(int32_t));
+    if (!scan.found || !scan.found_count)
+    {
+        free((void *)scan.found);
+        free(scan.found_count);
+        return;
+    }
+    job_parallel_for(jobs, column_count, 0, scan_emitter_chunk_columns, &scan);
+
+    int32_t total = 0;
+    for (int32_t cc = 0; cc < column_count; cc++)
+        total += scan.found_count[cc];
+    EmitterCandidate *all = (EmitterCandidate *)malloc((size_t)(total > 0 ? total : 1) * sizeof(EmitterCandidate));
+    if (all)
+    {
+        int32_t n = 0;
+        for (int32_t cc = 0; cc < column_count; cc++)
+        {
+            if (scan.found_count[cc] > 0)
+                memcpy(all + n, scan.found[cc], (size_t)scan.found_count[cc] * sizeof(EmitterCandidate));
+            n += scan.found_count[cc];
+        }
+
+        /* The lowest ranks of each type, up to its budget: an even random sample of the
+         * type's candidates, wherever in the world they are */
+        qsort(all, (size_t)total, sizeof(EmitterCandidate), compare_candidates);
+        int32_t taken[ENV_PARTICLE_TYPE_COUNT] = {0};
+        for (int32_t i = 0; i < total && sys->emitter_count < ENV_EMITTER_MAX; i++)
+        {
+            const EmitterCandidate *c = &all[i];
+            if (taken[c->type] >= s_emitter_budget[c->type])
+                continue;
+            taken[c->type]++;
+            EnvEmitter *e = &sys->emitters[sys->emitter_count++];
+            e->position = vec3_create(vol->bounds.min_x + ((float)c->gx + 0.5f) * voxel_size,
+                                      vol->bounds.min_y + (float)(c->gy + 1) * voxel_size,
+                                      vol->bounds.min_z + ((float)c->gz + 0.5f) * voxel_size);
+            e->gx = c->gx;
+            e->gy = c->gy;
+            e->gz = c->gz;
+            e->type = c->type;
+            e->source_material = c->material;
+        }
+        free(all);
+    }
+
+    for (int32_t cc = 0; cc < column_count; cc++)
+        free(scan.found[cc]);
+    free((void *)scan.found);
+    free(scan.found_count);
 }
 
 void env_particles_set_wind(EnvParticleSystem *sys, Vec3 direction, float strength)
@@ -310,9 +562,4 @@ void env_particles_set_wind(EnvParticleSystem *sys, Vec3 direction, float streng
     if (!sys)
         return;
     sys->wind_velocity = vec3_scale(direction, strength);
-}
-
-int32_t env_particles_get_active(const EnvParticleSystem *sys)
-{
-    return sys ? sys->active_count : 0;
 }

@@ -8,3 +8,7 @@
 
 third_party/** linguist-vendored
 **prebuilt.** linguist-generated
+
+# Line endings scripts need regardless of core.autocrlf (cmd labels break on LF)
+*.bat text eol=crlf
+*.sh text eol=lf

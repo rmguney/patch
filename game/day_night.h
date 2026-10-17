@@ -2,7 +2,6 @@
 #define PATCH_GAME_DAY_NIGHT_H
 
 #include "content/scenes.h"
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -18,6 +17,8 @@ extern "C"
     DayNightCycle day_night_create(float cycle_duration_seconds);
     void day_night_update(DayNightCycle *cycle, float dt);
     void day_night_apply_lighting(const DayNightCycle *cycle, SceneLighting *lighting);
+    /* 1 in full day, 0 in full night, eased through dawn and dusk */
+    float day_night_daylight(const DayNightCycle *cycle);
 
 #ifdef __cplusplus
 }

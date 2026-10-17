@@ -37,25 +37,10 @@ extern "C"
 
     typedef struct
     {
-        Vec3 position;
-        Vec3 normal;
-    } Vertex;
-
-    typedef struct
-    {
         float min_x, max_x;
         float min_y, max_y;
         float min_z, max_z;
     } Bounds3D;
-
-    typedef struct
-    {
-        Mat4 model;
-        Mat4 view;
-        Mat4 projection;
-        Vec4 color_alpha;
-        Vec4 params;
-    } PushConstants;
 
 /* Voxel material ID 0 is reserved for empty/air (engine constant, not content) */
 #define VOXEL_MATERIAL_EMPTY 0
@@ -70,7 +55,6 @@ extern "C"
 STATIC_ASSERT(sizeof(Vec3) == 12, "Vec3 must be 12 bytes for GPU alignment");
 STATIC_ASSERT(sizeof(Vec4) == 16, "Vec4 must be 16 bytes for GPU alignment");
 STATIC_ASSERT(sizeof(Mat4) == 64, "Mat4 must be 64 bytes for GPU alignment");
-STATIC_ASSERT(sizeof(PushConstants) == 224, "PushConstants size mismatch with shader");
 
 #ifdef __cplusplus
 }

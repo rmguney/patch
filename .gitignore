@@ -44,5 +44,6 @@ Thumbs.db
 # Exceptions
 !/README.md
 !.github/readme/
+!.github/workflows/
 !.github/legacy/
 !.github/legacy/CMakeLists.txt

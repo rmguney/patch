@@ -6,90 +6,41 @@
 #include "engine/core/math.h"
 #include "engine/physics/particles.h"
 #include "engine/sim/env_particles.h"
+#include "engine/sim/loading.h"
 #include "engine/voxel/volume.h"
 #include "engine/voxel/voxel_object.h"
-#include "engine/render/draw_list.h"
 #include "engine/render/voxel_push_constants.h"
-#include "engine/render/gpu_bvh.h"
-#include "engine/render/gpu_memory.h"
+#include "engine/render/vk_context.h"
+#include "engine/render/vk_swapchain.h"
+#include "engine/render/frame_resources.h"
+#include "engine/render/gpu_timer.h"
+#include "engine/render/render_targets.h"
+#include "engine/render/terrain_volume.h"
+#include "engine/render/gbuffer_pass.h"
+#include "engine/render/shadow_ao_pass.h"
+#include "engine/render/lighting_pass.h"
+#include "engine/render/post_pass.h"
+#include "engine/render/voxel_objects.h"
+#include "engine/render/particle_pass.h"
+#include "engine/render/ui_pass.h"
 #include "engine/platform/window.h"
 #include "content/scenes.h"
 #include <cstdint>
-#include <vector>
 
 namespace patch
 {
 
-    /* Material data for GPU upload (matches GPUMaterialColor layout) */
-    struct MaterialEntry
-    {
-        float r, g, b, emissive;
-        float roughness, metallic, flags, pad;
-    };
-
-    struct VulkanBuffer
-    {
-        VkBuffer buffer = VK_NULL_HANDLE;
-        VmaAllocation allocation = VK_NULL_HANDLE;
-    };
-
-    struct MeshBuffers
-    {
-        VulkanBuffer vertex;
-        VulkanBuffer index;
-        uint32_t index_count;
-    };
-
-    struct UIVertex
-    {
-        float x;
-        float y;
-        float r;
-        float g;
-        float b;
-        float a;
-    };
-    static_assert(sizeof(UIVertex) == 24, "UIVertex must be 24 bytes");
-
-    /* GPU instance data for batched box rendering */
-    struct alignas(16) BoxInstanceGPU
-    {
-        float model_col0[4]; /* mat4 column 0 */
-        float model_col1[4]; /* mat4 column 1 */
-        float model_col2[4]; /* mat4 column 2 */
-        float model_col3[4]; /* mat4 column 3 */
-        float color_alpha[4];
-        float params[4];
-    };
-    static_assert(sizeof(BoxInstanceGPU) == 96, "BoxInstanceGPU must be 96 bytes");
-
-    /* GPU metadata for raymarched voxel objects */
-    struct alignas(16) VoxelObjectGPU
-    {
-        float world_to_local[16]; /* mat4: transform ray to object space */
-        float local_to_world[16]; /* mat4: transform hit back to world */
-        float bounds_min[4];      /* Object AABB min (xyz), voxel_size (w) */
-        float bounds_max[4];      /* Object AABB max (xyz), grid_size (w) */
-        float position[4];        /* World position (xyz), active flag (w) */
-        uint32_t atlas_slice;     /* Z-slice in 3D atlas */
-        uint32_t material_base;   /* Base material offset (for future palette per-object) */
-        uint32_t flags;           /* Bitflags: sleeping, dirty, etc. */
-        uint32_t occupancy_mask;  /* 8-bit region occupancy (2×2×2 regions of 8³) */
-    };
-    static_assert(sizeof(VoxelObjectGPU) == 192, "VoxelObjectGPU must be 192 bytes");
-
+    /*
+     * Facade over the Vulkan subsystems: it owns them, sequences their work within a frame and
+     * keeps the per-frame state they share (camera, quality settings, frame slot). Resources
+     * live in three groups with their own lifetimes: device lifetime (pipelines, layouts,
+     * descriptor sets, per-frame buffers), size dependent (RenderTargets and the descriptor
+     * writes that reference them, see bind_targets()) and per scene (terrain, voxel objects).
+     */
     class Renderer
     {
     public:
-        static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-        static constexpr int32_t RAYMARCH_MIN_STEPS = 512;
-
-        static constexpr uint32_t GBUFFER_ALBEDO = 0;
-        static constexpr uint32_t GBUFFER_NORMAL = 1;
-        static constexpr uint32_t GBUFFER_MATERIAL = 2;
-        static constexpr uint32_t GBUFFER_LINEAR_DEPTH = 3;
-        static constexpr uint32_t GBUFFER_WORLD_POS = 4;
-        static constexpr uint32_t GBUFFER_COUNT = 5;
+        using GPUTimings = GpuTimings;
 
         Renderer(Window &window);
         ~Renderer();
@@ -103,734 +54,218 @@ namespace patch
         const char *get_init_error() const { return init_error_; }
 
         /* DEBUG: Accessors for debug overlay */
-        bool DEBUG_is_gbuffer_initialized() const { return gbuffer_initialized_; }
-        bool DEBUG_is_gbuffer_pipeline_valid() const { return gbuffer_pipeline_ != VK_NULL_HANDLE; }
-        bool DEBUG_is_gbuffer_descriptors_valid() const { return gbuffer_descriptor_sets_[0] != VK_NULL_HANDLE; }
-        bool DEBUG_is_voxel_resources_initialized() const { return voxel_resources_initialized_; }
-        bool DEBUG_is_vobj_resources_initialized() const { return vobj_resources_initialized_; }
         void DEBUG_set_terrain_debug_mode(int mode) { terrain_debug_mode_ = mode; }
         int DEBUG_get_terrain_debug_mode() const { return terrain_debug_mode_; }
         int DEBUG_get_terrain_draw_count() const { return terrain_draw_count_; }
 
-        void set_material_palette(const Vec3 *colors, int32_t count);
-        void set_material_palette_full(const MaterialEntry *materials, int32_t count);
+        void set_material_palette(const MaterialEntry *materials, int32_t count);
         void set_scene_lighting(const SceneLighting *lighting);
 
-        void begin_frame(uint32_t *image_index);
+        /*
+         * Frame protocol: begin_frame() returns false when no frame can be rendered
+         * (window minimized, swapchain out of date and being recreated, device lost).
+         * In that case the caller must skip every recording call for this iteration,
+         * including end_frame(). When it returns true, end_frame() must be called.
+         * A frame after a resize is rendered at the new size: begin_frame() rebuilds the
+         * swapchain and every size-dependent resource first.
+         */
+        bool begin_frame(uint32_t *image_index);
         void begin_main_pass(uint32_t image_index);
         void end_frame(uint32_t image_index);
 
-        /* Deferred rendering pass methods */
-        void prepare_gbuffer_compute(const VoxelVolume *vol, const VoxelObjectWorld *objects, bool has_objects_or_particles = false); /* Call before begin_gbuffer_pass */
+        /* Set when the renderer cannot continue (device lost, failed swapchain or render target
+         * rebuild, failed scene resource creation). The app should close its window and shut
+         * down normally. */
+        bool quit_requested() const { return quit_requested_; }
+
+        /* Deferred rendering, in call order within a frame. The objects and particles draw on
+         * top of the terrain trace; the raster pass for them (depth prime and the G-buffer
+         * attachments) runs only when one of them has something to draw. */
+        void prepare_gbuffer_compute();
         void begin_gbuffer_pass();
+        void render_voxel_objects_raymarched(const VoxelObjectWorld *world);
+        void render_particles_raymarched(const ParticleSystem *sys, const EnvParticleSystem *env_sys);
         void end_gbuffer_pass();
-        void render_gbuffer_terrain(const VoxelVolume *vol);
         void render_deferred_lighting(uint32_t image_index);
 
-        void prepare_for_scene_switch();
-        void init_volume_for_raymarching(const VoxelVolume *vol);
         /*
-         * Upload dirty chunks to GPU. Returns count of chunks uploaded.
-         * Caller must call volume_mark_chunks_uploaded() after this returns
+         * Scene resources, loaded behind the loading screen: begin_scene_load() (the terrain and
+         * room for max_objects voxel objects), then poll_scene_load() once per loading screen
+         * frame until it returns true. The terrain's CPU work (shadow volume packing, chunk
+         * staging) runs on worker threads meanwhile, as stages of state, so the first frame of
+         * the scene follows the loading screen without a wait. Both set quit_requested() on
+         * failure (and poll_scene_load() then returns true).
+         */
+        static constexpr int32_t SCENE_LOAD_STAGES = 2;
+        void prepare_for_scene_switch();
+        void begin_scene_load(VoxelVolume *vol, uint32_t max_objects, LoadingState *state);
+        bool poll_scene_load(LoadingState *state);
+
+        /*
+         * Upload dirty chunks to GPU. Returns the number of indices written to out_indices.
+         * Caller must call volume_mark_chunks_uploaded() with them after this returns
          * to avoid re-uploading the same chunks next frame.
          */
         int32_t upload_dirty_chunks(const VoxelVolume *vol, int32_t *out_indices, int32_t max_indices);
 
-        /* Update shadow volume from current terrain state (call after terrain changes) */
-        void update_shadow_volume(VoxelVolume *vol,
-                                  const VoxelObjectWorld *objects = nullptr,
-                                  const ParticleSystem *particles = nullptr);
+        /* Repack and upload the dirty parts of the terrain shadow volume */
+        void update_shadow_volume(VoxelVolume *vol);
 
-        /* GPU raymarched particle rendering */
-        void render_particles_raymarched(const ParticleSystem *sys,
-                                         const EnvParticleSystem *env_sys = nullptr);
-
-        /* GPU raymarched voxel object rendering */
-        void render_voxel_objects_raymarched(const VoxelObjectWorld *world);
-        bool init_voxel_object_resources(uint32_t max_objects);
-        void destroy_voxel_object_resources();
-        void mark_vobj_dirty(uint32_t index);
-        bool is_vobj_dirty(uint32_t index) const;
-        void clear_vobj_dirty(uint32_t index);
-
-        /* Reset renderer state for scene switch (invalidates temporal history, clears object tracking) */
-        void reset_scene_state();
-
+        /* Into the swapchain image's rendering scope; opens one (cleared) when no pass did */
         void begin_ui();
         void end_ui();
-        void draw_ui_quad(float cx, float cy, float w, float h, Vec3 color, float alpha);
-        void draw_ui_text(float x, float y, float pixel, Vec3 color, float alpha, const char *text);
 
         /* Pixel-space UI helpers (top-left origin, sizes in pixels). */
         void draw_ui_quad_px(float x_px, float y_px, float w_px, float h_px, Vec3 color, float alpha);
         void draw_ui_text_px(float x_px, float y_px, float text_h_px, Vec3 color, float alpha, const char *text);
 
-        static inline float ui_text_width_px(const char *text, float text_h_px)
+        static float ui_text_width_px(const char *text, float text_h_px)
         {
             if (!text || text_h_px <= 0.0f)
                 return 0.0f;
             int32_t len = 0;
             for (const char *p = text; *p; ++p)
                 ++len;
-            const float unit_px = text_h_px / 7.0f;
+            const float unit_px = ui_text_unit_px(text_h_px);
             return (float)len * unit_px * 6.0f - unit_px;
         }
 
-        void set_orthographic(float width, float height, float depth, float near_plane = 0.1f);
         void set_perspective(float fov_y_degrees, float near_val, float far_val);
-        void set_view_angle(float yaw_degrees, float distance);
-        void set_view_angle_at(float yaw_degrees, float distance, Vec3 target);
-        void set_view_angle_at(float yaw_degrees, float distance, Vec3 target, float dt);
         void set_look_at(Vec3 eye, Vec3 target);
-        void set_look_at(Vec3 eye, Vec3 target, float dt);
+        /* Every WM_SIZE, including minimize and restore */
         void on_resize();
-        bool screen_to_world_floor(float screen_x, float screen_y, float floor_y, Vec3 *out_world) const;
         void screen_to_ray(float screen_x, float screen_y, Vec3 *out_origin, Vec3 *out_dir) const;
+
+        /* Size of the images being rendered (the swapchain's) */
+        VkExtent2D get_render_extent() const { return swapchain_.extent(); }
 
         Vec3 get_camera_position() const { return camera_position_; }
         Vec3 get_camera_forward() const { return camera_forward_; }
-        const Frustum &get_frustum() const { return frustum_; }
-        bool is_rt_supported() const { return rt_supported_; }
 
         void set_shadow_quality(int level);
-        void set_object_shadow_quality(int level);
         void set_shadow_contact_hardening(bool enabled);
         void set_ao_quality(int level);
-        void set_lod_quality(int level);
-        int get_shadow_quality() const { return shadow_quality_; }
-        int get_object_shadow_quality() const { return object_shadow_quality_; }
-        bool get_shadow_contact_hardening() const { return shadow_contact_hardening_; }
-        int get_ao_quality() const { return ao_quality_; }
-        int get_lod_quality() const { return lod_quality_; }
         void set_denoise_quality(int level);
-        int get_denoise_quality() const { return denoise_quality_; }
         void set_taa_quality(int level);
-        int get_taa_quality() const { return taa_quality_; }
 
-        void set_interp_alpha(float alpha) { interp_alpha_ = alpha; }
-        float get_interp_alpha() const { return interp_alpha_; }
+        /* Interpolation of objects and particles: alpha blends the last two of the sim_ticks
+         * simulation steps taken so far (the scene's count, so the particles' motion vectors
+         * follow it) */
+        void set_interp_alpha(float alpha, int64_t sim_ticks);
 
-        /* Adaptive quality control */
+        /* Adaptive quality control: steps the preset by the recent frame time (see
+         * recent_frame_ms_), once per app loop iteration */
         void set_adaptive_quality(bool enabled);
         bool get_adaptive_quality() const { return adaptive_quality_; }
-        void update_adaptive_quality(float frame_time_ms);
+        void update_adaptive_quality();
 
         /* Master quality preset control */
         void set_master_preset(int preset);
         void apply_preset(int preset);
-        int get_master_preset() const { return target_preset_; }
 
-    public:
-        enum class PresentMode
-        {
-            VSync,
-            Mailbox,
-            Immediate
-        };
-        PresentMode get_present_mode() const { return present_mode_; }
-
-    private:
-        enum class ProjectionMode
-        {
-            Orthographic,
-            Perspective
-        };
-
-        void update_perspective_projection();
-        bool create_instance();
-        bool select_physical_device();
-        bool find_queue_families();
-        bool create_logical_device();
-        bool create_swapchain();
-        bool create_render_pass();
-        bool create_depth_resources();
-        bool create_framebuffers();
-        bool create_command_pool();
-        bool create_sync_objects();
-        bool recreate_swapchain();
-        void destroy_swapchain_objects();
-        bool create_pipeline(const uint32_t *vert_code, size_t vert_size,
-                             const uint32_t *frag_code, size_t frag_size,
-                             bool enable_blend, bool depth_write,
-                             VkCullModeFlags cull_mode, VkPipeline *out_pipeline,
-                             bool depth_test = true);
-        bool create_pipelines();
-        bool create_pipeline_cache();
-        void save_pipeline_cache();
-        void destroy_pipeline_cache();
-        bool create_voxel_descriptor_layout();
-        bool create_voxel_descriptors(int32_t total_chunks);
-        void update_voxel_depth_descriptor();
-        bool create_compute_pipeline(const uint32_t *code, size_t code_size,
-                                     VkPipelineLayout layout, VkPipeline *out_pipeline);
-
-        void create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                           VkMemoryPropertyFlags properties, VulkanBuffer *buffer);
-        void destroy_buffer(VulkanBuffer *buffer);
-
-        void create_quad_mesh();
-        void create_ui_buffers();
-        void add_ui_quad_ndc(float cx, float cy, float w, float h, Vec3 color, float alpha);
-
-        void cleanup();
-
-        Window &window_;
-
-        VkInstance instance_;
-        VkPhysicalDevice physical_device_;
-        VkDevice device_;
-        GpuAllocator gpu_allocator_;
-        VkQueue graphics_queue_;
-        VkQueue present_queue_;
-        uint32_t graphics_family_;
-        uint32_t present_family_;
-
-        VkSurfaceKHR surface_;
-        VkSwapchainKHR swapchain_;
-        VkFormat swapchain_format_;
-        VkExtent2D swapchain_extent_;
-
-        std::vector<VkImage> swapchain_images_;
-        std::vector<VkImageView> swapchain_image_views_;
-        std::vector<VkFramebuffer> framebuffers_;
-
-        VkRenderPass render_pass_;
-        VkRenderPass render_pass_load_; /* LOAD_OP_LOAD variant for UI after blit */
-        VkPipelineLayout pipeline_layout_;
-        VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
-        VkPipeline ui_pipeline_;
-
-        VulkanBuffer lighting_ubo_[MAX_FRAMES_IN_FLIGHT];
-        void *lighting_ubo_mapped_[MAX_FRAMES_IN_FLIGHT] = {};
-        SceneLightingUBO scene_lighting_ubo_data_{};
-
-        Vec3 camera_target_;
-        Vec3 prev_camera_target_;
-        bool camera_initialized_;
-
-        VkCommandPool command_pool_;
-        VkCommandBuffer command_buffers_[MAX_FRAMES_IN_FLIGHT];
-
-        VkSemaphore image_available_semaphores_[MAX_FRAMES_IN_FLIGHT];
-        VkSemaphore render_finished_semaphores_[MAX_FRAMES_IN_FLIGHT];
-        VkFence in_flight_fences_[MAX_FRAMES_IN_FLIGHT];
-
-        /* Timeline semaphore for async uploads */
-        VkSemaphore upload_timeline_semaphore_;
-        uint64_t upload_timeline_value_;
-
-        /* Deferred destruction for staging buffers */
-        static constexpr uint32_t MAX_PENDING_DESTROYS = 8;
-        struct PendingDestroy
-        {
-            VulkanBuffer buffer;
-            uint64_t timeline_value;
-        };
-        PendingDestroy pending_destroys_[MAX_PENDING_DESTROYS];
-        uint32_t pending_destroy_count_;
-
-        /* Per-frame upload command buffers - separate for terrain and vobj to avoid
-           resetting a pending command buffer (causes device lost on some drivers) */
-        VkCommandBuffer upload_cmd_[MAX_FRAMES_IN_FLIGHT];
-        VkCommandBuffer vobj_upload_cmd_[MAX_FRAMES_IN_FLIGHT];
-
-        uint32_t current_frame_;
-
-        VkImage depth_image_;
-        VmaAllocation depth_image_memory_;
-        VkImageView depth_image_view_;
-        VkSampler depth_sampler_;
-
-        MeshBuffers quad_mesh_;
-
-        static constexpr uint32_t UI_MAX_QUADS = 20000;
-        VulkanBuffer ui_vertex_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
-        VulkanBuffer ui_index_buffer_{VK_NULL_HANDLE, VK_NULL_HANDLE};
-        void *ui_vertex_mapped_ = nullptr;
-        void *ui_index_mapped_ = nullptr;
-        uint32_t ui_vertex_capacity_ = 0;
-        uint32_t ui_index_capacity_ = 0;
-        std::vector<UIVertex> ui_vertices_;
-        std::vector<uint32_t> ui_indices_;
-
-        Mat4 view_matrix_;
-        Mat4 projection_matrix_;
-        Mat4 prev_view_matrix_;       /* Previous frame for temporal reprojection */
-        Mat4 prev_projection_matrix_; /* Previous frame for temporal reprojection */
-        uint32_t total_frame_count_;  /* Total frames rendered (for temporal effects) */
-        float ortho_base_width_;
-        float ortho_base_height_;
-        float ortho_base_depth_;
-        float ortho_half_width_;
-        float ortho_half_height_;
-        float ortho_near_plane_ = 0.1f;
-        ProjectionMode projection_mode_;
-        PresentMode present_mode_ = PresentMode::Mailbox; /* Default: uncapped FPS */
-        float perspective_fov_y_degrees_;
-        float perspective_near_;
-        float perspective_far_;
-        Vec3 camera_position_;
-        Vec3 camera_forward_;
-        Frustum frustum_;
-        const char *init_error_;
-
-        Vec3 material_palette_[VOXEL_MATERIAL_MAX];
-        MaterialEntry material_entries_[VOXEL_MATERIAL_MAX];
-        int32_t material_count_;
-        bool use_full_materials_;
-
-        /* Voxel ray rendering resources */
-        VkDescriptorSetLayout voxel_descriptor_layout_;
-        VkDescriptorPool voxel_descriptor_pool_;
-        VkDescriptorSet voxel_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
-
-        VulkanBuffer voxel_data_buffer_;                             /* SSBO: chunk voxel material IDs */
-        VulkanBuffer voxel_headers_buffer_;                          /* SSBO: chunk occupancy headers */
-        VulkanBuffer voxel_material_buffer_;                         /* UBO: material palette */
-        VulkanBuffer voxel_temporal_ubo_[MAX_FRAMES_IN_FLIGHT];      /* UBO: prev_view_proj */
-        void *voxel_temporal_ubo_mapped_[MAX_FRAMES_IN_FLIGHT] = {}; /* Persistent mapping */
-
-        /* Persistent staging buffers for chunk uploads (avoids per-frame allocation) */
-        VulkanBuffer staging_voxels_buffer_;
-        VulkanBuffer staging_headers_buffer_;
-        void *staging_voxels_mapped_ = nullptr;
-        void *staging_headers_mapped_ = nullptr;
-
-        int32_t voxel_total_chunks_ = 0;
-        int32_t raymarch_max_steps_ = RAYMARCH_MIN_STEPS;
-        bool voxel_resources_initialized_ = false;
-
-        bool rt_supported_ = false;
-        bool adaptive_quality_ = false; /* Dynamic quality adjustment (default off) */
-        int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
-        static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
-        int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
-        int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
-        int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
-        int object_shadow_quality_ = QUALITY_DEFAULT_SHADOW;
-        bool shadow_contact_hardening_ = QUALITY_DEFAULT_SHADOW_CONTACT;
-        int ao_quality_ = QUALITY_DEFAULT_AO;
-        int lod_quality_ = QUALITY_DEFAULT_LOD;
-        int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
-        int taa_quality_ = QUALITY_DEFAULT_TAA;
-        float interp_alpha_ = 0.0f;          /* Interpolation factor for particle/object smoothing */
-        int terrain_debug_mode_ = 0;         /* DEBUG: 0=normal, 1=AABB visualization */
-        mutable int terrain_draw_count_ = 0; /* DEBUG: Count of terrain draw calls */
-
-        /* Compute shader infrastructure for temporal shadow resolve */
-        VkPipeline temporal_compute_pipeline_;
-        VkPipelineLayout temporal_compute_layout_;
-
-        VkDescriptorSetLayout temporal_shadow_input_layout_;  /* Set 0: depth/normal/motion/current/history */
-        VkDescriptorSetLayout temporal_shadow_output_layout_; /* Set 1: resolved shadow output */
-        VkDescriptorPool temporal_shadow_descriptor_pool_;
-        VkDescriptorSet temporal_shadow_input_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkDescriptorSet temporal_shadow_output_sets_[MAX_FRAMES_IN_FLIGHT];
-        bool temporal_shadow_history_valid_ = false;
-
-        /* Unified raymarching compute pipelines */
-        VkPipeline gbuffer_compute_pipeline_;
-        VkPipelineLayout gbuffer_compute_layout_;
-        VkDescriptorSetLayout gbuffer_compute_terrain_layout_; /* Set 0: terrain data */
-        VkDescriptorSetLayout gbuffer_compute_vobj_layout_;    /* Set 1: voxel objects */
-        VkDescriptorSetLayout gbuffer_compute_output_layout_;  /* Set 2: G-buffer outputs */
-        VkDescriptorPool gbuffer_compute_descriptor_pool_;
-        VkDescriptorSet gbuffer_compute_terrain_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkDescriptorSet gbuffer_compute_vobj_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkDescriptorSet gbuffer_compute_output_sets_[MAX_FRAMES_IN_FLIGHT];
-
-        VkPipeline shadow_compute_pipeline_;
-        VkPipelineLayout shadow_compute_layout_;
-        VkDescriptorSetLayout shadow_compute_input_layout_;   /* Set 0: chunk headers + shadow vol */
-        VkDescriptorSetLayout shadow_compute_gbuffer_layout_; /* Set 1: G-buffer depth/normal */
-        VkDescriptorSetLayout shadow_compute_output_layout_;  /* Set 2: shadow output */
-        VkDescriptorPool shadow_compute_descriptor_pool_;
-        VkDescriptorSet shadow_compute_input_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkDescriptorSet shadow_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkDescriptorSet shadow_compute_output_sets_[MAX_FRAMES_IN_FLIGHT];
-
-        /* Shadow output buffer for compute pass */
-        VkImage shadow_output_image_;
-        VmaAllocation shadow_output_memory_;
-        VkImageView shadow_output_view_;
-
-        /* AO compute infrastructure */
-        VkPipeline ao_compute_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout ao_compute_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool ao_compute_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSet ao_compute_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet ao_compute_gbuffer_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet ao_compute_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* AO output buffer */
-        VkImage ao_output_image_ = VK_NULL_HANDLE;
-        VmaAllocation ao_output_memory_ = VK_NULL_HANDLE;
-        VkImageView ao_output_view_ = VK_NULL_HANDLE;
-
-        /* AO history buffers for temporal accumulation */
-        VkImage ao_history_images_[2] = {};
-        VmaAllocation ao_history_image_memory_[2] = {};
-        VkImageView ao_history_image_views_[2] = {};
-        bool temporal_ao_history_valid_ = false;
-        int ao_history_write_index_ = 0;
-
-        /* Temporal AO pipeline */
-        VkPipeline temporal_ao_compute_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout temporal_ao_compute_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool temporal_ao_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSet temporal_ao_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet temporal_ao_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        bool ao_resources_initialized_ = false;
-
-        /* Spatial denoise compute infrastructure */
-        VkPipeline spatial_denoise_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout spatial_denoise_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool spatial_denoise_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout spatial_denoise_input_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout spatial_denoise_output_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSet spatial_denoise_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet spatial_denoise_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* Intermediate lit color buffer (lighting output before denoise) */
-        VkImage lit_color_image_ = VK_NULL_HANDLE;
-        VmaAllocation lit_color_memory_ = VK_NULL_HANDLE;
-        VkImageView lit_color_view_ = VK_NULL_HANDLE;
-
-        /* Denoised color buffer (denoise output) */
-        VkImage denoised_color_image_ = VK_NULL_HANDLE;
-        VmaAllocation denoised_color_memory_ = VK_NULL_HANDLE;
-        VkImageView denoised_color_view_ = VK_NULL_HANDLE;
-
-        /* Intermediate framebuffer for lighting pass targeting lit_color_image_ */
-        VkFramebuffer deferred_lighting_intermediate_fb_ = VK_NULL_HANDLE;
-
-        bool spatial_denoise_initialized_ = false;
-
-        /* TAA (Temporal Anti-Aliasing) resources */
-        VkImage taa_history_images_[2] = {};
-        VmaAllocation taa_history_memory_[2] = {};
-        VkImageView taa_history_views_[2] = {};
-        VkPipeline taa_compute_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout taa_compute_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool taa_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout taa_input_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout taa_output_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSet taa_input_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet taa_output_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        bool taa_history_valid_ = false;
-        int taa_history_write_index_ = 0;
-        bool taa_initialized_ = false;
-
-        bool compute_raymarching_enabled_ = true; /* Use compute path when available */
-        bool compute_resources_initialized_ = false;
-        bool gbuffer_compute_dispatched_ = false; /* Set when compute fills gbuffer this frame */
-
-    public:
-        void set_compute_raymarching_enabled(bool enabled) { compute_raymarching_enabled_ = enabled; }
-        bool is_compute_raymarching_enabled() const { return compute_raymarching_enabled_ && compute_resources_initialized_; }
-
-    private:
-        /* History buffers for temporal accumulation (ping-pong) */
-        VkImage history_images_[2];
-        VmaAllocation history_image_memory_[2];
-        VkImageView history_image_views_[2];
-        int history_write_index_;
-
-        /* State tracking to skip redundant binds */
-        VkPipeline last_bound_pipeline_;
-        VkDescriptorSet last_bound_descriptor_set_;
-
-        /* Helpers for state-tracked binding */
-        void bind_pipeline(VkPipeline pipeline);
-        void bind_descriptor_set(VkDescriptorSet set);
-        void reset_bind_state();
-
-        /* G-buffer resources for deferred rendering */
-        VkImage gbuffer_images_[GBUFFER_COUNT];
-        VmaAllocation gbuffer_memory_[GBUFFER_COUNT];
-        VkImageView gbuffer_views_[GBUFFER_COUNT];
-        VkSampler gbuffer_sampler_;
-        VkRenderPass gbuffer_render_pass_;
-        VkRenderPass gbuffer_render_pass_load_;            /* Uses LOAD_OP_LOAD for colors, CLEAR for depth */
-        VkRenderPass gbuffer_render_pass_load_with_depth_; /* Uses LOAD_OP_LOAD for colors AND depth */
-        bool depth_primed_this_frame_ = false;
-        VkFramebuffer gbuffer_framebuffer_;
-        VkDescriptorSetLayout gbuffer_descriptor_layout_;
-        VkDescriptorPool gbuffer_descriptor_pool_;
-        VkDescriptorSet gbuffer_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
-        VkPipeline gbuffer_pipeline_;
-        VkPipelineLayout gbuffer_pipeline_layout_;
-
-        /* Deferred lighting pass */
-        VkPipeline deferred_lighting_pipeline_;
-        VkPipelineLayout deferred_lighting_layout_;
-        VkDescriptorSetLayout deferred_lighting_descriptor_layout_;
-        VkDescriptorPool deferred_lighting_descriptor_pool_;
-        VkDescriptorSet deferred_lighting_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
-
-        VkDescriptorSetLayout scene_lighting_descriptor_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSet scene_lighting_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-        VkDescriptorSet shadow_lighting_sets_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* Depth prime pass (copies linear_depth texture to hardware depth buffer) */
-        VkRenderPass depth_prime_render_pass_;
-        VkFramebuffer depth_prime_framebuffer_;
-        VkPipeline depth_prime_pipeline_;
-        VkPipelineLayout depth_prime_layout_;
-        VkDescriptorSetLayout depth_prime_descriptor_layout_;
-        VkDescriptorPool depth_prime_descriptor_pool_;
-        VkDescriptorSet depth_prime_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
-        bool depth_prime_initialized_ = false;
-
-        /* Shadow volume for sparse RT tracing */
-        VkImage shadow_volume_image_;
-        VmaAllocation shadow_volume_memory_;
-        VkImageView shadow_volume_view_;
-        VkSampler shadow_volume_sampler_;
-        uint32_t shadow_volume_dims_[3];
-        uint32_t shadow_volume_last_frame_;
-
-        std::vector<uint8_t> shadow_mip0_;
-        std::vector<uint8_t> shadow_mip1_;
-        std::vector<uint8_t> shadow_mip2_;
-        uint32_t shadow_mip_dims_[3][3];
-        bool shadow_volume_initialized_;
-        int32_t shadow_object_count_ = 0;
-        int32_t shadow_particle_count_ = 0;
-        int32_t shadow_particle_aabb_min_[3] = {0, 0, 0};
-        int32_t shadow_particle_aabb_max_[3] = {0, 0, 0};
-        bool shadow_particle_aabb_valid_ = false;
-
-        /* Shadow stamping budget: track per-object state to avoid full rebuild */
-        static constexpr uint32_t MAX_SHADOW_OBJECTS = 512;
-        static constexpr int32_t SHADOW_STAMP_BUDGET = 50;        /* Max objects to stamp per frame */
-        static constexpr float SHADOW_POSITION_THRESHOLD = 0.01f; /* Movement threshold for re-stamp */
-        struct ShadowObjectState
-        {
-            Vec3 position;
-            Quat orientation;
-            bool valid;
-            int32_t aabb_min[3];
-            int32_t aabb_max[3];
-        };
-        ShadowObjectState shadow_object_states_[MAX_SHADOW_OBJECTS] = {};
-        int32_t shadow_stamp_cursor_ = 0; /* Round-robin cursor for over-budget stamping */
-        bool shadow_needs_terrain_update_ = false;
-        std::vector<uint8_t> particle_shadow_mask_; /* Track particle-touched shadow voxels */
-
-        /* Triple-buffered async shadow volume upload with persistent staging */
-        static constexpr uint32_t SHADOW_UPLOAD_BUFFERS = 3;
-        VkFence shadow_upload_fences_[SHADOW_UPLOAD_BUFFERS] = {};
-        VulkanBuffer shadow_staging_buffers_[SHADOW_UPLOAD_BUFFERS] = {};
-        void *shadow_staging_mapped_[SHADOW_UPLOAD_BUFFERS] = {}; /* Persistent mapping */
-        VkDeviceSize shadow_staging_size_ = 0;                    /* Size of each staging buffer */
-        VkCommandBuffer shadow_upload_cmds_[SHADOW_UPLOAD_BUFFERS] = {};
-        bool shadow_upload_pending_[SHADOW_UPLOAD_BUFFERS] = {};
-        uint32_t shadow_upload_index_ = 0;
-        void wait_for_shadow_upload(uint32_t index);
-        void cleanup_shadow_upload(uint32_t index);
-        void cleanup_all_shadow_uploads();
-        void create_shadow_staging_buffers(VkDeviceSize size);
-        void destroy_shadow_staging_buffers();
-
-        /* Blue noise texture for temporal sampling */
-        VkImage blue_noise_image_;
-        VmaAllocation blue_noise_memory_;
-        VkImageView blue_noise_view_;
-        VkSampler blue_noise_sampler_;
-
-        /* Motion vectors for temporal reprojection */
-        VkImage motion_vector_image_;
-        VmaAllocation motion_vector_memory_;
-        VkImageView motion_vector_view_;
-
-        /* Voxel object GPU raymarching */
-        static constexpr uint32_t VOBJ_ATLAS_MAX_OBJECTS = 512;
-        static constexpr uint32_t VOBJ_GRID_DIM = 32;
-        VkImage vobj_atlas_image_ = VK_NULL_HANDLE;
-        VmaAllocation vobj_atlas_memory_ = VK_NULL_HANDLE;
-        VkImageView vobj_atlas_view_ = VK_NULL_HANDLE;
-        VkSampler vobj_atlas_sampler_ = VK_NULL_HANDLE;
-        VulkanBuffer vobj_metadata_buffer_[MAX_FRAMES_IN_FLIGHT];
-        void *vobj_metadata_mapped_[MAX_FRAMES_IN_FLIGHT];
-        VulkanBuffer vobj_staging_buffer_;
-        void *vobj_staging_mapped_;
-        uint64_t vobj_upload_pending_[MAX_FRAMES_IN_FLIGHT] = {};
-
-        /* GPU BVH for object acceleration */
-        VulkanBuffer bvh_buffer_;
-        void *bvh_mapped_ = nullptr;
-        GPUBVHBuffer bvh_data_;
-        BVH *cpu_bvh_ = nullptr;
-
-        VkPipeline vobj_pipeline_;
-        VkPipelineLayout vobj_pipeline_layout_;
-        VkDescriptorSetLayout vobj_descriptor_layout_;
-        VkDescriptorPool vobj_descriptor_pool_;
-        VkDescriptorSet vobj_descriptor_sets_[MAX_FRAMES_IN_FLIGHT];
-
-        uint32_t vobj_max_objects_ = 0;
-        uint32_t vobj_dirty_mask_[(VOBJ_ATLAS_MAX_OBJECTS + 31) / 32] = {};
-        uint32_t vobj_revision_cache_[VOBJ_ATLAS_MAX_OBJECTS] = {};
-        uint32_t vobj_sort_indices_[VOBJ_ATLAS_MAX_OBJECTS] = {};
-        float vobj_sort_distances_[VOBJ_ATLAS_MAX_OBJECTS] = {};
-        bool vobj_resources_initialized_ = false;
-        int32_t vobj_visible_count_ = 0; /* Compacted visible object count for GPU dispatch */
-        int32_t vobj_total_count_ = 0;   /* Total object count (active + inactive) for instance draw */
-        const VoxelObjectWorld *vobj_last_world_ = nullptr;
-        int32_t vobj_prev_object_count_ = 0;
-
-        /* Raymarched particle resources */
-        struct SizedBuffer
-        {
-            VkBuffer buffer = VK_NULL_HANDLE;
-            VmaAllocation memory = VK_NULL_HANDLE;
-            VkDeviceSize size = 0;
-        };
-        SizedBuffer particle_ssbo_;
-        VkPipeline particle_pipeline_ = VK_NULL_HANDLE;
-        VkPipelineLayout particle_pipeline_layout_ = VK_NULL_HANDLE;
-        VkDescriptorSetLayout particle_descriptor_layout_ = VK_NULL_HANDLE;
-        VkDescriptorPool particle_descriptor_pool_ = VK_NULL_HANDLE;
-        VkDescriptorSet particle_descriptor_set_ = VK_NULL_HANDLE;
-        bool particle_resources_initialized_ = false;
-
-        bool gbuffer_initialized_ = false;
-
-        /* Cached volume parameters for deferred lighting (set by render_gbuffer_terrain). */
-        float deferred_bounds_min_[3] = {0.0f, 0.0f, 0.0f};
-        float deferred_bounds_max_[3] = {0.0f, 0.0f, 0.0f};
-        float deferred_voxel_size_ = 1.0f;
-        int32_t deferred_grid_size_[3] = {0, 0, 0};
-        int32_t deferred_total_chunks_ = 0;
-        int32_t deferred_chunks_dim_[3] = {0, 0, 0};
-
-        /* GPU profiling — 8 pass pairs (start/end) = 16 timestamps */
-        static constexpr uint32_t GPU_TIMESTAMP_COUNT = 16;
-        VkQueryPool timestamp_query_pool_;
-        float timestamp_period_ns_;
-        bool timestamps_supported_;
-        char gpu_name_[256];
-
-        bool create_timestamp_query_pool();
-        void destroy_timestamp_query_pool();
-
-        bool create_gbuffer_resources();
-        bool create_gbuffer_render_pass();
-        bool create_gbuffer_pipeline();
-        bool create_deferred_lighting_pipeline();
-        bool create_gbuffer_descriptor_sets();
-        bool create_deferred_lighting_descriptor_sets();
-        bool create_scene_lighting_descriptors();
-        void update_deferred_shadow_buffer_descriptor(uint32_t frame_index, VkImageView shadow_view);
-        void update_denoise_color_input(uint32_t frame_index, VkImageView color_view);
-        void destroy_gbuffer_resources();
-        bool init_deferred_pipeline();
-        bool init_deferred_descriptors();
-
-        bool create_shadow_volume_resources(uint32_t width, uint32_t height, uint32_t depth);
-        void destroy_shadow_volume_resources();
-        void upload_shadow_volume(const uint8_t *mip0, uint32_t w0, uint32_t h0, uint32_t d0,
-                                  const uint8_t *mip1, uint32_t w1, uint32_t h1, uint32_t d1,
-                                  const uint8_t *mip2, uint32_t w2, uint32_t h2, uint32_t d2);
-
-        bool create_blue_noise_texture();
-        void destroy_blue_noise_texture();
-
-        bool create_motion_vector_resources();
-        void destroy_motion_vector_resources();
-
-        bool create_vobj_atlas_resources(uint32_t max_objects);
-        bool create_vobj_pipeline();
-        bool create_vobj_descriptor_sets();
-        void upload_vobj_to_atlas(uint32_t object_index, const VoxelObject *obj);
-        void upload_vobj_metadata(const VoxelObjectWorld *world);
-
-        /* Unified raymarching compute infrastructure */
-        bool init_compute_raymarching();
-        bool create_gbuffer_compute_pipeline();
-        bool create_shadow_compute_pipeline();
-        bool create_gbuffer_compute_descriptor_sets();
-        bool create_shadow_compute_descriptor_sets();
-        void update_shadow_volume_descriptor();
-        bool create_shadow_output_resources();
-        bool create_shadow_history_resources();
-        bool create_temporal_shadow_pipeline();
-        bool create_temporal_shadow_descriptor_sets();
-        void destroy_compute_raymarching_resources();
-        void dispatch_gbuffer_compute(const VoxelVolume *vol, int32_t object_count);
-        void dispatch_shadow_compute();
-        void dispatch_temporal_shadow_resolve();
-
-        /* AO compute infrastructure */
-        bool create_ao_output_resources();
-        bool create_ao_history_resources();
-        bool create_ao_compute_pipeline();
-        bool create_temporal_ao_pipeline();
-        bool create_ao_compute_descriptor_sets();
-        bool create_temporal_ao_descriptor_sets();
-        void destroy_ao_resources();
-        void update_ao_volume_descriptor();
-        void dispatch_ao_compute();
-        void dispatch_temporal_ao_resolve();
-        void update_deferred_ao_buffer_descriptor(uint32_t frame_index, VkImageView ao_view);
-
-        /* Spatial denoise compute infrastructure */
-        bool create_lit_color_resources();
-        bool create_denoised_color_resources();
-        bool create_spatial_denoise_pipeline();
-        bool create_spatial_denoise_descriptor_sets();
-        bool create_deferred_lighting_intermediate_fb();
-        void destroy_spatial_denoise_resources();
-        void dispatch_spatial_denoise();
-        void blit_denoised_to_swapchain(uint32_t image_index);
-
-        /* TAA compute infrastructure */
-        bool create_taa_history_resources();
-        bool create_taa_pipeline();
-        bool create_taa_descriptor_sets();
-        void destroy_taa_resources();
-        void dispatch_taa_resolve();
-
-        /* Raymarched particle rendering */
-        bool init_particle_resources();
-        bool create_particle_pipeline();
-        void destroy_particle_resources();
-
-        /* Depth prime pass (copies linear_depth to hardware depth after compute) */
-        bool create_depth_prime_resources();
-        void destroy_depth_prime_resources();
-        void dispatch_depth_prime();
-
-    public:
-        struct GPUTimings
-        {
-            float shadow_pass_ms;
-            float main_pass_ms;
-            float total_gpu_ms;
-            /* Per-pass breakdown (timestamps 0-15) */
-            float gbuffer_compute_ms;    /* 0-1 */
-            float shadow_compute_ms;     /* 2-3 */
-            float temporal_shadow_ms;    /* 4-5 */
-            float ao_compute_ms;         /* 6-7 */
-            float temporal_ao_ms;        /* 8-9 */
-            float render_pass_ms;        /* 10-11 */
-            float taa_resolve_ms;        /* 12-13 */
-            float spatial_denoise_ms;    /* 14-15 */
-        };
-
-        bool get_gpu_timings(GPUTimings *out_timings) const;
-        bool get_last_gpu_timings(GPUTimings *out_timings) const;
-        bool is_gpu_profiling_supported() const { return timestamps_supported_; }
-        const char *get_gpu_name() const { return gpu_name_; }
+        bool get_last_gpu_timings(GPUTimings *out_timings) const { return timer_.last(out_timings); }
+        const char *get_gpu_name() const { return ctx_.gpu_name(); }
         float get_last_wait_fence_ms() const { return last_wait_fence_ms_; }
         float get_last_acquire_ms() const { return last_acquire_ms_; }
         float get_last_present_ms() const { return last_present_ms_; }
 
     private:
-        GPUTimings last_gpu_timings_{};
-        bool last_gpu_timings_valid_ = false;
+        void cleanup();
+        /* Every descriptor write that references a render target */
+        void bind_targets();
+        bool rebuild_swapchain();
+        void reset_scene_state();
+        void reset_temporal_history();
+        /* Stops a scene load still running (its stage finishes first) */
+        void abandon_scene_load();
+        static void run_scene_load_stage(void *renderer, int32_t stage);
+
+        FrameContext frame_context() const
+        {
+            return {frames_.cmd[current_frame_], current_frame_, total_frame_count_, &timer_};
+        }
+        void begin_swapchain_rendering(uint32_t image_index, VkAttachmentLoadOp load_op);
+        /* Depth prime and the raster scope, at the first object or particle draw of a frame */
+        void open_gbuffer_raster();
+        VkClearColorValue sky_clear_color() const;
+
+        float render_aspect() const;
+        void update_perspective_projection();
+        /* This frame's TAA jitter (none with TAA off), also into the temporal UBO */
+        void update_jitter();
+        /* projection_matrix_ offset by the jitter: what every pass renders this frame with */
+        Mat4 jittered_projection() const;
+        VoxelPushConstants make_voxel_push_constants() const;
+
+        Window &window_;
+        const char *init_error_ = nullptr;
+
+        VulkanContext ctx_;
+        Swapchain swapchain_;
+        FrameResources frames_;
+        GpuTimer timer_;
+        RenderTargets targets_;
+        TerrainVolume terrain_;
+        /* The terrain's CPU work while it loads (begin_scene_load() to poll_scene_load()) */
+        JobSystem *scene_load_jobs_ = nullptr;
+        BackgroundLoad *scene_load_ = nullptr;
+        bool scene_uploading_ = false; /* its CPU work is done, the GPU upload not yet */
+        GBufferPass gbuffer_;
+        ShadowAoPass shadow_ao_;
+        LightingPass lighting_;
+        PostPass post_;
+        VoxelObjects objects_;
+        ParticlePass particles_;
+        UiPass ui_;
+
+        uint32_t current_frame_ = 0;
+        uint32_t image_index_ = 0;         /* swapchain image this frame renders to */
+        bool quit_requested_ = false;
+        bool frame_started_ = false;       /* begin_frame succeeded, end_frame not yet called */
+        bool swapchain_rendering_ = false; /* a rendering scope targeting the swapchain image is open */
+        bool terrain_traced_ = false;      /* the compute raymarch filled this frame's G-buffer */
+        bool raster_open_ = false;         /* ... and the raster scope for objects / particles is open */
+
+        SceneLightingUBO scene_lighting_ubo_data_{};
+
+        Mat4 view_matrix_ = mat4_identity();
+        Mat4 projection_matrix_ = mat4_identity(); /* without the TAA jitter */
+        float jitter_px_[2] = {0.0f, 0.0f};        /* this frame's projection offset, in pixels */
+        Mat4 prev_view_matrix_ = mat4_identity();       /* Previous frame for temporal reprojection */
+        Mat4 prev_projection_matrix_ = mat4_identity(); /* Previous frame for temporal reprojection */
+        uint64_t total_frame_count_ = 0;                /* Frames begun (FrameContext::number) */
+        float perspective_fov_y_degrees_ = 60.0f;
+        float perspective_near_ = 0.1f;
+        float perspective_far_ = 200.0f;
+        float near_clip_radius_ = 0.0f; /* the near plane cuts the view this close to the camera */
+        Vec3 camera_position_ = vec3_zero();
+        Vec3 camera_forward_ = vec3_zero();
+
+        bool adaptive_quality_ = false; /* Dynamic quality adjustment (default off) */
+        int adaptive_cooldown_ = 0;     /* Frames until next quality change allowed */
+        static constexpr int ADAPTIVE_COOLDOWN_FRAMES = 30;
+        /* Interval between consecutive presents, averaged exponentially over about this long
+         * whatever the frame rate; 0 until two frames in a row were presented. A frame not
+         * rendered (minimized, swapchain rebuild) breaks the run, and a new scene starts over:
+         * its loading frames say nothing about it. */
+        static constexpr float RECENT_FRAME_TIME_WINDOW_MS = 250.0f;
+        float recent_frame_ms_ = 0.0f;
+        int64_t last_present_ticks_ = 0;     /* 0: the last frame was not presented */
+        int64_t present_interval_start_ = 0; /* last_present_ticks_ when this frame began */
+        int target_preset_ = QUALITY_PRESET_FAIR;   /* User-selected max preset */
+        int adaptive_preset_ = QUALITY_PRESET_FAIR; /* Current preset when adaptive on */
+        int shadow_quality_ = QUALITY_DEFAULT_SHADOW;
+        bool shadow_contact_hardening_ = QUALITY_DEFAULT_SHADOW_CONTACT;
+        int ao_quality_ = QUALITY_DEFAULT_AO;
+        int denoise_quality_ = QUALITY_DEFAULT_DENOISE;
+        int taa_quality_ = QUALITY_DEFAULT_TAA;
+        float interp_alpha_ = 0.0f;  /* Interpolation factor between the last two sim steps */
+        float particle_frame_ticks_ = 0.0f; /* sim steps the drawn particles advanced since the last frame */
+        double particle_drawn_time_ = 0.0;  /* sim steps (with alpha) drawn last frame */
+        bool particle_time_valid_ = false;  /* ... known (a frame of this scene was drawn) */
+        int terrain_debug_mode_ = 0; /* DEBUG: shader debug view (see TERRAIN_DEBUG_MODE_NAMES) */
+        int terrain_draw_count_ = 0; /* DEBUG: G-buffer dispatches this frame */
+
         float last_wait_fence_ms_ = 0.0f;
         float last_acquire_ms_ = 0.0f;
         float last_present_ms_ = 0.0f;

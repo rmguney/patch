@@ -3,20 +3,18 @@
 
 #include "engine/core/types.h"
 #include <stdint.h>
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /*
- * Spatial Hash Grid for O(n) neighbor queries.
- * Currently used by particle system only for particle-particle collision.
+ * Spatial Hash Grid for O(n) neighbor queries (particle-particle collision).
  *
  * Usage:
  *   1. spatial_hash_clear() at start of each frame
  *   2. spatial_hash_insert() for each object
- *   3. spatial_hash_query() or spatial_hash_for_each_pair() for pairs
+ *   3. spatial_hash_query() for the neighbours of each object
  *
  * Cell size should be ~2x the largest object radius for best performance.
  */
@@ -36,7 +34,6 @@ typedef struct {
     int32_t bucket_heads[SPATIAL_HASH_BUCKET_COUNT];  /* -1 = empty */
     int32_t entry_count;
 
-    float cell_size;
     float inv_cell_size;
     Bounds3D bounds;
 
@@ -54,18 +51,10 @@ void spatial_hash_clear(SpatialHashGrid *grid);
 /* Insert object at position with radius (handles multi-cell objects) */
 void spatial_hash_insert(SpatialHashGrid *grid, int32_t object_index, Vec3 position, float radius);
 
-/* Insert object covering an AABB (for non-spherical objects) */
-void spatial_hash_insert_aabb(SpatialHashGrid *grid, int32_t object_index, Vec3 min, Vec3 max);
-
-/* Query all objects in cells near position+radius, returns count */
-int32_t spatial_hash_query(const SpatialHashGrid *grid, Vec3 position, float radius,
+/* Query all objects in cells near position+radius (each reported once), returns count.
+ * Not const: it stamps the per-object generation used for de-duplication. */
+int32_t spatial_hash_query(SpatialHashGrid *grid, Vec3 position, float radius,
                            int32_t *out_indices, int32_t max_results);
-
-/* Callback for pair iteration */
-typedef void (*SpatialHashPairCallback)(int32_t index_a, int32_t index_b, void *user_data);
-
-/* Iterate all potential collision pairs (each pair reported once) */
-void spatial_hash_for_each_pair(const SpatialHashGrid *grid, SpatialHashPairCallback callback, void *user_data);
 
 #ifdef __cplusplus
 }

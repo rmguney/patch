@@ -14,6 +14,14 @@ void font5x7_rows(uint8_t out_rows[7], char c) {
         case '-': out_rows[3] = 0x1F; return;
         case '.': out_rows[6] = 0x04; return;
         case '/': out_rows[0] = 0x01; out_rows[1] = 0x02; out_rows[2] = 0x04; out_rows[3] = 0x08; out_rows[4] = 0x10; return;
+        case ',': out_rows[5] = 0x04; out_rows[6] = 0x08; return;
+        case '_': out_rows[6] = 0x1F; return;
+        case '%': out_rows[0]=0x18; out_rows[1]=0x19; out_rows[2]=0x02; out_rows[3]=0x04; out_rows[4]=0x08; out_rows[5]=0x13; out_rows[6]=0x03; return;
+        case '(': out_rows[0]=0x02; out_rows[1]=0x04; out_rows[2]=0x08; out_rows[3]=0x08; out_rows[4]=0x08; out_rows[5]=0x04; out_rows[6]=0x02; return;
+        case ')': out_rows[0]=0x08; out_rows[1]=0x04; out_rows[2]=0x02; out_rows[3]=0x02; out_rows[4]=0x02; out_rows[5]=0x04; out_rows[6]=0x08; return;
+        case '[': out_rows[0]=0x0E; out_rows[1]=0x08; out_rows[2]=0x08; out_rows[3]=0x08; out_rows[4]=0x08; out_rows[5]=0x08; out_rows[6]=0x0E; return;
+        case ']': out_rows[0]=0x0E; out_rows[1]=0x02; out_rows[2]=0x02; out_rows[3]=0x02; out_rows[4]=0x02; out_rows[5]=0x02; out_rows[6]=0x0E; return;
+        case '?': out_rows[0]=0x0E; out_rows[1]=0x11; out_rows[2]=0x01; out_rows[3]=0x02; out_rows[4]=0x04; out_rows[5]=0x00; out_rows[6]=0x04; return;
 
         case '0': out_rows[0]=0x0E; out_rows[1]=0x11; out_rows[2]=0x13; out_rows[3]=0x15; out_rows[4]=0x19; out_rows[5]=0x11; out_rows[6]=0x0E; return;
         case '1': out_rows[0]=0x04; out_rows[1]=0x0C; out_rows[2]=0x04; out_rows[3]=0x04; out_rows[4]=0x04; out_rows[5]=0x04; out_rows[6]=0x0E; return;

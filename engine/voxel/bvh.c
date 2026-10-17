@@ -6,7 +6,10 @@
 
 #define BVH_SAH_TRAVERSAL_COST 1.0f
 #define BVH_SAH_INTERSECTION_COST 2.0f
-#define BVH_STACK_SIZE 32
+#define BVH_STACK_SIZE (BVH_MAX_DEPTH + 1)
+
+/* Per-object data is stored at the object world index */
+STATIC_ASSERT(BVH_MAX_OBJECTS >= VOBJ_MAX_OBJECTS, "BVH arrays are indexed by world object index");
 
 typedef struct
 {
@@ -173,52 +176,110 @@ static float find_best_split(BVH *bvh, int32_t node_idx, int32_t *out_axis, floa
     return best_cost;
 }
 
-static void subdivide(BVH *bvh, int32_t node_idx)
+/* Partition a node's objects by centroid against split_pos; returns the left count */
+static int32_t partition_sah(BVH *bvh, const BVHNode *node, int32_t axis, float split_pos)
 {
-    BVHNode *node = &bvh->nodes[node_idx];
-
-    if (node->count <= BVH_LEAF_MAX_OBJECTS)
-        return;
-
-    int32_t split_axis;
-    float split_pos;
-    float split_cost = find_best_split(bvh, node_idx, &split_axis, &split_pos);
-
-    float no_split_cost = (float)node->count * BVH_SAH_INTERSECTION_COST;
-    if (split_axis < 0 || split_cost >= no_split_cost)
-        return;
-
-    int32_t left_start = node->left_first;
-    int32_t left_end = left_start;
-    int32_t right_start = left_start + node->count - 1;
+    int32_t left_end = node->left_first;
+    int32_t right_start = node->left_first + node->count - 1;
 
     while (left_end <= right_start)
     {
         int32_t obj_idx = bvh->object_indices[left_end];
-        float cent = get_centroid_axis(bvh, obj_idx, split_axis);
-        if (cent < split_pos)
+        if (get_centroid_axis(bvh, obj_idx, axis) < split_pos)
         {
             left_end++;
         }
         else
         {
-            int32_t tmp = bvh->object_indices[left_end];
             bvh->object_indices[left_end] = bvh->object_indices[right_start];
-            bvh->object_indices[right_start] = tmp;
+            bvh->object_indices[right_start] = obj_idx;
             right_start--;
         }
     }
+    return left_end - node->left_first;
+}
 
-    int32_t left_count = left_end - left_start;
-    if (left_count == 0 || left_count == node->count)
+/* Sort a node's objects by centroid along the widest centroid axis and split them in
+ * half; returns the left count */
+static int32_t partition_median(BVH *bvh, const BVHNode *node)
+{
+    int32_t *objs = &bvh->object_indices[node->left_first];
+    float cmin[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+    float cmax[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (int32_t i = 0; i < node->count; i++)
+    {
+        for (int32_t a = 0; a < 3; a++)
+        {
+            float c = get_centroid_axis(bvh, objs[i], a);
+            cmin[a] = c < cmin[a] ? c : cmin[a];
+            cmax[a] = c > cmax[a] ? c : cmax[a];
+        }
+    }
+    int32_t axis = 0;
+    for (int32_t a = 1; a < 3; a++)
+        if (cmax[a] - cmin[a] > cmax[axis] - cmin[axis])
+            axis = a;
+
+    for (int32_t i = 1; i < node->count; i++)
+    {
+        int32_t obj_idx = objs[i];
+        float key = get_centroid_axis(bvh, obj_idx, axis);
+        int32_t j = i - 1;
+        while (j >= 0 && get_centroid_axis(bvh, objs[j], axis) > key)
+        {
+            objs[j + 1] = objs[j];
+            j--;
+        }
+        objs[j + 1] = obj_idx;
+    }
+    return (node->count + 1) / 2;
+}
+
+/* Levels of halving that bring `count` objects down to leaf size */
+static int32_t balanced_levels(int32_t count)
+{
+    int32_t levels = 0;
+    while (count > BVH_LEAF_MAX_OBJECTS)
+    {
+        count = (count + 1) / 2;
+        levels++;
+    }
+    return levels;
+}
+
+/* Split a node by SAH while depth allows. Once depth + balanced_levels(count) reaches
+ * BVH_MAX_DEPTH, median splits finish the subtree, so no leaf is deeper than that. */
+static void subdivide(BVH *bvh, int32_t node_idx, int32_t depth)
+{
+    BVHNode *node = &bvh->nodes[node_idx];
+    if (node->count <= BVH_LEAF_MAX_OBJECTS)
         return;
+
+    int32_t left_count;
+    if (depth + balanced_levels(node->count) < BVH_MAX_DEPTH)
+    {
+        int32_t split_axis;
+        float split_pos;
+        float split_cost = find_best_split(bvh, node_idx, &split_axis, &split_pos);
+        float no_split_cost = (float)node->count * BVH_SAH_INTERSECTION_COST;
+        if (split_axis < 0 || split_cost >= no_split_cost)
+            return;
+
+        left_count = partition_sah(bvh, node, split_axis, split_pos);
+        if (left_count == 0 || left_count == node->count)
+            return;
+    }
+    else
+    {
+        left_count = partition_median(bvh, node);
+    }
 
     int32_t left_idx = bvh->node_count++;
     int32_t right_idx = bvh->node_count++;
 
-    bvh->nodes[left_idx].left_first = left_start;
+    bvh->nodes[left_idx].left_first = node->left_first;
     bvh->nodes[left_idx].count = left_count;
-    bvh->nodes[right_idx].left_first = left_end;
+    bvh->nodes[right_idx].left_first = node->left_first + left_count;
     bvh->nodes[right_idx].count = node->count - left_count;
 
     node->left_first = left_idx;
@@ -227,8 +288,8 @@ static void subdivide(BVH *bvh, int32_t node_idx)
     update_node_bounds(bvh, left_idx);
     update_node_bounds(bvh, right_idx);
 
-    subdivide(bvh, left_idx);
-    subdivide(bvh, right_idx);
+    subdivide(bvh, left_idx, depth + 1);
+    subdivide(bvh, right_idx, depth + 1);
 }
 
 BVH *bvh_create(void)
@@ -243,7 +304,19 @@ void bvh_destroy(BVH *bvh)
         free(bvh);
 }
 
-void bvh_build(BVH *bvh, const VoxelObjectWorld *world)
+/* Bounds of object i (world index) at position */
+static void store_object_bounds(BVH *bvh, int32_t i, Vec3 position, float r)
+{
+    bvh->obj_centroids[i] = position;
+    bvh->obj_aabb_min[i][0] = position.x - r;
+    bvh->obj_aabb_min[i][1] = position.y - r;
+    bvh->obj_aabb_min[i][2] = position.z - r;
+    bvh->obj_aabb_max[i][0] = position.x + r;
+    bvh->obj_aabb_max[i][1] = position.y + r;
+    bvh->obj_aabb_max[i][2] = position.z + r;
+}
+
+void bvh_build(BVH *bvh, const VoxelObjectWorld *world, const Vec3 *positions)
 {
     bvh->node_count = 0;
     bvh->object_count = 0;
@@ -259,14 +332,7 @@ void bvh_build(BVH *bvh, const VoxelObjectWorld *world)
 
         /* Store AABBs/centroids at WORLD index (i), not BVH-internal index (idx).
            update_node_bounds reads via object_indices[] which yields world indices. */
-        float r = obj->radius;
-        bvh->obj_centroids[i] = obj->position;
-        bvh->obj_aabb_min[i][0] = obj->position.x - r;
-        bvh->obj_aabb_min[i][1] = obj->position.y - r;
-        bvh->obj_aabb_min[i][2] = obj->position.z - r;
-        bvh->obj_aabb_max[i][0] = obj->position.x + r;
-        bvh->obj_aabb_max[i][1] = obj->position.y + r;
-        bvh->obj_aabb_max[i][2] = obj->position.z + r;
+        store_object_bounds(bvh, i, positions ? positions[i] : obj->position, obj->radius);
     }
 
     if (bvh->object_count == 0)
@@ -277,25 +343,18 @@ void bvh_build(BVH *bvh, const VoxelObjectWorld *world)
     root->count = bvh->object_count;
     update_node_bounds(bvh, 0);
 
-    subdivide(bvh, 0);
+    subdivide(bvh, 0, 0);
 }
 
-void bvh_refit(BVH *bvh, const VoxelObjectWorld *world)
+void bvh_refit(BVH *bvh, const VoxelObjectWorld *world, const Vec3 *positions)
 {
     for (int32_t i = 0; i < bvh->object_count; i++)
     {
         int32_t world_idx = bvh->object_indices[i];
         const VoxelObject *obj = &world->objects[world_idx];
-        float r = obj->radius;
 
         /* Store at WORLD index to match update_node_bounds which reads via object_indices */
-        bvh->obj_centroids[world_idx] = obj->position;
-        bvh->obj_aabb_min[world_idx][0] = obj->position.x - r;
-        bvh->obj_aabb_min[world_idx][1] = obj->position.y - r;
-        bvh->obj_aabb_min[world_idx][2] = obj->position.z - r;
-        bvh->obj_aabb_max[world_idx][0] = obj->position.x + r;
-        bvh->obj_aabb_max[world_idx][1] = obj->position.y + r;
-        bvh->obj_aabb_max[world_idx][2] = obj->position.z + r;
+        store_object_bounds(bvh, world_idx, positions ? positions[world_idx] : obj->position, obj->radius);
     }
 
     for (int32_t i = bvh->node_count - 1; i >= 0; i--)
@@ -480,7 +539,7 @@ BVHQueryResult bvh_query_sphere(const BVH *bvh, Vec3 center, float radius)
     int32_t stack_ptr = 0;
     stack[stack_ptr++] = 0;
 
-    while (stack_ptr > 0 && result.count < 64)
+    while (stack_ptr > 0 && result.count < BVH_QUERY_MAX_RESULTS)
     {
         int32_t node_idx = stack[--stack_ptr];
         const BVHNode *node = &bvh->nodes[node_idx];
@@ -490,57 +549,7 @@ BVHQueryResult bvh_query_sphere(const BVH *bvh, Vec3 center, float radius)
 
         if (node->count > 0)
         {
-            for (int32_t i = 0; i < node->count && result.count < 64; i++)
-            {
-                result.indices[result.count++] = bvh->object_indices[node->left_first + i];
-            }
-        }
-        else
-        {
-            if (stack_ptr < BVH_STACK_SIZE - 1)
-            {
-                stack[stack_ptr++] = node->left_first;
-                stack[stack_ptr++] = node->left_first + 1;
-            }
-        }
-    }
-
-    return result;
-}
-
-static bool aabb_aabb_intersect(Vec3 a_min, Vec3 a_max, const float b_min[3], const float b_max[3])
-{
-    if (a_max.x < b_min[0] || a_min.x > b_max[0])
-        return false;
-    if (a_max.y < b_min[1] || a_min.y > b_max[1])
-        return false;
-    if (a_max.z < b_min[2] || a_min.z > b_max[2])
-        return false;
-    return true;
-}
-
-BVHQueryResult bvh_query_aabb(const BVH *bvh, Vec3 query_min, Vec3 query_max)
-{
-    BVHQueryResult result = {0};
-
-    if (bvh->node_count <= 0)
-        return result;
-
-    int32_t stack[BVH_STACK_SIZE];
-    int32_t stack_ptr = 0;
-    stack[stack_ptr++] = 0;
-
-    while (stack_ptr > 0 && result.count < 64)
-    {
-        int32_t node_idx = stack[--stack_ptr];
-        const BVHNode *node = &bvh->nodes[node_idx];
-
-        if (!aabb_aabb_intersect(query_min, query_max, node->aabb_min, node->aabb_max))
-            continue;
-
-        if (node->count > 0)
-        {
-            for (int32_t i = 0; i < node->count && result.count < 64; i++)
+            for (int32_t i = 0; i < node->count && result.count < BVH_QUERY_MAX_RESULTS; i++)
             {
                 result.indices[result.count++] = bvh->object_indices[node->left_first + i];
             }

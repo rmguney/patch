@@ -32,21 +32,27 @@ void GpuAllocator::destroy()
 }
 
 VkBuffer GpuAllocator::create_buffer(const VkBufferCreateInfo &buf_info,
-                                     VmaMemoryUsage usage,
                                      VmaAllocationCreateFlags flags,
-                                     VmaAllocation *out_alloc)
+                                     VkMemoryPropertyFlags required_flags,
+                                     VmaAllocation *out_alloc,
+                                     void **out_mapped)
 {
     VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = usage;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
     alloc_ci.flags = flags;
+    alloc_ci.requiredFlags = required_flags;
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult result = vmaCreateBuffer(allocator, &buf_info, &alloc_ci, &buffer, out_alloc, nullptr);
+    VmaAllocationInfo info{};
+    VkResult result = vmaCreateBuffer(allocator, &buf_info, &alloc_ci, &buffer, out_alloc, &info);
     if (result != VK_SUCCESS)
     {
         fprintf(stderr, "VMA: Buffer allocation failed (size=%llu, VkResult %d)\n",
                 (unsigned long long)buf_info.size, result);
+        *out_alloc = VK_NULL_HANDLE;
+        return VK_NULL_HANDLE;
     }
+    *out_mapped = info.pMappedData;
     return buffer;
 }
 
@@ -80,18 +86,6 @@ void GpuAllocator::destroy_image(VkImage image, VmaAllocation alloc)
     {
         vmaDestroyImage(allocator, image, alloc);
     }
-}
-
-void *GpuAllocator::map(VmaAllocation alloc)
-{
-    void *data = nullptr;
-    vmaMapMemory(allocator, alloc, &data);
-    return data;
-}
-
-void GpuAllocator::unmap(VmaAllocation alloc)
-{
-    vmaUnmapMemory(allocator, alloc);
 }
 
 void GpuAllocator::dump_stats()
